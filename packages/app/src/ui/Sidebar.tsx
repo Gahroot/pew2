@@ -29,6 +29,7 @@ import { AgentChip } from "./AgentChip";
 import { touchSlop } from "./controls";
 import { Glass } from "./Glass";
 import { haptics } from "./haptics";
+import { PrivacyLink } from "./PrivacyLink";
 import { HistorySkeleton } from "./Skeleton";
 import { orderProvidersByRecency } from "../providerRecency";
 import { formatHistoryMetadata } from "../historyMetadata";
@@ -610,6 +611,16 @@ function SidebarView({
             </Pressable>
           </View>
 
+          {/* Its own line rather than a third item on the row above, which is
+              already about this computer and switches alignment when an update
+              notice appears. This one is about the app, and is here because the
+              pairing screen's copy is unreachable once a pairing exists.
+
+              The bottom inset is carried here rather than on the panel: this is
+              now the lowest thing in the drawer, and the panel's own padding
+              alone would leave it under the home indicator. */}
+          <PrivacyLink style={[styles.privacy, { marginBottom: insets.bottom }]} />
+
           {/* Last child, so it paints over the history it drops across. Inside
               the panel rather than over the whole screen: it is the drawer's
               own menu, and the panel's clip keeps it off the conversation. */}
@@ -708,6 +719,11 @@ const styles = StyleSheet.create({
   },
   // Only when there is something on the left; otherwise Forget keeps the edge.
   machineSplit: { justifyContent: "space-between" },
+  privacy: {
+    alignSelf: "flex-end",
+    marginHorizontal: theme.gutter,
+    marginTop: theme.space(2),
+  },
   machineAction: { color: theme.color.danger, fontSize: 12, fontWeight: "600" },
   // Same size and weight as Forget, so the row reads as one pair of controls.
   // Deliberately not `danger`: being a version behind is not a problem, and a
