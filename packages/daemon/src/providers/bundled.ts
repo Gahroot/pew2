@@ -24,6 +24,7 @@ import cline from "../../../../providers/cline.json" with { type: "json" };
 import codex from "../../../../providers/codex.json" with { type: "json" };
 import cursor_agent from "../../../../providers/cursor-agent.json" with { type: "json" };
 import echo from "../../../../providers/echo.json" with { type: "json" };
+import ezcoder from "../../../../providers/ezcoder.json" with { type: "json" };
 import gemini_cli from "../../../../providers/gemini-cli.json" with { type: "json" };
 import ggcoder from "../../../../providers/ggcoder.json" with { type: "json" };
 import goose from "../../../../providers/goose.json" with { type: "json" };
@@ -39,6 +40,7 @@ export const BUNDLED_MANIFESTS: ProviderManifestInput[] = [
   codex as ProviderManifestInput,
   cursor_agent as ProviderManifestInput,
   echo as ProviderManifestInput,
+  ezcoder as ProviderManifestInput,
   gemini_cli as ProviderManifestInput,
   ggcoder as ProviderManifestInput,
   goose as ProviderManifestInput,

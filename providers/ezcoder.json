@@ -1,0 +1,19 @@
+{
+  "$schema": "../schemas/provider.schema.json",
+  "id": "ezcoder",
+  "name": "EZ Coder",
+  "version": "1.0.0",
+  "description": "EZ Coder's native Agent Client Protocol mode.",
+  "distribution": {
+    "type": "command",
+    "command": "ezcoder",
+    "args": [
+      "acp"
+    ]
+  },
+  "license": "Proprietary",
+  "pew": {
+    "transport": "acp",
+    "color": "#7c3aed"
+  }
+}
