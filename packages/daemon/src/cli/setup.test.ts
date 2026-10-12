@@ -328,7 +328,7 @@ test("a daemon that was simply never started still says so plainly", async () =>
 
 test("doctor warns, never errors, when no OpenAI key is set for voice", async () => {
   const { providersDir, env } = await sandbox();
-  const without = { ...env, OPENAI_API_KEY: "" };
+  const without = { ...env, OPENAI_API_KEY: "", CODEX_HOME: "/nonexistent-codex-home" };
   const warned = await doctor({ env: without, searchDirs: [providersDir], probeDaemon: noDaemon });
   expect(warned.problems.find((p) => p.id === "voice-no-api-key")).toMatchObject({ severity: "warning" });
   const keyed = await doctor({ env: { ...env, OPENAI_API_KEY: "sk-x" }, searchDirs: [providersDir], probeDaemon: noDaemon });

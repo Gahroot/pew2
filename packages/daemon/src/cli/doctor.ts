@@ -11,6 +11,7 @@
  * key on an agent that has its own login flow is a warning, not a failure, and
  * must not trap an agent in a loop it cannot escape.
  */
+import { subscriptionToken } from "../voice/codexAuth.js";
 import { loadProviders, isAvailable, unavailableReason, providerDirs, userProvidersDir } from "../providers/registry.js";
 import {
   lanAddresses,
@@ -212,12 +213,12 @@ export async function doctor(options: DoctorOptions = {}): Promise<DoctorReport>
 
   // Voice is optional, so a missing key is a warning: it must never block `ok`,
   // and an agent running setup has no key to supply.
-  if (!resolveApiKey(env, await readVoicePrefs(dirname(userProvidersDir(env))))) {
+  if (!resolveApiKey(env, await readVoicePrefs(dirname(userProvidersDir(env)))) && !(await subscriptionToken(env))) {
     problems.push({
       id: "voice-no-api-key",
       severity: "warning",
-      detail: "voice: OPENAI_API_KEY missing. Hands-free voice control is unavailable.",
-      fix: "Set OPENAI_API_KEY in the environment where the daemon runs (see docs/VOICE.md)",
+      detail: "voice: no Codex login and no OPENAI_API_KEY. Hands-free voice control is unavailable.",
+      fix: "Run `codex login`, or set OPENAI_API_KEY where the daemon runs (see docs/VOICE.md)",
     });
   }
 

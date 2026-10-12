@@ -63,7 +63,7 @@ export async function mintRealtimeSecret(options: MintOptions): Promise<MintResu
     return {
       ok: false,
       code: "no_api_key",
-      message: "Set OPENAI_API_KEY where the pew2 daemon runs, then restart it.",
+      message: "Sign in with `codex login` on this computer, or set OPENAI_API_KEY where the pew2 daemon runs, then restart it.",
     };
   }
   const model = options.model ?? DEFAULT_MODEL;

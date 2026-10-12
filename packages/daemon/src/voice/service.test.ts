@@ -28,7 +28,7 @@ function host(): VoiceHost & { permissionAnswers: string[] } {
 const mintFetch = (async () =>
   new Response(JSON.stringify({ value: "ek_test", expires_at: 99 }))) as unknown as typeof fetch;
 
-async function service(env: NodeJS.ProcessEnv = { OPENAI_API_KEY: "sk-testtesttesttesttest" }) {
+async function service(env: NodeJS.ProcessEnv = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" }) {
   const emitted: unknown[] = [];
   const pushed: VoiceEvent[] = [];
   const h = host();
@@ -47,7 +47,7 @@ async function service(env: NodeJS.ProcessEnv = { OPENAI_API_KEY: "sk-testtestte
 }
 
 test("open without a key is unavailable/no_api_key", async () => {
-  const { svc } = await service({});
+  const { svc } = await service({ CODEX_HOME: "/nonexistent-codex-home" });
   expect(await svc.open({ voiceSessionId: "v", source: "in_app" })).toMatchObject({
     t: "voice.unavailable",
     code: "no_api_key",

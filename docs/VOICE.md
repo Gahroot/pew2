@@ -6,7 +6,7 @@ Talk to your coding agents hands-free. **The agents (EZ Coder, or whichever ACP 
 
 ### Setup
 
-Set `OPENAI_API_KEY` in the environment where the daemon runs, then restart it. Alternatively put `{"openaiApiKey": "..."}` in `voice-prefs.json` (see below). The environment wins. Without a key, `pew2 doctor` shows a **warning** (`voice-no-api-key`, never an error), and the app is told `voice.unavailable` with code `no_api_key`.
+**Default: your ChatGPT/Codex subscription.** Run `codex login` on the computer where the daemon runs; the daemon reads `~/.codex/auth.json` (or `$CODEX_HOME`), refreshes the token itself, and mints Realtime secrets with it. **Fallback:** if there is no login or OpenAI refuses it, the API key is used. To use the key, set `OPENAI_API_KEY` in the environment where the daemon runs, then restart it. Alternatively put `{"openaiApiKey": "..."}` in `voice-prefs.json` (see below). The environment wins. Without a key, `pew2 doctor` shows a **warning** (`voice-no-api-key`, never an error), and the app is told `voice.unavailable` with code `no_api_key`.
 
 The key never leaves the daemon. The phone receives only a short-lived client secret (`POST /v1/realtime/client_secrets`).
 

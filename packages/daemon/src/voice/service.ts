@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { EventBatcher } from "./classify.js";
 import { buildSnapshot } from "./context.js";
 import { Orchestrator, type VoiceHost } from "./dispatcher.js";
+import { subscriptionToken } from "./codexAuth.js";
 import {
   DEFAULT_MODEL,
   DEFAULT_VOICE,
@@ -163,12 +164,13 @@ export class VoiceService {
       voice,
       instructions: `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}`,
     });
-    const minted = await mintRealtimeSecret({
-      apiKey: resolveApiKey(this.deps.env, prefs),
-      model: prefs.model ?? DEFAULT_MODEL,
-      session,
-      fetch: this.deps.fetch,
-    });
+    // Subscription login first, API key as the fallback.
+    const subscription = await subscriptionToken(this.deps.env, this.deps.fetch);
+    const mintWith = (apiKey: string | undefined) =>
+      mintRealtimeSecret({ apiKey, model: prefs.model ?? DEFAULT_MODEL, session, fetch: this.deps.fetch });
+    let minted = await mintWith(subscription);
+    const apiKey = resolveApiKey(this.deps.env, prefs);
+    if (!minted.ok && apiKey && apiKey !== subscription) minted = await mintWith(apiKey);
     if (!minted.ok) {
       return { t: "voice.unavailable", voiceSessionId: request.voiceSessionId, code: minted.code, message: minted.message };
     }
