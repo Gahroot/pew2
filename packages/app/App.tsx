@@ -61,6 +61,9 @@ import { addAttachments, MAX_ATTACHMENTS, type PendingAttachment } from "./src/a
 import { pickFiles, pickPhotos, takePhoto } from "./src/ui/attachmentPicker";
 import { useDictation } from "./src/ui/useDictation";
 import { ApprovalSheet } from "./src/ui/ApprovalSheet";
+import { VoiceSheet } from "./src/ui/VoiceSheet";
+import { useVoice } from "./src/ui/useVoice";
+import { clearVoiceCursor } from "./src/preferences";
 import { ThoughtSheet } from "./src/ui/ThoughtSheet";
 import { applyCommand, type SlashCommand } from "./src/slashCommands";
 import { CircleButton } from "./src/ui/controls";
@@ -467,7 +470,10 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
 
   // The relay identifies devices by this, and it must match the id baked into
   // the stored pairing URL or the two look like different clients.
+  // Voice messages are routed out of useDaemon whole; the hook below owns them.
+  const voiceInbox = useRef<(message: Record<string, unknown>) => void>(() => {});
   const daemon = useDaemon(pairing.url, pairing.deviceId, pairing.key, {
+    onVoiceMessage: (message) => voiceInbox.current(message),
     onTurnFinished: announceTurn,
     // Supplied from here because obtaining it calls into the Expo SDK, which
     // `useDaemon` deliberately stays clear of. What it buys: the daemon can
@@ -479,6 +485,12 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
       pushExpected.current = registered;
     },
   });
+
+  const voice = useVoice({ send: daemon.send as (m: Record<string, unknown>) => boolean, online: daemon.status === "online" });
+  const { handleMessage: handleVoiceMessage } = voice;
+  useEffect(() => {
+    voiceInbox.current = handleVoiceMessage;
+  }, [handleVoiceMessage]);
 
   const [drawerProjection, setDrawerProjection] = useState(() => ({
     source: daemon.sessions, rows: projectDrawerRows([], daemon.sessions),
@@ -1320,6 +1332,9 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
         </Text>
 
         <View style={styles.navAction}>
+        <CircleButton label="Voice" onPress={voice.open}>
+          <Ionicons name="mic-outline" size={18} color={theme.color.text} />
+        </CircleButton>
         {inThread && (
           // Asks where, rather than starting one immediately: the old behaviour
           // always landed wherever the agent happened to be, which is the wrong
@@ -1514,7 +1529,11 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
       {/* Outside the lifted pane: a sheet belongs to the screen's bottom edge,
           not to the composer, so it must not ride up with the keyboard. */}
       <ContextDetailsSheet visible={contextOpen} workspace={daemon.workspace} usage={daemon.usage} onClose={closeContext} />
-      <ConnectionSheet visible={connectionOpen} machineLabel={pairing.label} machineRemote={pairing.remote} status={daemon.status} update={daemon.update} onClose={closeConnection} onUnpair={onUnpair} />
+      <ConnectionSheet visible={connectionOpen} machineLabel={pairing.label} machineRemote={pairing.remote} status={daemon.status} update={daemon.update} onClose={closeConnection} onUnpair={() => {
+        voice.clear();
+        void clearVoiceCursor();
+        onUnpair();
+      }} />
       <CommandSheet
         visible={commandsOpen}
         commands={daemon.commands}
@@ -1557,6 +1576,20 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
       {/* Last of every overlay on purpose. All the sheets share one zIndex, so
           paint order is sibling order — and an approval the agent is blocked on
           must sit above anything the user happened to have open. */}
+      <VoiceSheet
+        visible={voice.sheetOpen}
+        machine={voice.view.machine}
+        store={voice.view.store}
+        held={daemon.sessions.flatMap((session) => session.permission ? [{ sessionId: session.id, requestId: session.permission.requestId, options: session.permission.options }] : [])}
+        onClose={voice.close}
+        onTalk={voice.talk}
+        onEnd={voice.end}
+        onAnswer={(sessionId, requestId, optionId, deny) => {
+          if (daemon.permission?.requestId === requestId) answerPermission(requestId, optionId, deny);
+          else daemon.send({ t: "session.permission", sessionId, requestId, optionId });
+        }}
+      />
+
       <ApprovalSheet permission={daemon.permission} onAnswer={answerPermission} />
 
       {/* While the drawer is open the pane itself is the way back: tapping

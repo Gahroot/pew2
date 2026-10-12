@@ -11,7 +11,7 @@
  * key on an agent that has its own login flow is a warning, not a failure, and
  * must not trap an agent in a loop it cannot escape.
  */
-import { loadProviders, isAvailable, unavailableReason, providerDirs } from "../providers/registry.js";
+import { loadProviders, isAvailable, unavailableReason, providerDirs, userProvidersDir } from "../providers/registry.js";
 import {
   lanAddresses,
   MIN_TOKEN_LENGTH,
@@ -21,6 +21,8 @@ import {
 } from "../pairing.js";
 import { isCompiled, serviceStatus } from "./service.js";
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { readVoicePrefs, resolveApiKey } from "../voice/mint.js";
 
 export interface StoredPairing {
   token?: string;
@@ -70,7 +72,8 @@ export interface Problem {
     | "not-paired"
     | "no-lan-address"
     | "local-only"
-    | "not-autostarted";
+    | "not-autostarted"
+    | "voice-no-api-key";
   severity: Severity;
   /** The provider this concerns, when it concerns one. */
   provider?: string;
@@ -204,6 +207,17 @@ export async function doctor(options: DoctorOptions = {}): Promise<DoctorReport>
       // to ASCII, and it is also the field an agent reads to decide what to run.
       // A placeholder glyph is unhelpful in both places.
       fix: `Set ${provider.missingEnv.join(" and ")} in the environment where the daemon runs`,
+    });
+  }
+
+  // Voice is optional, so a missing key is a warning: it must never block `ok`,
+  // and an agent running setup has no key to supply.
+  if (!resolveApiKey(env, await readVoicePrefs(dirname(userProvidersDir(env))))) {
+    problems.push({
+      id: "voice-no-api-key",
+      severity: "warning",
+      detail: "voice: OPENAI_API_KEY missing. Hands-free voice control is unavailable.",
+      fix: "Set OPENAI_API_KEY in the environment where the daemon runs (see docs/VOICE.md)",
     });
   }
 

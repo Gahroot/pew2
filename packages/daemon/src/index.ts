@@ -8,7 +8,13 @@
  * so the daemon — not the agent — is what lets a phone and a desktop observe the
  * same session at the same time.
  */
-import { loadProviders, isAvailable, unavailableReason, type LoadedProvider } from "./providers/registry.js";
+import {
+  loadProviders,
+  isAvailable,
+  unavailableReason,
+  userProvidersDir,
+  type LoadedProvider,
+} from "./providers/registry.js";
 import {
   connectProvider,
   type AcpSessionHandle,
@@ -22,16 +28,19 @@ import { SessionLog } from "./session/log.js";
 import { readDisabled } from "./providers/enabled.js";
 import { discardAttachments, storeAttachments } from "./attachments.js";
 import { folderName, resolveWorkspace } from "./workspace.js";
-import { PushRegistry } from "./push.js";
+import { PushRegistry, pushVoiceEvent } from "./push.js";
 import { readProbeCache, writeProbeCache } from "./probe-cache.js";
 import { readKnownProjects, rememberKnownProject } from "./known-projects.js";
 import { hydrateMessageCounts } from "./acp/messageCounts.js";
-import { sessionsInProject, type AgentProject } from "./projects.js";
+import { foldProjects, sessionsInProject, type AgentProject } from "./projects.js";
 import { SESSION_HISTORY_LIMIT } from "./session-history.js";
 import { readConfigPrefs, writeConfigPref, type ConfigPrefs } from "./config-prefs.js";
 import { readSessionPrefs, writeSessionPrefs } from "./session-prefs.js";
 import { readCommandDirs } from "./commands/from-disk.js";
 import { wire } from "@pew2/protocol";
+import { VoiceService } from "./voice/service.js";
+import type { VoiceHost } from "./voice/dispatcher.js";
+import { dirname } from "node:path";
 
 interface ActiveSession {
   handle?: AcpSessionHandle;
@@ -943,6 +952,7 @@ export class Daemon {
       this.reaper = setInterval(() => this.reapIdleSessions(), Daemon.REAP_INTERVAL_MS);
       this.reaper.unref?.();
     }
+    this.startVoice();
   }
 
   /**
@@ -1192,6 +1202,9 @@ export class Daemon {
    */
   private record(session: ActiveSession, payload: unknown) {
     rememberTurnText(session, payload);
+    // Voice tasks follow their session through this one tap, so the voice layer
+    // sees exactly what the app sees rather than a second subscription.
+    this.voiceReady?.orchestrator.onSessionPayload(session.log.sessionId, payload);
     const event = session.log.append(payload);
     if (!session.live) return;
     if (!session.streamingReplay) {
@@ -1886,6 +1899,14 @@ export class Daemon {
   }
 
   answerPermission(sessionId: string, requestId: string, optionId: string) {
+    const answered = this.answerPermissionQuietly(sessionId, requestId, optionId);
+    // Answered from the app's own sheet: a voice task must leave `blocked` now.
+    if (answered) this.voiceReady?.orchestrator.onPermissionAnswered(sessionId, requestId);
+    return answered;
+  }
+
+  /** The answer itself, without telling the voice layer (it is the one asking). */
+  private answerPermissionQuietly(sessionId: string, requestId: string, optionId: string) {
     const session = this.require(sessionId);
     const answered = session.handle?.answerPermission(requestId, optionId) ?? false;
     // Only on a real answer. A `false` means the connection had no such request
@@ -2003,6 +2024,81 @@ export class Daemon {
     return frames;
   }
 
+  // ---- voice orchestration -------------------------------------------------
+
+  private voiceReady?: VoiceService;
+  private voiceStarting?: Promise<VoiceService>;
+
+  /**
+   * The voice service, created on first use and also at boot (`attach`) so a
+   * task the previous process was running is reconciled as soon as the daemon
+   * is up rather than when someone first speaks.
+   */
+  voice(): Promise<VoiceService> {
+    this.voiceStarting ??= VoiceService.create({
+      dataDir: dirname(userProvidersDir(this.env)),
+      env: this.env,
+      emit: (message) => this.send(message),
+      host: this.voiceHost(),
+      projectPaths: () => this.voiceProjectPaths(),
+      usableProviders: () =>
+        this.providers
+          .filter((p) => this.isEnabled(p.manifest.id) && isAvailable(p))
+          .map((p) => p.manifest.id),
+      push: (event) => pushVoiceEvent(this.pushTargets, event),
+    }).then((service) => (this.voiceReady = service));
+    return this.voiceStarting;
+  }
+
+  private startVoice() {
+    void this.voice().catch((error: unknown) => {
+      console.error("[voice] could not start:", error);
+    });
+  }
+
+  /** Project directories voice may name: chosen ones plus everything agents have history in. */
+  private async voiceProjectPaths(): Promise<string[]> {
+    const paths = new Set(await readKnownProjects(this.env));
+    for (const sessions of this.projectHistory.values()) {
+      for (const project of foldProjects(sessions)) paths.add(project.path);
+    }
+    return [...paths];
+  }
+
+  /** The daemon's existing session machinery, as the orchestrator sees it. */
+  private voiceHost(): VoiceHost {
+    return {
+      startSession: async (providerId, cwd, tag) => {
+        // Remembered so the app, which only honours directories this daemon published, can open the session.
+        await this.knownProject(providerId, cwd).catch(() => undefined);
+        const sessionId = await this.startSession(providerId, cwd);
+        this.send({
+          t: "session.started",
+          sessionId,
+          providerId,
+          cwd,
+          requestId: `voice:${tag}`,
+          configOptions: this.configOptions(sessionId),
+          agentSessionId: this.agentSessionId(sessionId),
+        });
+        this.markLive(sessionId);
+        return sessionId;
+      },
+      prompt: async (sessionId, text) => {
+        try {
+          await this.prompt(sessionId, text);
+        } finally {
+          this.send({ t: "session.idle", sessionId, ...this.sessionOrigin(sessionId) });
+        }
+      },
+      cancel: (sessionId) => this.cancel(sessionId),
+      answerPermission: (sessionId, requestId, optionId) =>
+        this.answerPermissionQuietly(sessionId, requestId, optionId),
+      hasSession: (sessionId) => this.sessions.has(sessionId),
+      lastText: (sessionId) => this.sessions.get(sessionId)?.turnText,
+    };
+  }
+
   closeAll() {
     if (this.reaper) {
       clearInterval(this.reaper);
@@ -2017,6 +2113,7 @@ export class Daemon {
       spare.handle.close();
     }
     this.spares.clear();
+    this.voiceReady?.dispose();
   }
 
   private require(sessionId: string): ActiveSession {

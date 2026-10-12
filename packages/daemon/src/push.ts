@@ -23,7 +23,15 @@
  * name and the agent's opening line. Everything else in pew2 stays sealed; this
  * one string does not, and that is the price of an instant notification.
  */
-import { noticeBody, noticeTitle, type NoticeOrigin } from "@pew2/protocol";
+import {
+  noticeBody,
+  noticeTitle,
+  type NoticeOrigin,
+  type wire,
+} from "@pew2/protocol";
+
+type VoiceEvent = wire.VoiceEvent;
+type VoiceCallbackPush = wire.VoiceCallbackPush;
 
 /** Expo's push endpoint. Needs no credentials of ours; EAS holds those. */
 const PUSH_URL = "https://exp.host/--/api/v2/push/send";
@@ -110,9 +118,9 @@ interface ExpoMessage {
   to: string;
   title: string;
   body: string;
-  data: { sessionId: string };
+  data: { sessionId: string } | VoiceCallbackPush;
   sound: "default";
-  categoryId: string;
+  categoryId?: string;
   channelId?: string;
   /**
    * High, which is what makes this instant on Android.
@@ -208,5 +216,64 @@ export async function pushFinishedTurn(
   } catch {
     // Offline desktop, DNS failure, Expo outage. Nothing here is worth
     // interrupting the session that just finished successfully.
+  }
+}
+
+/** One voice callback in Expo's shape. `data` is exactly `VoiceCallbackPush`. */
+export function voiceMessages(registry: PushRegistry, event: VoiceEvent): ExpoMessage[] {
+  const data: VoiceCallbackPush = {
+    type: "voice.callback",
+    eventId: event.eventId,
+    taskId: event.taskId,
+    projectId: event.projectId,
+    class: event.class,
+  };
+  const title =
+    event.class === "approval"
+      ? `${event.projectName}: needs approval`
+      : event.class === "blocked"
+        ? `${event.projectName}: needs you`
+        : event.class === "completed"
+          ? `${event.projectName}: finished`
+          : event.projectName;
+  return registry.list().map((target) => ({
+    to: target.token,
+    title,
+    // Already short and secret-scrubbed by the voice layer; capped again because
+    // this string is readable by Expo, Apple and Google.
+    body: event.text.slice(0, 140),
+    data,
+    sound: "default",
+    // No `categoryId`: the agent-turn category carries an inline reply box
+    // addressed to a session, and a voice callback has none.
+    ...(target.channelId ? { channelId: target.channelId } : null),
+    priority: "high",
+  }));
+}
+
+/**
+ * Push one voice event (approval, blocked, completed). Same contract as
+ * `pushFinishedTurn`: never throws, never retried. Which events deserve a push,
+ * and when, is decided upstream by the batcher; this only delivers.
+ */
+export async function pushVoiceEvent(
+  registry: PushRegistry,
+  event: VoiceEvent,
+  send: typeof fetch = fetch,
+): Promise<void> {
+  if (registry.size === 0) return;
+  const messages = voiceMessages(registry, event);
+  try {
+    const response = await send(PUSH_URL, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(messages),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return;
+    const payload = (await response.json()) as { data?: unknown };
+    applyTickets(registry, messages, payload?.data);
+  } catch {
+    // Offline desktop or Expo outage: the event is still in the voice log.
   }
 }

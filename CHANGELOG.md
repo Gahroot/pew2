@@ -11,6 +11,12 @@ installs them separately, and what an app and a daemon must agree on is
 
 Dates are the day the tag was cut.
 
+## Unreleased
+
+### Added
+
+- **Hands-free voice control (computer side).** Ask for work by voice, queue it, follow up, and approve or deny from your headphones. Tasks run as normal agent sessions and survive a restart honestly: interrupted work is reported as failed, never as done, and risky approvals need a spoken confirmation. Needs `OPENAI_API_KEY` on the computer; without it `pew2 doctor` shows a warning. See docs/VOICE.md.
+
 ## 0.9.14 — 2026-08-08
 
 ### Fixed

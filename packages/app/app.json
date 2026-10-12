@@ -3,7 +3,7 @@
     "name": "pew2",
     "slug": "pew2",
     "version": "1.0.0",
-    "//scheme": "Claims the `pew2://` URL scheme so this app has a stable identity to be opened by. Nothing routes an incoming link yet — pairing is camera-only, and the link it carries is a `ws://` URL, not this scheme — so today this only makes the app addressable rather than adding a way in. That ordering is deliberate: a link that paired on arrival would let any app that can open a URL point this phone at someone else's daemon, so the handler needs a confirmation step designed before it exists, and the scheme has to be registered in a build before any of that can ship.",
+    "//scheme": "Claims the `pew2://` URL scheme so this app has a stable identity to be opened by. The only link routed is pew2://voice (src/voice/deepLink.ts), which opens a voice conversation and can do nothing else. Pairing is still camera-only, and the link it carries is a `ws://` URL, not this scheme: a link that paired on arrival would let any app that can open a URL point this phone at someone else's daemon, so any pairing handler needs a confirmation step designed first.",
     "scheme": "pew2",
     "//runtimeVersion": "Which native binary an over-the-air update may load. `appVersion` ties it to the version above, so an update built against changed native code can never be handed to a build that cannot run it — the failure being a launch loop on a phone with no way back. Actually publishing updates needs `updates.url` from `eas init`, which requires an account this repository does not carry; until then this ships the client without a source.",
     "runtimeVersion": {
@@ -19,7 +19,8 @@
       "bundleIdentifier": "io.github.kenkaiii.pew2",
       "//infoPlist": "Ships verbatim into Info.plist, so no comment keys inside it — Apple reads what is written there. `ITSAppUsesNonExemptEncryption: false` answers the export-compliance question at build time instead of halting every upload to ask it. The answer is honest: this app's own cryptography is the pairing seal in @pew2/protocol (XChaCha20-Poly1305 and HKDF-SHA256 from @noble) over TLS, both exempt under the standard 'uses only encryption exempt from EAR' category. Adding a non-exempt algorithm of our own means revisiting this line, not merely the answer in the console.",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["audio", "remote-notification"]
       }
     },
     "android": {
@@ -68,6 +69,20 @@
       "expo-font",
       "expo-notifications",
       [
+        "@config-plugins/react-native-webrtc",
+        {
+          "//": "Voice conversations use WebRTC for the microphone. The plugin writes both usage strings unconditionally, so both are passed here and kept identical to the strings expo-camera and expo-speech-recognition write: whichever plugin runs last, the Info.plist value is the same. It also adds CAMERA/RECORD_AUDIO and friends on Android.",
+          "cameraPermission": "Used to scan the pairing code shown on your computer, and to take photos you send to your agent.",
+          "microphonePermission": "Used to dictate a message while the mic button is on, and to talk to your coding agents hands-free in a voice conversation."
+        }
+      ],
+      [
+        "./plugins/withVoiceIntent",
+        {
+          "//": "Adds the 'Talk to PEW2' App Intent (Siri, Shortcuts, Action Button) to the app target. It only opens pew2://voice."
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "//": "No photosPermission here on purpose: expo-media-library below writes the same NSPhotoLibraryUsageDescription key and runs later, so a string here would be overwritten and the attach prompt would explain saving instead of attaching. That one string covers both uses."
@@ -76,7 +91,7 @@
       [
         "expo-speech-recognition",
         {
-          "microphonePermission": "Used only to dictate a message, while the mic button is on.",
+          "microphonePermission": "Used to dictate a message while the mic button is on, and to talk to your coding agents hands-free in a voice conversation.",
           "speechRecognitionPermission": "Used only to turn what you dictate into the text of a message."
         }
       ],

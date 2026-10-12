@@ -7,10 +7,12 @@
  * testable.
  */
 import * as SecureStore from "expo-secure-store";
+import { decodeCursor, encodeCursor, type PersistedCursor } from "./voice/voiceStore";
 import { fromCachedProviders, toCachedProviders } from "./providerCache";
 import type { Provider } from "./useDaemon";
 
 const LAST_PROVIDER_KEY = "pew2.lastProviderId";
+const VOICE_CURSOR_KEY = "pew2.voiceCursor";
 const PROVIDERS_KEY = "pew2.providers";
 
 /** The agent last targeted on this device, or null if never chosen. */
@@ -71,5 +73,31 @@ export async function clearCachedProviders(): Promise<void> {
     await SecureStore.deleteItemAsync(PROVIDERS_KEY);
   } catch {
     // Nothing to do — the next machine to answer overwrites it anyway.
+  }
+}
+
+/** The last voice event this phone folded in, so a relaunch asks only for what it missed. */
+export async function loadVoiceCursor(): Promise<PersistedCursor> {
+  try {
+    return decodeCursor(await SecureStore.getItemAsync(VOICE_CURSOR_KEY));
+  } catch {
+    return decodeCursor(null);
+  }
+}
+
+export async function saveVoiceCursor(cursor: PersistedCursor): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(VOICE_CURSOR_KEY, encodeCursor(cursor));
+  } catch {
+    // A lost cursor costs one fuller catch-up, never correctness.
+  }
+}
+
+/** Forget it with the pairing: event ids belong to one machine's history. */
+export async function clearVoiceCursor(): Promise<void> {
+  try {
+    await SecureStore.deleteItemAsync(VOICE_CURSOR_KEY);
+  } catch {
+    // The next machine's snapshot moves the cursor anyway.
   }
 }

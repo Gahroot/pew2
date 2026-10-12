@@ -133,6 +133,14 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
             deviceId: message.deviceId ?? "a device",
             at: Date.now(),
           });
+          // A client that arrives mid-task is told where voice stands, and the
+          // events it missed, without having to ask. Best effort: voice must never
+          // be the reason a hello fails.
+          try {
+            reply(await (await daemon.voice()).state(0));
+          } catch {
+            // Older state on disk or a failing disk; the next voice.sync retries.
+          }
         }
         break;
 
@@ -482,6 +490,34 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
           entries: listing?.entries ?? [],
           refused: listing === undefined,
         });
+        break;
+      }
+
+      // Voice orchestration. One implementation here serves both transports; the
+      // events themselves are broadcast by the service as tasks change, so a
+      // reply only ever answers the asker.
+      case "voice.open": {
+        const voice = await daemon.voice();
+        reply(await voice.open(message));
+        break;
+      }
+
+      case "voice.tool": {
+        // Deduplicated on callId inside the service: a retry gets the stored answer.
+        const voice = await daemon.voice();
+        reply(await voice.tool(message));
+        break;
+      }
+
+      case "voice.close": {
+        const voice = await daemon.voice();
+        await voice.close(message);
+        break;
+      }
+
+      case "voice.sync": {
+        const voice = await daemon.voice();
+        reply(await voice.state(message.since));
         break;
       }
 

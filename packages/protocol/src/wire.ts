@@ -13,6 +13,9 @@
  *  - The relay treats `payload` as opaque. Under E2EE it is a ciphertext blob.
  */
 import { z } from "zod";
+import { VoiceClientMessages, VoiceServerMessages } from "./voice.js";
+
+export * from "./voice.js";
 
 /**
  * Bump only on breaking envelope changes.
@@ -727,6 +730,7 @@ export const ClientMessage = z.discriminatedUnion("t", [
   WorkspaceRequest,
   WorkspacesRequest,
   PushRegister,
+  ...VoiceClientMessages,
 ]);
 
 export const ServerMessage = z.discriminatedUnion("t", [
@@ -744,6 +748,7 @@ export const ServerMessage = z.discriminatedUnion("t", [
   Workspaces,
   DeviceJoined,
   ErrorMessage,
+  ...VoiceServerMessages,
 ]);
 
 export type SetProviderConfig = z.output<typeof SetProviderConfig>;

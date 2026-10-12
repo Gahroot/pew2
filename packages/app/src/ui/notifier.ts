@@ -24,6 +24,7 @@ import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 import type { Notice } from "../notificationPolicy";
 import { duplicatePush } from "../notificationPolicy";
+import { suppressVoicePush, type Presence } from "../voice/voiceNotifications";
 
 /**
  * The conversation currently open, as far as an arriving push is concerned.
@@ -80,7 +81,13 @@ Notifications.setNotificationHandler({
     const data = notification.request.content.data as
       | { sessionId?: unknown; local?: unknown }
       | undefined;
-    const suppressed = duplicatePush({
+    const voiceSuppressed = suppressVoicePush(notification.request.content.data, {
+      ...voicePresence,
+      foreground: true,
+      pushExpected: true,
+      now: Date.now(),
+    });
+    const suppressed = voiceSuppressed || duplicatePush({
       local: data?.local === true,
       sessionId: typeof data?.sessionId === "string" ? data.sessionId : undefined,
       openSessionId: onScreenSessionId,
@@ -96,6 +103,20 @@ Notifications.setNotificationHandler({
     };
   },
 });
+
+/**
+ * What the user is hearing or seeing of voice, told by `useVoice`. Judged on
+ * arrival of a `voice.callback` push, which only the phone can do.
+ */
+let voicePresence: Omit<Presence, "now" | "foreground" | "pushExpected"> = {
+  voiceActive: false,
+  voiceSheetOpen: false,
+  heardEventId: 0,
+};
+
+export function setVoicePresence(next: typeof voicePresence): void {
+  voicePresence = next;
+}
 
 /** Android requires a channel before anything is delivered. */
 const CHANNEL = "agent-turns";

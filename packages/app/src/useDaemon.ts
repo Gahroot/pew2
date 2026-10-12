@@ -537,6 +537,12 @@ export interface PushAddress {
 }
 
 interface DaemonOptions {
+  /**
+   * Every decoded `voice.*` message, and `unknown_message` errors (an older
+   * daemon answering `voice.open`). Routed out whole: voice state lives in
+   * `ui/useVoice.ts`, not in this file.
+   */
+  onVoiceMessage?: (message: any) => void;
   /** Called once per finished turn, for any session — not just the open one. */
   onTurnFinished?: (turn: TurnFinished) => void;
   /**
@@ -1148,6 +1154,11 @@ export function useDaemon(
         // useful to show and nothing safe to act on.
         if (message === undefined) return;
 
+        if (typeof message.t === "string" && message.t.startsWith("voice.")) {
+          optionsRef.current.onVoiceMessage?.(message);
+          return;
+        }
+
         // Only authenticated, visible prose may wait. Control/replay/background
         // frames flush before any notification or state transition below.
         const update = message.payload?.update;
@@ -1598,6 +1609,7 @@ export function useDaemon(
         // safe read: the alternative is a set that never empties, so choosing
         // that project again would be ignored for the life of the socket.
         if (message.t === "error" && message.code === "unknown_message") {
+          optionsRef.current.onVoiceMessage?.(message);
           pendingProjectSessions.current.clear();
         }
         // A refused push token, for any of the three reasons it can be refused:
@@ -2925,6 +2937,8 @@ export function useDaemon(
     ...actions,
     resumeNow,
     setForeground,
+    /** Sends one sealed message; false when not connected. Used by the voice hook. */
+    send: post,
     // Exported so the UI names the same agent the composer targets: the drawer
     // and top bar must not show Claude Code while a prompt would go elsewhere.
     effectiveProviderId,
