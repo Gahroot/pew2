@@ -62,6 +62,7 @@ import { pickFiles, pickPhotos, takePhoto } from "./src/ui/attachmentPicker";
 import { useDictation } from "./src/ui/useDictation";
 import { ApprovalSheet } from "./src/ui/ApprovalSheet";
 import { VoiceSheet } from "./src/ui/VoiceSheet";
+import { ProjectDashboard } from "./src/ui/ProjectDashboard";
 import { useVoice } from "./src/ui/useVoice";
 import { clearVoiceCursor } from "./src/preferences";
 import { ThoughtSheet } from "./src/ui/ThoughtSheet";
@@ -567,6 +568,7 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
   const [picker, setPicker] = useState<"model" | "mode" | null>(null);
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [newChatOpen, setNewChatOpen] = useState(false);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
   // The reasoning currently being read, if any. Held here rather than per turn
   // so the sheet lives outside the recycling list — a cell scrolled off screen
   // must not take the sheet down with it.
@@ -1332,6 +1334,9 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
         </Text>
 
         <View style={styles.navAction}>
+        <CircleButton label="Projects" onPress={() => setDashboardOpen(true)}>
+          <Ionicons name="grid-outline" size={18} color={theme.color.text} />
+        </CircleButton>
         <CircleButton label="Voice" onPress={voice.open}>
           <Ionicons name="mic-outline" size={18} color={theme.color.text} />
         </CircleButton>
@@ -1576,10 +1581,13 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
       {/* Last of every overlay on purpose. All the sheets share one zIndex, so
           paint order is sibling order — and an approval the agent is blocked on
           must sit above anything the user happened to have open. */}
+      <ProjectDashboard visible={dashboardOpen} store={voice.view.store} onClose={() => setDashboardOpen(false)} />
       <VoiceSheet
         visible={voice.sheetOpen}
         machine={voice.view.machine}
         store={voice.view.store}
+        transcript={voice.view.transcript}
+        onOpenProjects={() => setDashboardOpen(true)}
         held={daemon.sessions.flatMap((session) => session.permission ? [{ sessionId: session.id, requestId: session.permission.requestId, options: session.permission.options }] : [])}
         onClose={voice.close}
         onTalk={voice.talk}

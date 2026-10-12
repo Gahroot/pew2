@@ -118,6 +118,10 @@ export function setVoicePresence(next: typeof voicePresence): void {
   voicePresence = next;
 }
 
+export function getVoicePresence(): typeof voicePresence {
+  return voicePresence;
+}
+
 /** Android requires a channel before anything is delivered. */
 const CHANNEL = "agent-turns";
 

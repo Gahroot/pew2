@@ -232,3 +232,118 @@ export class ConfirmationTokens {
     for (const [token, entry] of this.pending) if (entry.expiresAt < now) this.pending.delete(token);
   }
 }
+
+// ---- spoken approvals ------------------------------------------------------
+
+/** A permission request, judged and worded for the ear. */
+export interface ApprovalAssessment {
+  risk: RiskLevel;
+  /** True only for clearly read-only work inside the project: eligible for auto-approval. */
+  safe: boolean;
+  /** Why it is not safe, in plain words (empty when safe). */
+  concerns: string[];
+  /** One short sentence, no ids or paths, e.g. "Run the tests." */
+  speech: string;
+}
+
+const READ_ONLY_COMMAND =
+  /^\s*(?:ls|dir|cat|type|head|tail|wc|pwd|echo|grep|rg|find|tree|stat|which|where|git\s+(?:status|diff|log|show|branch(?!\s+-[dDmM])|rev-parse|ls-files|blame)|npm\s+(?:ls|list|outdated)|bun\s+(?:pm\s+ls))\b/i;
+const SHELL_CHAINING = /[;&|><`]|\$\(|\n/;
+const NETWORK = /\b(?:curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp|invoke-webrequest|iwr|git\s+(?:push|pull|fetch|clone)|gh\s)|https?:\/\//i;
+const INSTALL = /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|remove|uninstall|update|upgrade)\b|\bpip3?\s+install\b|\bbrew\s+install\b|\bapt(?:-get)?\s+install\b|\bcargo\s+install\b|\bgo\s+install\b|\bnpx\b|\bbunx\b|\bwinget\b|\bchoco\b/i;
+const GIT_PUSH = /\bgit\s+push\b/i;
+const SECRET_FILE = /(?:^|[\\/])(?:\.env[\w.]*|id_rsa|id_ed25519|credentials|\.npmrc|\.netrc)$/i;
+
+function inputPaths(raw: unknown): string[] {
+  if (!raw || typeof raw !== "object") return [];
+  const record = raw as Record<string, unknown>;
+  const out: string[] = [];
+  for (const key of ["file_path", "filePath", "path", "file", "destination", "target", "paths"]) {
+    const v = record[key];
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) for (const x of v) if (typeof x === "string") out.push(x);
+  }
+  return out;
+}
+
+function isAbsolutePath(p: string): boolean {
+  return /^(?:[A-Za-z]:)?[\\/]/.test(p) || p.startsWith("~");
+}
+
+function outsideProject(path: string, cwd: string | undefined): boolean {
+  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(path) || path.startsWith("~")) return true;
+  if (!isAbsolutePath(path)) return false;
+  if (!cwd) return true;
+  const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const p = norm(path);
+  const root = norm(cwd);
+  return !(p === root || p.startsWith(`${root}/`));
+}
+
+/**
+ * Judge and word one permission request. Pure. `safe` is deliberately narrow:
+ * read-only kind or a plain read-only command, nothing touching the network, an
+ * install, a secret file, or a path outside `cwd`. Unknown means not safe.
+ */
+export function assessApproval(input: RiskInput, cwd?: string): ApprovalAssessment {
+  const risk = classifyRisk(input);
+  const kind = input.kind ?? "other";
+  const command = commandText({ ...input, title: undefined });
+  const concerns: string[] = [];
+
+  const paths = inputPaths(input.rawInput);
+  if (paths.some((p) => outsideProject(p, cwd))) concerns.push("touches files outside the project");
+  if (paths.some((p) => SECRET_FILE.test(p))) concerns.push("touches a secrets file");
+  if (kind === "fetch" || NETWORK.test(command)) concerns.push("uses the network");
+  if (INSTALL.test(command)) concerns.push("installs packages");
+  if (GIT_PUSH.test(command)) concerns.push("pushes to a remote");
+  if (risk === "destructive") concerns.push("deletes or discards work");
+  if (risk === "merge") concerns.push("changes git history");
+  if (risk === "deploy") concerns.push("publishes or deploys");
+  if (risk === "edit") concerns.push("changes files");
+
+  let readOnly = false;
+  if (risk === "read") readOnly = true;
+  else if (kind === "execute" && command.trim() && READ_ONLY_COMMAND.test(command) && !SHELL_CHAINING.test(command)) {
+    readOnly = true;
+  } else if (risk === "shell") concerns.push("runs a command");
+  const unique = [...new Set(concerns)];
+  const safe = readOnly && unique.length === 0;
+
+  return { risk, safe, concerns: unique, speech: speakApproval(input, kind, command) };
+}
+
+function speakApproval(input: RiskInput, kind: string, command: string): string {
+  const raw = input.rawInput && typeof input.rawInput === "object" ? (input.rawInput as Record<string, unknown>) : {};
+  const file = inputPaths(raw)[0];
+  const name = file ? basename(file.replace(/\\/g, "/")) : undefined;
+  const cmd = speakable(command, 80);
+  switch (kind) {
+    case "read":
+      return name ? `Read ${name}.` : "Read some files.";
+    case "search":
+      return "Search the project.";
+    case "edit":
+      return name ? `Edit ${name}.` : "Edit a file.";
+    case "move":
+      return name ? `Move ${name}.` : "Move a file.";
+    case "delete":
+      return name ? `Delete ${name}.` : "Delete files.";
+    case "fetch":
+      return "Fetch something from the internet.";
+    case "execute":
+      return cmd ? `Run: ${cmd}` : "Run a command.";
+    default: {
+      const title = speakable(input.title, 90);
+      return title ? `${title.replace(/[.…]+$/, "")}.` : "Do something I can't describe.";
+    }
+  }
+}
+
+/** Per-voice-session approval policy. Default: only clearly read-only requests are auto-approved; everything else is asked. */
+export interface ApprovalPolicy {
+  /** Auto-approve requests assessed as safe. Never applies to risky ones. */
+  autoApproveSafe: boolean;
+}
+
+export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = { autoApproveSafe: true };

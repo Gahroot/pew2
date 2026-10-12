@@ -14,6 +14,8 @@ import {
   DEFAULT_POLICY,
   needsConfirmation,
   needsExplicitApproval,
+  type ApprovalPolicy,
+  DEFAULT_APPROVAL_POLICY,
   speakable,
   type SafetyPolicy,
 } from "./safety.js";
@@ -39,7 +41,7 @@ const def = (
 
 export const VOICE_TOOLS: readonly ToolDef[] = [
   def("list_projects", "List projects the user can name."),
-  def("resolve_project", "Match a spoken project name. If ambiguous, ask the user which.", { query: str("What the user said.") }, ["query"]),
+  def("resolve_project", "Match a spoken project name (partial, misheard or any case is fine). One clear match: use it, don't ask. Ambiguous: ask one short 'did you mean A or B?'.", { query: str("What the user said.") }, ["query"]),
   def(
     "start_task",
     "Start a coding task in a project (queued if the project is busy). Use follow_up for work on an existing task.",
@@ -70,18 +72,28 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
     ["taskId"],
   ),
   def("verify_task", "Mark a completed task verified, only after the user or a check confirmed the result.", { taskId: str("Task id."), note: str("What confirmed it.") }, ["taskId"]),
-  def("pending_approvals", "List approvals the agents are waiting on."),
+  def("pending_approvals", "List approvals the agents are waiting on, each with a plain-words 'say' sentence, a risk and whether it is safe (read-only)."),
+  def(
+    "approve_safe",
+    "Approve every pending request that is clearly read-only and inside the project. Risky ones are left untouched and reported. Use for 'approve all safe ones'.",
+  ),
+  def(
+    "set_approval_policy",
+    "Turn hands-free auto-approval of clearly read-only requests on or off for this voice session. Risky requests are always asked about.",
+    { autoApproveSafe: { type: "boolean" } },
+    ["autoApproveSafe"],
+  ),
   def(
     "answer_approval",
     "Approve or deny an agent's request. Risky approvals (merge, deploy, destructive) return a confirmToken first: ask the user, then call again with confirmToken and userConfirmed true.",
     {
-      taskId: str("Task id."),
-      requestId: str("The requestId from pending_approvals."),
+      taskId: str("Task id. Optional when exactly one approval is pending."),
+      requestId: str("The requestId from pending_approvals. Optional when exactly one approval is pending."),
       decision: { type: "string", enum: ["approve", "deny"] },
       confirmToken: str("Token from the first call."),
       userConfirmed: { type: "boolean", description: "True only if the user just said yes out loud." },
     },
-    ["taskId", "requestId", "decision"],
+    ["decision"],
   ),
   def("recent_events", "Recent events, optionally for one task. Only when the user asks.", {
     taskId: str("Task id."),
@@ -100,11 +112,12 @@ export const TOOL_NAMES: readonly string[] = VOICE_TOOLS.map((t) => t.name);
 
 export const VOICE_INSTRUCTIONS = [
   "You are the voice of pew2, a hands-free controller for coding agents running on the user's computer. You do not write code; agents do. Use your tools for everything.",
-  "Be terse. Confirm each action in one short sentence. No lists unless asked. Never read code, paths or logs aloud.",
+  "Be terse: one short sentence per reply, like 'Sent to billing.' or 'Done, tests passing.' No lists unless asked, no preamble, no repeating what the user said. Do not ask questions you can answer with a tool or a sensible default.",
+  "Never say project ids, task ids, request ids, tokens, file paths, URLs, hashes or code aloud. Use project names and plain words. Summarise tool activity in plain words ('editing the login screen', 'running tests'), never as raw commands.",
   "Never say work is done, merged, deployed or fixed until a tool result says the agent reported it. 'Completed' means the agent says it finished, not that it is verified; say so plainly. If a result says failed or interrupted, say that.",
-  "Name a project the user mentions with resolve_project or start_task. If the result is ambiguous or empty, ask which project; never guess. Existing work gets follow_up, not a new task.",
+  "Projects: pass what the user said to start_task or resolve_project; partial names, different casing and misheard names are matched for you. If one project clearly matches, just proceed without asking. If the result is ambiguous, ask once: 'Did you mean A or B?' naming at most three candidates, then continue with the answer. Never guess between close matches. Existing work gets follow_up, not a new task.",
   "Call task_status before acting on a task you have not checked this session; state changes while you talk.",
-  "For approvals: read the risk and summary, ask the user, and only call answer_approval with their explicit answer. For merge, deploy and destructive actions, and cancelling running work, call once to get a confirmToken, ask 'Are you sure?', and call again with userConfirmed true only after they say yes. Never reuse or invent tokens.",
+  "Approvals: when an agent is waiting, read the 'say' sentence from pending_approvals in plain words and ask 'Approve or deny?'. Safe means read-only; risky means writes outside the project, deletes, network, installs or git push, so name the risk in a few words. Only call answer_approval after an explicit answer. 'Approve all safe ones' means approve_safe; 'stop asking about safe ones' means set_approval_policy. Risky approvals are never auto-approved. For merge, deploy and destructive actions, and cancelling running work, call once to get a confirmToken, ask 'Are you sure?', and call again with userConfirmed true only after they say yes. Never reuse or invent tokens.",
   "Start by briefly stating what changed from the opening context, if anything. Say nothing about what the user already heard.",
   "When the user says they are done or to stop, call end_session, then say a very short goodbye.",
 ].join("\n");
@@ -168,6 +181,8 @@ export interface ToolDeps {
   rememberAlias: (path: string, alias: string) => Promise<void>;
   confirm?: ConfirmationTokens;
   policy?: SafetyPolicy;
+  /** Per-voice-session approval policy; the executor owns one when not given. */
+  approvalPolicy?: { get: () => ApprovalPolicy; set: (p: ApprovalPolicy) => void };
 }
 
 function text(args: Record<string, unknown>, key: string, max = 2000): string | undefined {
@@ -197,6 +212,13 @@ export function taskView(store: VoiceStore, t: StoredTask) {
   };
 }
 
+/** "Did you mean A or B?" for at most three names. */
+export function didYouMean(names: readonly string[]): string {
+  const list = names.slice(0, 3);
+  if (list.length <= 1) return `Did you mean ${list[0] ?? "a different project"}?`;
+  return `Did you mean ${list.slice(0, -1).join(", ")} or ${list[list.length - 1]}?`;
+}
+
 const fail = (error: string): ToolResult => ({ ok: false, output: { error }, error });
 const good = (output: unknown, extra: Partial<ToolResult> = {}): ToolResult => ({ ok: true, output, ...extra });
 
@@ -204,6 +226,22 @@ export class ToolExecutor {
   private readonly inFlight = new Map<string, Promise<ToolResult>>();
   private readonly confirm: ConfirmationTokens;
   private readonly policy: SafetyPolicy;
+  private approvals: ApprovalPolicy = DEFAULT_APPROVAL_POLICY;
+
+  getApprovalPolicy(): ApprovalPolicy {
+    return this.deps.approvalPolicy?.get() ?? this.approvals;
+  }
+
+  private setApprovalPolicy(p: ApprovalPolicy) {
+    if (this.deps.approvalPolicy) this.deps.approvalPolicy.set(p);
+    else this.approvals = p;
+  }
+
+  private approvalView(t: StoredTask) {
+    const id = t.approval?.requestId;
+    const a = id ? this.deps.orchestrator.assessmentFor(t.taskId, id) : undefined;
+    return a ? { say: a.speech, safe: a.safe, ...(a.concerns.length ? { concerns: a.concerns } : null) } : {};
+  }
 
   constructor(private readonly deps: ToolDeps) {
     this.confirm = deps.confirm ?? new ConfirmationTokens();
@@ -266,6 +304,7 @@ export class ToolExecutor {
         const r = resolveProject(query, await this.deps.projects());
         return good({
           ambiguous: r.ambiguous,
+          ...(r.ambiguous && r.candidates.length ? { question: didYouMean(r.candidates.map((c) => c.project.name)) } : null),
           ...(r.best ? { projectId: r.best.projectId, name: r.best.name } : null),
           candidates: r.candidates.map((c) => ({ projectId: c.project.projectId, name: c.project.name, score: Math.round(c.score * 100) / 100 })),
         });
@@ -280,6 +319,7 @@ export class ToolExecutor {
             started: false,
             needsClarification: true,
             reason: r.candidates.length ? "Several projects match." : "No project matches.",
+            ...(r.candidates.length ? { question: didYouMean(r.candidates.map((c) => c.project.name)) } : null),
             candidates: r.candidates.map((c) => ({ projectId: c.project.projectId, name: c.project.name })),
           });
         }
@@ -391,11 +431,45 @@ export class ToolExecutor {
             requestId: t.approval?.requestId,
             risk: t.approval?.risk,
             summary: t.approval?.summary,
+            ...this.approvalView(t),
             needsConfirmation: t.approval ? needsConfirmation(t.approval.risk) : false,
           })),
         });
       }
+      case "approve_safe": {
+        const done: string[] = [];
+        const left: string[] = [];
+        for (const t of orchestrator.pendingApprovals()) {
+          const id = t.approval?.requestId;
+          const a = id ? orchestrator.assessmentFor(t.taskId, id) : undefined;
+          if (!id || !a?.safe) {
+            if (t.approval) left.push(t.approval.summary);
+            continue;
+          }
+          const r = orchestrator.answerApproval(t.taskId, id, "approve");
+          if (r.ok) done.push(t.approval?.summary ?? "a request");
+          else left.push(t.approval?.summary ?? "a request");
+        }
+        return good({
+          approved: done.length,
+          stillAsking: left.length,
+          ...(left.length ? { remaining: left.slice(0, 3) } : null),
+        });
+      }
+      case "set_approval_policy": {
+        if (typeof args.autoApproveSafe !== "boolean") return fail("autoApproveSafe (true or false) is required.");
+        this.setApprovalPolicy({ autoApproveSafe: args.autoApproveSafe });
+        return good({ autoApproveSafe: args.autoApproveSafe, note: "Risky requests are still always asked." });
+      }
       case "answer_approval": {
+        if (!text(args, "taskId", 40) && !text(args, "requestId", 80)) {
+          const open = orchestrator.pendingApprovals();
+          const only = open.length === 1 ? open[0] : undefined;
+          if (!only?.approval) {
+            return fail(open.length ? "Several approvals are pending; say which one." : "Nothing is waiting for approval.");
+          }
+          args = { ...args, taskId: only.taskId, requestId: only.approval.requestId };
+        }
         const t = taskOf();
         if (typeof t === "string") return fail(t);
         const requestId = text(args, "requestId", 80);

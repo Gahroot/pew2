@@ -50,3 +50,9 @@ Approval, blocked/failed and completed events send an Expo push whose data is `V
 ## App
 
 See docs/VOICE-APP.md.
+
+### Spoken responses and hands-free approvals
+
+The instructions ask for one-sentence confirmations ("Sent to billing."), no ids or paths aloud, and one short "Did you mean A or B?" only when project matching is ambiguous (`resolve_project` and `start_task` return a `question`). A clear best match proceeds without asking.
+
+Every permission request is assessed (`assessApproval` in `safety.ts`): a plain-words sentence, the risk tier, and `safe` (read-only and inside the project; no network, install, git push, secrets file, delete or write). `pending_approvals` returns `say`, `safe` and `concerns`. New tools: `approve_safe` (approve every pending safe request, leave risky ones) and `set_approval_policy{autoApproveSafe}` (per voice session, default on: safe requests are auto-approved while a session is open; risky ones are always asked). `answer_approval` may omit ids when exactly one approval is pending. All answers go through `Orchestrator.answerApproval`, after the resolver is registered. The voice wire protocol is unchanged.

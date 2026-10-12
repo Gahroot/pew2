@@ -47,3 +47,13 @@ Prebuild picks up `modules/pew2-voice` (autolinking) and runs `plugins/withVoice
 - Local notifications for voice events (`voiceNotifications.offerEvent`) are written and tested but not yet fed from `useVoice`; only push suppression is live.
 - Card Approve/Deny use the ACP permission the phone already holds; otherwise the card asks the user to decide by voice.
 - `src/ui/statusRow.test.ts` fails on Windows (path handling in the test); unrelated to voice.
+
+## Notifications, audio and connectivity (hardening pass)
+
+- **Quiet hours** (`voice/quietHours.ts`, persisted by `preferences.ts` `loadQuietHours`/`saveQuietHours`, additive: absent = off). Completions are held; decisions/blockers still show a banner unless `strict`. There is **no settings UI yet** (VoiceSheet/App are owned elsewhere); call `saveQuietHours` + `setQuietHours` (`ui/voiceAlerts.ts`).
+- **Tiers:** approval/blocked interrupt; completed batches into one digest (20s quiet / 90s max); informational is silent. Live events go through `ui/voiceAlerts.ts` (called from `voiceController` on `voice.event`). Never notified: already heard, voice live, sheet open, just-ended (30s).
+- **Cues, not audio:** `audioPolicy.cueFor` — with no live conversation a low-priority event is a haptic at most; it never starts or ducks audio.
+- **Lock screen:** Talk/Review open the app and now require device unlock. Approve/Deny buttons were deliberately **not** added: a decision from a locked phone breaks the safety rule above; tap-through starts a fresh voice session focused on the event.
+- **Audio session:** adds `duckOthers` (music ducks, podcasts pause), deactivate retries once if I/O is still running, `mediaServicesWereReset` rebuilds, `appWasSuspended` is not treated as an interruption.
+- **Connectivity:** `voice/connectivity.ts` + `voiceController.setOnline`. Offline holds the conversation up to 45s (no retry budget spent), says "I lost connection" only if audio is live, and on return reconnects, re-opens and syncs from the cursor.
+- Swift changes are uncompiled; tests for the new pure modules are written but not run.

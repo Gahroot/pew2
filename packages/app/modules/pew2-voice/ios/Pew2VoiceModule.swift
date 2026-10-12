@@ -23,6 +23,7 @@ public class Pew2VoiceModule: Module {
         case "allowBluetooth": opts.insert(.allowBluetooth)
         case "allowBluetoothA2DP": opts.insert(.allowBluetoothA2DP)
         case "defaultToSpeaker": opts.insert(.defaultToSpeaker)
+        case "duckOthers": opts.insert(.duckOthers)
         case "interruptSpokenAudioAndMixWithOthers": opts.insert(.interruptSpokenAudioAndMixWithOthers)
         default: break
         }
@@ -37,7 +38,15 @@ public class Pew2VoiceModule: Module {
     AsyncFunction("deactivate") { () throws in
       self.stopObserving()
       self.unregisterRemoteCommands()
-      try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+      // setActive(false) fails while audio I/O is still running (WebRTC tears down
+      // asynchronously). Retry once shortly after; others only resume once this succeeds.
+      let session = AVAudioSession.sharedInstance()
+      do {
+        try session.setActive(false, options: .notifyOthersOnDeactivation)
+      } catch {
+        try await Task.sleep(nanoseconds: 250_000_000)
+        try session.setActive(false, options: .notifyOthersOnDeactivation)
+      }
     }
 
     Function("currentRoute") { () -> [String: String] in
@@ -71,6 +80,15 @@ public class Pew2VoiceModule: Module {
                        name: AVAudioSession.interruptionNotification, object: nil)
     center.addObserver(self, selector: #selector(onRouteChange(_:)),
                        name: AVAudioSession.routeChangeNotification, object: nil)
+    center.addObserver(self, selector: #selector(onMediaReset(_:)),
+                       name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+  }
+
+  /// The audio daemon restarted: the session is gone. Treat as an interruption
+  /// that is not resumable in place so JS rebuilds the conversation.
+  @objc private func onMediaReset(_ note: Notification) {
+    sendEvent("interruption", ["phase": "began", "shouldResume": false])
+    sendEvent("interruption", ["phase": "ended", "shouldResume": true])
   }
 
   private func stopObserving() {
@@ -83,6 +101,11 @@ public class Pew2VoiceModule: Module {
     guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
           let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
     if type == .began {
+      // iOS 14.5+: the system deactivated us because the app was suspended, not
+      // because something took the audio. Not a real interruption.
+      if #available(iOS 14.5, *),
+         let why = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt,
+         AVAudioSession.InterruptionReason(rawValue: why) == .appWasSuspended { return }
       sendEvent("interruption", ["phase": "began", "shouldResume": false])
     } else {
       let optRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0

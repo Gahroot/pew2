@@ -19,6 +19,7 @@ import {
   resolveApiKey,
 } from "./mint.js";
 import { addAlias, buildRegistry, readAliases } from "./registry.js";
+import { DEFAULT_APPROVAL_POLICY, type ApprovalPolicy } from "./safety.js";
 import { toVoiceTask, VoiceStore, type StoredTask } from "./store.js";
 import { realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS } from "./tools.js";
 import type { VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
@@ -60,6 +61,8 @@ export class VoiceService {
   private projectCache: { at: number; list: VoiceProject[] } | undefined;
   private timer?: ReturnType<typeof setInterval>;
   private readonly now: () => number;
+  /** Applies while a voice session is open; reset to the default each time one opens. */
+  private approvalPolicy: ApprovalPolicy = DEFAULT_APPROVAL_POLICY;
 
   private constructor(
     private readonly deps: VoiceServiceDeps,
@@ -74,11 +77,14 @@ export class VoiceService {
       projects: () => this.projects(true),
       usableProviders: deps.usableProviders,
       lastUsedProvider: deps.lastUsedProvider,
+      approvalPolicy: { get: () => this.approvalPolicy, set: (p) => void (this.approvalPolicy = p) },
       rememberAlias: async (path, alias) => {
         await addAlias(deps.dataDir, path, alias);
         this.projectCache = undefined;
       },
     });
+    // Hands-free auto-approval only runs while someone is on a voice session.
+    this.orchestrator.autoApprove = () => this.open_.size > 0 && this.approvalPolicy.autoApproveSafe;
     store.subscribe((event, task) => this.onEvent(event, task));
   }
 
@@ -174,6 +180,7 @@ export class VoiceService {
     if (!minted.ok) {
       return { t: "voice.unavailable", voiceSessionId: request.voiceSessionId, code: minted.code, message: minted.message };
     }
+    if (this.open_.size === 0) this.approvalPolicy = DEFAULT_APPROVAL_POLICY;
     this.open_.add(request.voiceSessionId);
     return {
       t: "voice.ready",

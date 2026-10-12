@@ -26,7 +26,8 @@ let registered: Promise<void> | undefined;
 /** Adds the Talk / Review buttons. Both open the app. */
 export function registerVoiceCategories(): Promise<void> {
   registered ??= (async () => {
-    const open = { opensAppToForeground: true } as const;
+    // Authentication required: Talk/Review never act on a locked phone.
+    const open = { opensAppToForeground: true, isAuthenticationRequired: true } as const;
     await Notifications.setNotificationCategoryAsync(VOICE_CATEGORY, [
       { identifier: ACTION_TALK, buttonTitle: "Talk", options: open },
     ]);

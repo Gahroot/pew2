@@ -5,6 +5,7 @@
  *
  * All decisions are in `../voice/*`; this file only wires them. UNTESTED ON DEVICE.
  */
+import { appendLine, type TranscriptLine } from "../voice/transcript";
 import { createRealtimeSession, type RealtimeSession } from "../voice/realtime";
 import {
   initialState,
@@ -16,11 +17,14 @@ import {
 } from "../voice/voiceMachine";
 import { emptyStore, reduce, type StoreAction, type VoiceStore } from "../voice/voiceStore";
 import { activateAudioSession, deactivateAudioSession } from "./audioSession";
+import { LOST_CONNECTION_LINE, onNetworkLost, onNetworkRestored } from "../voice/connectivity";
+import { offerLiveEvent } from "./voiceAlerts";
 import { connectRealtime, type RealtimeTransport } from "./realtimeTransport";
 
 export interface VoiceView {
   machine: MachineState;
   store: VoiceStore;
+  transcript: TranscriptLine[];
 }
 
 export interface VoiceDeps {
@@ -44,6 +48,7 @@ type Message = Record<string, any>;
 export function createVoiceController(deps: VoiceDeps) {
   let machine: MachineState = initialState;
   let store: VoiceStore = emptyStore;
+  let transcript: TranscriptLine[] = [];
   let ready: Ready | undefined;
   let transport: RealtimeTransport | undefined;
   let realtime: RealtimeSession | undefined;
@@ -52,8 +57,10 @@ export function createVoiceController(deps: VoiceDeps) {
   let openTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let generation = 0;
+  let holding = false;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const publish = () => deps.onChange({ machine, store });
+  const publish = () => deps.onChange({ machine, store, transcript });
 
   const newId = () => `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -77,6 +84,8 @@ export function createVoiceController(deps: VoiceDeps) {
     transport = undefined;
     realtime = undefined;
     ready = undefined;
+    holding = false;
+    clearTimeout(holdTimer);
   }
 
   function run(effect: Effect): void {
@@ -177,6 +186,10 @@ export function createVoiceController(deps: VoiceDeps) {
         onModelSpeaking: () => dispatch({ type: "modelSpeaking" }),
         onModelDone: () => dispatch({ type: "modelDone" }),
         onEndSession: () => dispatch({ type: "endSession" }),
+        onTranscript: (role, text) => {
+          transcript = appendLine(transcript, role, text);
+          publish();
+        },
         onError: (_message, fatal) => fatal && dispatch({ type: "transportDown" }),
         onToolCall: (call) => {
           const id = machine.voiceSessionId;
@@ -200,9 +213,10 @@ export function createVoiceController(deps: VoiceDeps) {
   }
 
   return {
-    view: (): VoiceView => ({ machine, store }),
+    view: (): VoiceView => ({ machine, store, transcript }),
 
     start(focus: Focus): void {
+      transcript = [];
       dispatch({ type: "activate", voiceSessionId: newId(), focus });
     },
     end(): void {
@@ -222,8 +236,38 @@ export function createVoiceController(deps: VoiceDeps) {
     clear(): void {
       teardown();
       machine = initialState;
+      transcript = [];
       store = reduce(store, { type: "clear" });
       publish();
+    },
+    /**
+     * Network up/down. Offline holds the conversation (no retry budget burnt)
+     * and says so once if audio is live; coming back reconnects with a fresh
+     * budget and catches up from the cursor. A long outage falls through to the
+     * machine's own bounded failure.
+     */
+    setOnline(online: boolean): void {
+      if (!online) {
+        const d = onNetworkLost(machine.phase, holding);
+        if (d.kind !== "hold") return;
+        holding = true;
+        if (d.announce) {
+          transport?.send({ type: "response.create", response: { instructions: LOST_CONNECTION_LINE } });
+        }
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(() => {
+          holding = false;
+          dispatch({ type: "networkLost" });
+        }, d.graceMs);
+        return;
+      }
+      const d = onNetworkRestored(holding, machine.phase);
+      holding = false;
+      clearTimeout(holdTimer);
+      if (d.kind === "resume") {
+        dispatch({ type: "networkLost" }); // rebuilds the Realtime leg: fresh voice.open, fresh budget
+        deps.send({ t: "voice.sync", since: store.cursor });
+      }
     },
     /** Asks the daemon for what this phone missed. */
     sync(): void {
@@ -261,6 +305,7 @@ export function createVoiceController(deps: VoiceDeps) {
           });
           return;
         case "voice.event":
+          offerLiveEvent(message.event);
           fold({ type: "event", event: message.event, task: message.task });
           return;
         case "voice.state":

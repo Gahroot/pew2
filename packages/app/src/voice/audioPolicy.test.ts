@@ -56,3 +56,20 @@ test("routeLabel", () => {
   expect(routeLabel(airpods)).toBe("Headset");
   expect(routeLabel(undefined)).toBe("");
 });
+
+import { cueFor, shouldResumeAfterInterruption } from "./audioPolicy";
+import { describe as d2, expect as e2, test as t2 } from "bun:test";
+
+d2("cues", () => {
+  t2("low priority never takes the audio", () => {
+    e2(cueFor("batch", { audioLive: false, foreground: true, quiet: false })).toBe("haptic");
+    e2(cueFor("batch", { audioLive: false, foreground: false, quiet: false })).toBe("none");
+    e2(cueFor("silent", { audioLive: true, foreground: true, quiet: false })).toBe("none");
+    e2(cueFor("interrupt", { audioLive: true, foreground: true, quiet: true })).toBe("speak");
+    e2(cueFor("interrupt", { audioLive: false, foreground: true, quiet: true })).toBe("none");
+  });
+  t2("session ducks and interrupts spoken audio", () => {
+    e2(voiceSessionConfig().options).toContain("duckOthers");
+    e2(shouldResumeAfterInterruption(true, true)).toBe(false);
+  });
+});

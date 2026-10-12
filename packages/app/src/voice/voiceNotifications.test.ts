@@ -153,3 +153,15 @@ describe("suppressVoicePush", () => {
     expect(suppressVoicePush({ sessionId: "s" }, { ...away, voiceActive: true })).toBe(false);
   });
 });
+
+describe("quiet hours", () => {
+  const quiet = { ...away, quiet: true, quietAllowsUrgent: true };
+  test("completions are held, decisions still show", () => {
+    const done = event(1, { class: "completed" });
+    expect(offerEvent(emptyBatch, done, quiet).state.pending).toEqual([]);
+    expect(offerEvent(emptyBatch, event(2, { class: "approval" }), quiet).show).toBeDefined();
+  });
+  test("strict silences decisions too", () => {
+    expect(offerEvent(emptyBatch, event(3, { class: "blocked" }), { ...quiet, quietAllowsUrgent: false }).show).toBeUndefined();
+  });
+});

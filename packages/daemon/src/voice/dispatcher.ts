@@ -12,7 +12,8 @@
  */
 import { humanError } from "../errors.js";
 import {
-  classifyRisk,
+  assessApproval,
+  type ApprovalAssessment,
   describeTool,
   pickOption,
   speakable,
@@ -44,6 +45,7 @@ export interface OrchestratorOptions {
 interface Pending {
   params: unknown;
   options: PermissionOption[];
+  assessment: ApprovalAssessment;
 }
 
 export type Outcome<T = StoredTask> = { ok: true; value: T } | { ok: false; error: string };
@@ -259,6 +261,14 @@ export class Orchestrator {
     });
   }
 
+  /** How an open request was judged and worded; undefined once answered. */
+  assessmentFor(taskId: string, requestId: string): ApprovalAssessment | undefined {
+    return this.permissions.get(taskId)?.get(requestId)?.assessment;
+  }
+
+  /** Decides whether a safe request is answered without asking. Set by the voice service. */
+  autoApprove: (() => boolean) | undefined;
+
   pendingApprovals(): StoredTask[] {
     return this.store.tasks().filter((t) => t.state === "blocked" && t.approval);
   }
@@ -448,10 +458,11 @@ export class Orchestrator {
       options?: PermissionOption[];
     } | null;
     const tool = p?.toolCall ?? {};
-    const risk = classifyRisk(tool);
-    const summary = describeTool(tool);
+    const assessment = assessApproval(tool, task.cwd);
+    const risk = assessment.risk;
+    const summary = assessment.speech || describeTool(tool);
     const bucket = this.permissions.get(task.taskId) ?? new Map<string, Pending>();
-    bucket.set(requestId, { params, options: Array.isArray(p?.options) ? p.options : [] });
+    bucket.set(requestId, { params, options: Array.isArray(p?.options) ? p.options : [], assessment });
     this.permissions.set(task.taskId, bucket);
     this.store.transition(
       task.taskId,
@@ -460,6 +471,11 @@ export class Orchestrator {
       `Needs approval (${risk}): ${summary}`,
       { approval: { requestId, risk, summary } },
     );
+    // Resolver is registered and the UI told above; only now may it be answered.
+    if (assessment.safe && this.autoApprove?.()) {
+      const r = this.answerApproval(task.taskId, requestId, "approve");
+      if (r.ok) this.store.patch(r.value.taskId, { activity: `auto-approved: ${summary}` });
+    }
   }
 
   private async safeCancel(sessionId: string | undefined) {

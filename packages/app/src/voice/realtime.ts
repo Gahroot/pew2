@@ -47,6 +47,8 @@ export interface RealtimeHandlers {
   /** A result carried `endSession`. The machine waits for the model to stop speaking. */
   onEndSession(): void;
   onError(message: string, fatal: boolean): void;
+  /** A finished utterance, for the on-screen transcript only. */
+  onTranscript?(role: "user" | "assistant", text: string): void;
 }
 
 export interface RealtimeSessionOptions {
@@ -187,6 +189,13 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
         return;
       case "input_audio_buffer.speech_started":
         handlers.onUserSpeech();
+        return;
+      case "conversation.item.input_audio_transcription.completed":
+        if (typeof message.transcript === "string") handlers.onTranscript?.("user", message.transcript);
+        return;
+      case "response.output_audio_transcript.done":
+      case "response.audio_transcript.done":
+        if (typeof message.transcript === "string") handlers.onTranscript?.("assistant", message.transcript);
         return;
       case "response.created":
         responseActive = true;

@@ -21,7 +21,7 @@ interface Options {
 }
 
 export function useVoice({ send, online }: Options) {
-  const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore });
+  const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore, transcript: [] });
   const [sheetOpen, setSheetOpen] = useState(false);
   // Bumped on every activation: with the sheet already open, setSheetOpen(true) changes nothing, so the queued request would never run.
   const [activationTick, setActivationTick] = useState(0);
@@ -76,7 +76,7 @@ export function useVoice({ send, online }: Options) {
     if (online && view.store.needsSync) get().sync();
   }, [online, view.store.needsSync]);
   useEffect(() => {
-    if (!online && isOpen(view.machine.phase)) get().dispatch({ type: "networkLost" });
+    get().setOnline(online);
   }, [online]);
 
   // Deep links, cold and warm.

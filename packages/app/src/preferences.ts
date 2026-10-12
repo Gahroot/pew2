@@ -8,11 +8,13 @@
  */
 import * as SecureStore from "expo-secure-store";
 import { decodeCursor, encodeCursor, type PersistedCursor } from "./voice/voiceStore";
+import { decodeQuietHours, encodeQuietHours, type QuietHours } from "./voice/quietHours";
 import { fromCachedProviders, toCachedProviders } from "./providerCache";
 import type { Provider } from "./useDaemon";
 
 const LAST_PROVIDER_KEY = "pew2.lastProviderId";
 const VOICE_CURSOR_KEY = "pew2.voiceCursor";
+const QUIET_HOURS_KEY = "pew2.voice.quietHours";
 const PROVIDERS_KEY = "pew2.providers";
 
 /** The agent last targeted on this device, or null if never chosen. */
@@ -99,5 +101,22 @@ export async function clearVoiceCursor(): Promise<void> {
     await SecureStore.deleteItemAsync(VOICE_CURSOR_KEY);
   } catch {
     // The next machine's snapshot moves the cursor anyway.
+  }
+}
+
+/** Do-not-disturb for voice notifications. Absent (older install) means off. */
+export async function loadQuietHours(): Promise<QuietHours> {
+  try {
+    return decodeQuietHours(await SecureStore.getItemAsync(QUIET_HOURS_KEY));
+  } catch {
+    return decodeQuietHours(null);
+  }
+}
+
+export async function saveQuietHours(q: QuietHours): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(QUIET_HOURS_KEY, encodeQuietHours(q));
+  } catch {
+    // The setting reverts to off; nothing is lost beyond a preference.
   }
 }

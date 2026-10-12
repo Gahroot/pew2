@@ -32,7 +32,8 @@ export type AudioOption =
   | "allowBluetooth" // HFP: lets AirPods supply the microphone
   | "allowBluetoothA2DP"
   | "defaultToSpeaker" // only applies when no headset is connected
-  | "interruptSpokenAudioAndMixWithOthers"; // ducks music, pauses podcasts/audiobooks
+  | "duckOthers" // lowers music while we talk (restored by notifyOthersOnDeactivation)
+  | "interruptSpokenAudioAndMixWithOthers"; // pauses podcasts/audiobooks
 
 export function voiceSessionConfig(): AudioSessionConfig {
   return {
@@ -44,6 +45,7 @@ export function voiceSessionConfig(): AudioSessionConfig {
       "allowBluetooth",
       "allowBluetoothA2DP",
       "defaultToSpeaker",
+      "duckOthers",
       "interruptSpokenAudioAndMixWithOthers",
     ],
   };
@@ -128,4 +130,28 @@ export function routeLabel(route: AudioRoute | undefined): string {
     default:
       return "";
   }
+}
+
+/**
+ * How to announce an event without taking over the audio. The voice session
+ * ducks music and pauses podcasts, which is too much for "a build finished":
+ * low-priority events get a haptic (or nothing); only a decision or a blocker
+ * justifies speaking, and only if a conversation is already live.
+ */
+export type Cue = "speak" | "haptic" | "none";
+
+export function cueFor(
+  tier: "interrupt" | "batch" | "silent",
+  ctx: { audioLive: boolean; foreground: boolean; quiet: boolean },
+): Cue {
+  if (ctx.audioLive) return tier === "silent" ? "none" : "speak"; // already talking: no extra interruption
+  if (ctx.quiet) return "none";
+  if (tier === "interrupt") return ctx.foreground ? "haptic" : "none"; // backgrounded: the notification does it
+  if (tier === "batch") return ctx.foreground ? "haptic" : "none";
+  return "none";
+}
+
+/** A route that carries a session we should not restart on our own (call audio, CarPlay etc. aside). */
+export function shouldResumeAfterInterruption(shouldResume: boolean, wasSuspendedByApp: boolean): boolean {
+  return shouldResume && !wasSuspendedByApp;
 }

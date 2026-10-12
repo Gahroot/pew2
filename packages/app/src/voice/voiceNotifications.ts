@@ -85,6 +85,10 @@ export interface Presence {
   voiceEndedAt?: number;
   /** The daemon has somewhere to push; the push covers a backgrounded app. */
   pushExpected: boolean;
+  /** Quiet hours are on right now (see quietHours.ts). Absent = not quiet. */
+  quiet?: boolean;
+  /** With quiet hours on, urgent events still show (unless the user chose strict). */
+  quietAllowsUrgent?: boolean;
   now: number;
 }
 
@@ -180,6 +184,7 @@ export function alreadyHeard(event: VoiceEvent, presence: Presence): boolean {
  * open on them.
  */
 export function localRouteOpen(event: VoiceEvent, presence: Presence): boolean {
+  if (presence.quiet && !(presence.quietAllowsUrgent !== false && isUrgent(event.class))) return false;
   if (!presence.foreground) return !presence.pushExpected;
   if (presence.voiceSheetOpen) return false;
   return isUrgent(event.class);
