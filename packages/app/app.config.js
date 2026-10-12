@@ -39,8 +39,10 @@ module.exports = () => {
   const owner = process.env.EAS_OWNER ?? local.owner;
   const projectId = process.env.EAS_PROJECT_ID ?? local.projectId;
 
+  const iosBundleId = process.env.IOS_BUNDLE_ID;
   return {
     ...expo,
+    ...(iosBundleId ? { ios: { ...expo.ios, bundleIdentifier: iosBundleId } } : {}),
     ...(owner ? { owner } : {}),
     ...(projectId
       ? { extra: { ...expo.extra, eas: { ...expo.extra?.eas, projectId } } }

@@ -11,6 +11,7 @@
       }
     },
     "device": {
+      "env": { "IOS_BUNDLE_ID": "com.prestyj.pew2" },
       "distribution": "internal",
       "ios": {
         "simulator": false
