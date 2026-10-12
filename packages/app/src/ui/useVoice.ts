@@ -23,6 +23,8 @@ interface Options {
 export function useVoice({ send, online }: Options) {
   const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore });
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Bumped on every activation: with the sheet already open, setSheetOpen(true) changes nothing, so the queued request would never run.
+  const [activationTick, setActivationTick] = useState(0);
   const sendRef = useRef(send);
   sendRef.current = send;
   const controller = useRef<VoiceController | null>(null);
@@ -44,6 +46,7 @@ export function useVoice({ send, online }: Options) {
   const activate = useCallback((activation: VoiceActivation) => {
     pending.current = activation;
     setSheetOpen(true);
+    setActivationTick((t) => t + 1);
   }, []);
 
   // Runs a queued activation once the daemon is reachable: a cold-start link
@@ -53,7 +56,7 @@ export function useVoice({ send, online }: Options) {
     if (!next || !online) return;
     pending.current = undefined;
     get().start(next);
-  }, [online, sheetOpen]);
+  }, [online, sheetOpen, activationTick]);
 
   // Cursor: restore once, persist on change.
   useEffect(() => {
