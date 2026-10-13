@@ -32,7 +32,7 @@
  * what the platform spends too.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Dimensions, Keyboard, Pressable, StyleSheet, View } from "react-native";
+import { Dimensions, Keyboard, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   Easing,
@@ -71,6 +71,12 @@ interface SheetProps {
   onBack?: () => void;
   /** Accessible name for the scrim and close button. */
   dismissLabel?: string;
+  /**
+   * Fills the screen below the status bar instead of hugging its content.
+   * For a sheet that is a place rather than a prompt (the voice screen): its
+   * body is laid out with `flex: 1`, so it scrolls and pins a footer itself.
+   */
+  tall?: boolean;
   children: ReactNode;
 }
 
@@ -128,8 +134,9 @@ const INSTANT = { duration: 0 } as const;
  */
 const OFF_SCREEN = Dimensions.get("window").height;
 
-function SheetView({ visible, title, onClose, onBack, dismissLabel, children }: SheetProps) {
+function SheetView({ visible, title, onClose, onBack, dismissLabel, tall = false, children }: SheetProps) {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
 
   // Present in the tree, which outlasts `visible` by exactly one closing
@@ -298,6 +305,9 @@ function SheetView({ visible, title, onClose, onBack, dismissLabel, children }: 
           // so the content clears the indicator while the surface still
           // reaches the physical edge.
           { paddingBottom: insets.bottom + theme.space(3) },
+          // A fixed height leaves a sliver of the conversation above the card,
+          // so it still reads as a sheet that can be pulled down.
+          tall ? { height: windowHeight - insets.top - theme.space(2) } : null,
           cardStyle,
         ]}
       >

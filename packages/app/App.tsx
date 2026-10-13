@@ -1581,7 +1581,6 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
       {/* Last of every overlay on purpose. All the sheets share one zIndex, so
           paint order is sibling order — and an approval the agent is blocked on
           must sit above anything the user happened to have open. */}
-      <ProjectDashboard visible={dashboardOpen} store={voice.view.store} onClose={() => setDashboardOpen(false)} />
       <VoiceSheet
         visible={voice.sheetOpen}
         machine={voice.view.machine}
@@ -1597,6 +1596,10 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
           else daemon.send({ t: "session.permission", sessionId, requestId, optionId });
         }}
       />
+
+      {/* After the voice sheet, not before: it opens from that sheet's Projects
+          button, and a sheet earlier in the tree paints underneath it. */}
+      <ProjectDashboard visible={dashboardOpen} store={voice.view.store} onClose={() => setDashboardOpen(false)} />
 
       <ApprovalSheet permission={daemon.permission} onAnswer={answerPermission} />
 
