@@ -8,6 +8,11 @@ import MediaPlayer
 public class Pew2VoiceModule: Module {
   private var observing = false
   private var remoteTargets: [Any] = []
+  /// What `activate` asked for. WebRTC's audio unit re-applies its own default
+  /// configuration (`.allowBluetooth` only) when the call's audio starts, which
+  /// drops `.defaultToSpeaker` and sends the voice to the earpiece. Kept so the
+  /// route-change observer can put it back.
+  private var desiredOptions: AVAudioSession.CategoryOptions?
 
   public func definition() -> ModuleDefinition {
     Name("Pew2Voice")
@@ -28,6 +33,7 @@ public class Pew2VoiceModule: Module {
         default: break
         }
       }
+      self.desiredOptions = opts
       try session.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
       try session.setActive(true)
       self.startObserving()
@@ -36,6 +42,7 @@ public class Pew2VoiceModule: Module {
 
     /// Releases the session so Music/Podcasts resume.
     AsyncFunction("deactivate") { () async throws in
+      self.desiredOptions = nil
       self.stopObserving()
       self.unregisterRemoteCommands()
       // setActive(false) fails while audio I/O is still running (WebRTC tears down
@@ -135,6 +142,18 @@ public class Pew2VoiceModule: Module {
       body["previousInput"] = p["input"]
     }
     sendEvent("routeChange", body)
+    if reason == "categoryChange" { DispatchQueue.main.async { self.reassertCategory() } }
+  }
+
+  /// Someone else (WebRTC) rewrote the category options mid-conversation.
+  /// Compare-before-set, so our own setCategory (which also posts
+  /// categoryChange) is a no-op the second time round and cannot loop.
+  /// `.defaultToSpeaker` still yields to a connected headset.
+  private func reassertCategory() {
+    guard observing, let opts = desiredOptions else { return }
+    let session = AVAudioSession.sharedInstance()
+    guard session.category != .playAndRecord || !session.categoryOptions.isSuperset(of: opts) else { return }
+    try? session.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
   }
 
   /// While a conversation is live, an AirPods stem press / headset button
