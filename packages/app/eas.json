@@ -24,6 +24,11 @@
       }
     },
     "production": {
+      "env": {
+        "IOS_BUNDLE_ID": "com.prestyj.pew2",
+        "EAS_OWNER": "gahroot",
+        "EAS_PROJECT_ID": "81086e2f-4386-48f1-98d0-93d046fcbc59"
+      },
       "distribution": "store",
       "autoIncrement": true,
       "ios": {

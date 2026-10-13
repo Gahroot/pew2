@@ -76,6 +76,7 @@
           "microphonePermission": "Used to dictate a message while the mic button is on, and to talk to your coding agents hands-free in a voice conversation."
         }
       ],
+      "./plugins/withPodsDeploymentTarget",
       [
         "./plugins/withVoiceIntent",
         {
