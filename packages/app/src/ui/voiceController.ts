@@ -19,6 +19,7 @@ import { emptyStore, reduce, type StoreAction, type VoiceStore } from "../voice/
 import { activateAudioSession, deactivateAudioSession } from "./audioSession";
 import { LOST_CONNECTION_LINE, onNetworkLost, onNetworkRestored } from "../voice/connectivity";
 import { offerLiveEvent } from "./voiceAlerts";
+import { liveUpdateNote, shouldAnnounce } from "../voice/liveUpdates";
 import { connectRealtime, type RealtimeTransport } from "./realtimeTransport";
 
 export interface VoiceView {
@@ -59,6 +60,9 @@ export function createVoiceController(deps: VoiceDeps) {
   let generation = 0;
   let holding = false;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Live news for this Realtime leg: what the opening snapshot covered, and what was since told. */
+  let announceSince = 0;
+  let announced = new Set<number>();
 
   const publish = () => deps.onChange({ machine, store, transcript });
 
@@ -176,6 +180,7 @@ export function createVoiceController(deps: VoiceDeps) {
 
   function startRealtime(payload: Ready): void {
     ready = payload;
+    announced = new Set();
     realtime = createRealtimeSession({
       channel: { send: (m) => transport?.send(m) ?? false },
       session: payload.session,
@@ -281,6 +286,7 @@ export function createVoiceController(deps: VoiceDeps) {
           if (message.voiceSessionId !== machine.voiceSessionId || machine.phase !== "opening") return;
           const rt = message.realtime;
           fold({ type: "state", snapshot: message.snapshot, events: [] });
+          announceSince = typeof message.snapshot?.eventId === "number" ? message.snapshot.eventId : store.cursor;
           startRealtime({
             secret: rt.secret,
             model: rt.model,
@@ -305,6 +311,11 @@ export function createVoiceController(deps: VoiceDeps) {
           });
           return;
         case "voice.event":
+          // A live conversation hears it from the model; nothing else would tell it.
+          if (realtime && message.event && shouldAnnounce(message.event, { since: announceSince, sent: announced })) {
+            announced.add(message.event.eventId);
+            realtime.notify(liveUpdateNote(message.event, message.task));
+          }
           offerLiveEvent(message.event);
           fold({ type: "event", event: message.event, task: message.task });
           return;

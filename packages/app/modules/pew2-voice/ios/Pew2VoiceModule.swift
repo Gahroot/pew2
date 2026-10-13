@@ -35,7 +35,7 @@ public class Pew2VoiceModule: Module {
     }
 
     /// Releases the session so Music/Podcasts resume.
-    AsyncFunction("deactivate") { () throws in
+    AsyncFunction("deactivate") { () async throws in
       self.stopObserving()
       self.unregisterRemoteCommands()
       // setActive(false) fails while audio I/O is still running (WebRTC tears down

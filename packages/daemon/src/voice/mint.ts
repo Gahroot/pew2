@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { redactSecrets } from "./safety.js";
 
 export const MINT_URL = "https://api.openai.com/v1/realtime/client_secrets";
-export const DEFAULT_MODEL = "gpt-realtime";
+export const DEFAULT_MODEL = "gpt-realtime-2.1";
 export const DEFAULT_VOICE = "marin";
 
 export interface VoicePrefs {

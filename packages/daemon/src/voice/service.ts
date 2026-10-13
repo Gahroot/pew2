@@ -227,6 +227,7 @@ export function contextText(snapshot: VoiceSnapshot): string {
   }
   for (const t of snapshot.tasks) {
     lines.push(`Task ${t.taskId} ${t.projectName}: ${t.title} - ${t.state}${t.activity ? ` (${t.activity})` : ""}${t.approval ? ` awaiting ${t.approval.risk} approval ${t.approval.requestId}` : ""}`);
+    if (t.state === "completed" && t.debrief) lines.push(`  Debrief: ${JSON.stringify(t.debrief)}`);
   }
   if (snapshot.unheard.length) {
     lines.push("Not yet heard:");

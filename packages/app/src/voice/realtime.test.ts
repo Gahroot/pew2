@@ -6,6 +6,8 @@ import {
   type RealtimeHandlers,
   type ToolCall,
 } from "./realtime";
+import { liveUpdateNote, shouldAnnounce } from "./liveUpdates";
+import type { VoiceEvent, VoiceTask } from "./types";
 
 function setup(speakFirst = false) {
   const sent: Record<string, unknown>[] = [];
@@ -164,6 +166,101 @@ describe("function calls", () => {
     receive({ type: "response.function_call_arguments.done", call_id: "c1", name: "t", arguments: "{oops" });
     expect(calls).toEqual([]);
     expect(types(sent)).toEqual(["conversation.item.create", "response.create"]);
+  });
+});
+
+describe("live notes", () => {
+  const live = () => {
+    const h = setup();
+    h.receive({ type: "session.updated" });
+    return h;
+  };
+  const system = (m: Record<string, unknown>) => (m.item as { role?: string } | undefined)?.role === "system";
+
+  test("a note in a quiet moment goes out at once as a system message plus a response", () => {
+    const { rt, sent } = live();
+    rt.notify("[Update] billing: finished");
+    expect(types(sent)).toEqual(["conversation.item.create", "response.create"]);
+    expect(sent[0]).toEqual({
+      type: "conversation.item.create",
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: "[Update] billing: finished" }] },
+    });
+  });
+  test("never over the user, and not before the server answers what they said", () => {
+    const { rt, sent, receive } = live();
+    receive({ type: "input_audio_buffer.speech_started" });
+    rt.notify("news");
+    receive({ type: "input_audio_buffer.speech_stopped" });
+    expect(sent).toEqual([]);
+    receive({ type: "response.created" });
+    receive({ type: "response.done", response: { output: [] } });
+    expect(sent.filter(system).length).toBe(1);
+    expect(types(sent).at(-1)).toBe("response.create");
+  });
+  test("waits for the model's audio to stop, and that turn is not reported done", () => {
+    const { rt, sent, receive, log } = live();
+    receive({ type: "response.created" });
+    receive({ type: "output_audio_buffer.started" });
+    rt.notify("news");
+    receive({ type: "response.done", response: { output: [{ type: "message", content: [{ type: "output_audio" }] }] } });
+    expect(sent).toEqual([]);
+    receive({ type: "output_audio_buffer.stopped" });
+    expect(types(sent)).toEqual(["conversation.item.create", "response.create"]);
+    expect(log).not.toContain("done");
+  });
+  test("waits for open tool calls, then rides the same response as their results", () => {
+    const { rt, sent, receive } = live();
+    receive({ type: "response.function_call_arguments.done", call_id: "c1", name: "t", arguments: "{}" });
+    receive({ type: "response.done", response: { output: [] } });
+    rt.notify("a");
+    rt.notify("b");
+    expect(sent).toEqual([]);
+    rt.submitResult({ callId: "c1", ok: true, output: 1 });
+    expect(types(sent)).toEqual(["conversation.item.create", "conversation.item.create", "conversation.item.create", "response.create"]);
+    expect(sent.filter(system).length).toBe(2);
+  });
+  test("held until the session is ready, and dropped once the model is ending the call", () => {
+    const h = setup();
+    h.rt.notify("early");
+    expect(h.sent).toEqual([]);
+    h.receive({ type: "session.updated" });
+    expect(h.sent.filter(system).length).toBe(1);
+
+    const { rt, sent, receive } = live();
+    receive({ type: "response.function_call_arguments.done", call_id: "c1", name: "t", arguments: "{}" });
+    rt.submitResult({ callId: "c1", ok: true, output: 1, endSession: true });
+    rt.notify("late");
+    expect(sent.filter(system)).toEqual([]);
+  });
+});
+
+describe("which events become notes", () => {
+  const event = (over: Partial<VoiceEvent> = {}): VoiceEvent => ({
+    eventId: 10,
+    taskId: "task_1",
+    projectId: "p1",
+    projectName: "billing",
+    kind: "task.completed",
+    class: "completed",
+    text: "The agent says it finished: added retries.",
+    at: 0,
+    ...over,
+  });
+  test("completions, failures and approvals after the snapshot, each once", () => {
+    const state = { since: 9, sent: new Set<number>() };
+    expect(shouldAnnounce(event(), state)).toBe(true);
+    expect(shouldAnnounce(event({ class: "blocked", kind: "task.failed" }), state)).toBe(true);
+    expect(shouldAnnounce(event({ class: "approval", kind: "task.approval" }), state)).toBe(true);
+    expect(shouldAnnounce(event({ class: "informational", kind: "task.tool" }), state)).toBe(false);
+    expect(shouldAnnounce(event({ eventId: 9 }), state)).toBe(false);
+    expect(shouldAnnounce(event(), { since: 9, sent: new Set([10]) })).toBe(false);
+  });
+  test("a completion carries its debrief; an approval is checked before it is asked", () => {
+    const debrief = { outcome: "unchecked_edits" as const, edits: 2, commands: 0, checks: "none" as const, nextStep: "Have it run the tests on that?" };
+    const note = liveUpdateNote(event(), { debrief } as VoiceTask);
+    expect(note).toContain("[Update] billing (taskId task_1)");
+    expect(note).toContain('"nextStep":"Have it run the tests on that?"');
+    expect(liveUpdateNote(event({ class: "approval", kind: "task.approval" }))).toContain("pending_approvals");
   });
 });
 

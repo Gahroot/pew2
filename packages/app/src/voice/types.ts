@@ -12,6 +12,7 @@ export const VoiceCallbackPushSchema = wire.VoiceCallbackPush;
 
 export type VoiceSource = wire.VoiceSource;
 export type VoiceTask = wire.VoiceTask;
+export type VoiceDebrief = wire.VoiceDebrief;
 export type VoiceEvent = wire.VoiceEvent;
 export type VoiceSnapshot = wire.VoiceSnapshot;
 export type VoiceCallbackPush = wire.VoiceCallbackPush;

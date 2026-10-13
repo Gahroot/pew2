@@ -12,7 +12,7 @@
  */
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { TaskState, VoiceEvent, VoiceTask } from "./types.js";
+import type { TaskState, VoiceDebrief, VoiceEvent, VoiceTask } from "./types.js";
 import { writeFileAtomic } from "../atomic-file.js";
 import { classifyKind, type EventKind } from "./classify.js";
 
@@ -42,6 +42,8 @@ export interface StoredTask {
   approval?: NonNullable<VoiceTask["approval"]>;
   /** Last thing the agent said, already speakable. */
   lastOutput?: string;
+  /** What the last finished turn amounted to; cleared when the task runs again. */
+  debrief?: VoiceDebrief;
   error?: string;
   /** Ended because the daemon restarted, not because the agent finished or failed. */
   interrupted?: boolean;
@@ -135,6 +137,7 @@ export function toVoiceTask(task: StoredTask): VoiceTask {
     priority: task.priority,
     ...(task.activity ? { activity: task.activity } : null),
     ...(task.approval ? { approval: task.approval } : null),
+    ...(task.debrief ? { debrief: task.debrief } : null),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };

@@ -14,6 +14,11 @@
  * Only one `response.create` may be in flight, so results are batched: when a
  * response made several calls, the model is asked to continue once all of them
  * have been answered and the current response has finished.
+ *
+ * Live news (`notify`) is a system message plus a response, held until nobody
+ * is talking: not while the user speaks, not while the model's audio plays,
+ * not while a response or a tool call is in flight. Several notes that pile up
+ * go out together in one response.
  */
 
 /** The data channel as this module needs it. */
@@ -69,6 +74,8 @@ export interface RealtimeSession {
   submitResult(result: ToolResult): void;
   /** Anything still waiting on the daemon (for tests and teardown). */
   outstanding(): string[];
+  /** Tell the model something happened. Delivered at the next quiet moment. */
+  notify(text: string): void;
 }
 
 type Json = Record<string, unknown>;
@@ -109,12 +116,28 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
   let wantResponse = false;
   let ready = false;
   let endRequested = false;
+  /** System notes waiting for a quiet moment. */
+  const notes: string[] = [];
+  let userSpeaking = false;
+  let audioPlaying = false;
 
-  const continueIfIdle = () => {
-    if (!wantResponse || responseActive || pending.size > 0) return;
+  /** Asks for the next response if one is owed. Returns true when it sent one. */
+  const continueIfIdle = (): boolean => {
+    if (responseActive || pending.size > 0) return false;
+    const notesReady = notes.length > 0 && ready && !userSpeaking && !audioPlaying && !endRequested;
+    if (!wantResponse && !notesReady) return false;
+    if (notesReady) {
+      for (const text of notes.splice(0)) {
+        channel.send({
+          type: "conversation.item.create",
+          item: { type: "message", role: "system", content: [{ type: "input_text", text }] },
+        });
+      }
+    }
     wantResponse = false;
     responseActive = true;
     channel.send({ type: "response.create" });
+    return true;
   };
 
   const forward = (callId: unknown, name: unknown, rawArgs: unknown) => {
@@ -163,8 +186,8 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
     // event, so this is the end of the model's turn. (Audio ends on
     // `output_audio_buffer.stopped`, not here: the response finishes generating
     // well before it finishes playing.)
-    if (!audio && calls === 0 && pending.size === 0 && !wantResponse) handlers.onModelDone();
-    continueIfIdle();
+    const idle = !audio && calls === 0 && pending.size === 0 && !wantResponse;
+    if (!continueIfIdle() && idle) handlers.onModelDone();
   };
 
   const handleMessage = (raw: string) => {
@@ -184,11 +207,18 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
           if (options.speakFirst) {
             responseActive = true;
             channel.send({ type: "response.create" });
+          } else {
+            continueIfIdle();
           }
         }
         return;
       case "input_audio_buffer.speech_started":
+        userSpeaking = true;
         handlers.onUserSpeech();
+        return;
+      case "input_audio_buffer.speech_stopped":
+        // Server VAD answers this turn itself; notes wait for that response to end.
+        userSpeaking = false;
         return;
       case "conversation.item.input_audio_transcription.completed":
         if (typeof message.transcript === "string") handlers.onTranscript?.("user", message.transcript);
@@ -201,6 +231,7 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
         responseActive = true;
         return;
       case "output_audio_buffer.started":
+        audioPlaying = true;
         handlers.onModelSpeaking();
         return;
       case "response.output_audio.delta":
@@ -208,9 +239,12 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
         handlers.onModelSpeaking();
         return;
       case "output_audio_buffer.stopped":
-      case "output_audio_buffer.cleared":
-        if (pending.size === 0 && !wantResponse) handlers.onModelDone();
+      case "output_audio_buffer.cleared": {
+        audioPlaying = false;
+        const idle = pending.size === 0 && !wantResponse;
+        if (!continueIfIdle() && idle) handlers.onModelDone();
         return;
+      }
       case "response.function_call_arguments.done":
         forward(message.call_id, message.name, message.arguments);
         return;
@@ -255,5 +289,10 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
       continueIfIdle();
     },
     outstanding: () => [...pending],
+    notify(text) {
+      if (!text.trim()) return;
+      notes.push(text);
+      continueIfIdle();
+    },
   };
 }

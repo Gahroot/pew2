@@ -316,3 +316,57 @@ test("only a completed task can be verified", async () => {
   expect(orchestrator.verify(t.taskId, "tests green").ok).toBe(true);
   expect(store.getTask(t.taskId)?.state).toBe("verified");
 });
+
+test("a finished turn carries a debrief built from its tool calls, with one next step", async () => {
+  const run = async (payloads: unknown[], lastText: string) => {
+    const { store, fake, orchestrator } = setup();
+    fake.setLastText(lastText);
+    const t = orchestrator.enqueue(task());
+    await tick();
+    for (const p of payloads) orchestrator.onSessionPayload("s1", p);
+    fake.turns[0]?.resolve();
+    await tick();
+    return store.getTask(t.taskId)?.debrief;
+  };
+  const call = (toolCallId: string, kind: string, title: string) => ({
+    update: { sessionUpdate: "tool_call", toolCallId, kind, title, status: "in_progress" },
+  });
+  const done = (toolCallId: string, status: string) => ({ update: { sessionUpdate: "tool_call_update", toolCallId, status } });
+
+  // Edited, never checked: offer the tests.
+  const unchecked = await run([call("a", "edit", "Edit App.tsx"), done("a", "completed")], "Added the button.");
+  expect(unchecked).toMatchObject({ outcome: "unchecked_edits", edits: 1, checks: "none", said: "Added the button." });
+  expect(unchecked?.followUp).toContain("Run the project's tests");
+
+  // The last check run failed, even though an earlier one passed.
+  const failing = await run(
+    [call("a", "edit", "Edit x"), call("b", "execute", "npm test"), done("b", "completed"), call("c", "execute", "bun test"), done("c", "failed")],
+    "Done.",
+  );
+  expect(failing).toMatchObject({ outcome: "checks_failed", checks: "failed", commands: 2 });
+
+  // Checked edits: ran, never "passed".
+  const checked = await run([call("a", "edit", "Edit x"), call("b", "execute", "npm run typecheck"), done("b", "completed")], "Done.");
+  expect(checked).toMatchObject({ outcome: "checked_edits", checks: "ran" });
+
+  // The agent's own question outranks everything: no next step is invented.
+  const asked = await run([call("a", "edit", "Edit x")], "I changed the colour. Should I also update the dark theme?");
+  expect(asked?.outcome).toBe("question");
+  expect(asked?.nextStep).toBeUndefined();
+
+  // An answer with nothing touched has nothing to offer.
+  expect(await run([call("a", "read", "Read App.tsx")], "It uses Expo Router.")).toMatchObject({ outcome: "no_changes", edits: 0 });
+});
+
+test("a debrief does not survive into the next run of the task", async () => {
+  const { store, fake, orchestrator } = setup();
+  const t = orchestrator.enqueue(task());
+  await tick();
+  fake.turns[0]?.resolve();
+  await tick();
+  expect(store.getTask(t.taskId)?.debrief).toBeDefined();
+  orchestrator.followUp(t.taskId, "now the tests");
+  await tick();
+  expect(store.getTask(t.taskId)).toMatchObject({ state: "running" });
+  expect(store.getTask(t.taskId)?.debrief).toBeUndefined();
+});

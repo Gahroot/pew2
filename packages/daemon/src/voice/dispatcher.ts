@@ -11,6 +11,7 @@
  * so. Nothing here ever says a thing worked on its own authority.
  */
 import { humanError } from "../errors.js";
+import { buildDebrief, TurnEvidence } from "./debrief.js";
 import {
   assessApproval,
   type ApprovalAssessment,
@@ -62,6 +63,8 @@ export class Orchestrator {
   private readonly lastActivity = new Map<string, number>();
   /** Prompt loops currently awaiting an agent turn. */
   private readonly looping = new Set<string>();
+  /** Tool calls seen since the task last started running, for the debrief. */
+  private readonly evidence = new Map<string, TurnEvidence>();
 
   constructor(
     private readonly store: VoiceStore,
@@ -301,7 +304,7 @@ export class Orchestrator {
         "running",
         task.resume ? "task.resumed" : "task.started",
         `${task.resume ? "Continuing" : "Started"}: ${task.title}`,
-        { startedAt: task.startedAt ?? now },
+        { startedAt: task.startedAt ?? now, debrief: undefined },
       );
       this.lastActivity.set(task.taskId, now);
       active++;
@@ -383,6 +386,8 @@ export class Orchestrator {
 
   private async promptLoop(taskId: string, sessionId: string, firstText: string) {
     this.looping.add(taskId);
+    const evidence = new TurnEvidence();
+    this.evidence.set(taskId, evidence);
     try {
       let text: string | undefined = firstText;
       while (text !== undefined) {
@@ -392,13 +397,14 @@ export class Orchestrator {
         this.lastActivity.set(taskId, this.now());
         text = this.followUps.get(taskId)?.shift();
       }
-      const summary = speakable(this.host.lastText(sessionId), 220);
+      const lastText = this.host.lastText(sessionId);
+      const summary = speakable(lastText, 220);
       this.store.transition(
         taskId,
         "completed",
         "task.completed",
         summary ? `The agent says it finished: ${summary}` : "The agent says it finished.",
-        { lastOutput: summary || undefined, activity: undefined },
+        { lastOutput: summary || undefined, activity: undefined, debrief: buildDebrief({ lastText, steps: evidence.list() }) },
       );
     } catch (error) {
       const task = this.store.getTask(taskId);
@@ -411,6 +417,7 @@ export class Orchestrator {
     } finally {
       this.looping.delete(taskId);
       this.permissions.delete(taskId);
+      if (this.evidence.get(taskId) === evidence) this.evidence.delete(taskId);
       this.pump();
     }
   }
@@ -426,7 +433,14 @@ export class Orchestrator {
       kind?: string;
       requestId?: string;
       params?: unknown;
-      update?: { sessionUpdate?: string; title?: string; kind?: string; status?: string; rawInput?: unknown };
+      update?: {
+        sessionUpdate?: string;
+        toolCallId?: unknown;
+        title?: string;
+        kind?: string;
+        status?: string;
+        rawInput?: unknown;
+      };
     } | null;
 
     if (record?.kind === "permission_request" && typeof record.requestId === "string") {
@@ -435,6 +449,7 @@ export class Orchestrator {
     }
     const update = record?.update;
     if (!update?.sessionUpdate) return;
+    this.evidence.get(task.taskId)?.record(update);
 
     // Any sign of progress while "blocked" means the request was answered elsewhere (the app's own sheet).
     if (task.state === "blocked" && !this.permissions.get(task.taskId)?.size) {

@@ -10,7 +10,7 @@ Talk to your coding agents hands-free. **The agents (EZ Coder, or whichever ACP 
 
 The key never leaves the daemon. The phone receives only a short-lived client secret (`POST /v1/realtime/client_secrets`).
 
-`voice-prefs.json` also accepts `model` (default `gpt-realtime`), `voice` (default `marin`) and `enabled: false`.
+`voice-prefs.json` also accepts `model` (default `gpt-realtime-2.1`), `voice` (default `marin`) and `enabled: false`.
 
 ### Flow
 
@@ -24,6 +24,11 @@ Tasks run as ordinary daemon sessions (in the project's directory, with the `ezc
 ### Tools
 
 `list_projects`, `resolve_project{query}`, `start_task{project, instruction, title?, priority?, dependsOn?, readOnly?}`, `follow_up{taskId, instruction}`, `task_status{taskId?}`, `list_tasks`, `reprioritize_task`, `pause_task`, `resume_task`, `cancel_task`, `verify_task`, `pending_approvals`, `answer_approval{taskId, requestId, decision, confirmToken?, userConfirmed?}`, `recent_events`, `get_details`, `remember_decision`, `add_project_alias`, `end_session`. Results are small JSON; the model never sees paths, source or raw logs, and never chooses a directory.
+
+### Partner behaviour: debriefs and live updates
+
+- **Debrief.** When a task's turn ends, the orchestrator builds a `debrief` on the task (`voice/debrief.ts`) from the ACP tool calls it saw during that run, with no second model call. It has the outcome (`question`, `checks_failed`, `unchecked_edits`, `checked_edits`, `no_changes`), the agent's closing message, counts of edits and commands, and `checks: none | ran | failed`, judged by the *last* test/lint/typecheck run. It also has one `nextStep` to offer plus the `followUp` instruction to send if the user says yes. If the agent ends on a question, that beats everything and no next step is invented. `checks: "ran"` means a check ran and the agent reported no failure, never "passed". The debrief rides on `VoiceTask` (optional on the wire), `task_status`/`get_details` and the opening context, and is cleared when the task runs again.
+- **Live updates.** The daemon cannot reach the Realtime conversation (that is phone ↔ OpenAI), so the app injects them. Completed, failed/blocked and approval `voice.event`s newer than the opening snapshot become one `[Update]` system message each (`voice/liveUpdates.ts`), with the debrief attached. `realtime.notify()` holds them until nobody is talking: not while the user speaks, not while model audio plays, not while a response or tool call is open. Then it sends them together with one `response.create`. The instructions tell the model to say nothing if it already told the user.
 
 ### Safety model
 

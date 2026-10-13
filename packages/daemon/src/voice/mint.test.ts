@@ -29,10 +29,10 @@ test("mints with the key in the header only", async () => {
     session: { instructions: "hi" },
     fetch: fakeFetch(new Response(JSON.stringify({ value: "ek_abc", expires_at: 1234 })), seen),
   });
-  expect(result).toEqual({ ok: true, secret: "ek_abc", expiresAt: 1234, model: "gpt-realtime" });
+  expect(result).toEqual({ ok: true, secret: "ek_abc", expiresAt: 1234, model: "gpt-realtime-2.1" });
   expect(seen.url).toBe(MINT_URL);
   const body = JSON.parse((seen.init?.body as string));
-  expect(body.session).toMatchObject({ type: "realtime", model: "gpt-realtime", instructions: "hi" });
+  expect(body.session).toMatchObject({ type: "realtime", model: "gpt-realtime-2.1", instructions: "hi" });
   expect((seen.init?.body as string)).not.toContain("sk-test");
 });
 

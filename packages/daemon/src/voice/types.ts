@@ -8,3 +8,4 @@ export type VoiceEvent = wire.VoiceEvent;
 export type VoiceProject = wire.VoiceProject;
 export type VoiceSnapshot = wire.VoiceSnapshot;
 export type VoiceTask = wire.VoiceTask;
+export type VoiceDebrief = wire.VoiceDebrief;

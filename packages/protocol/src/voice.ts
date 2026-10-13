@@ -54,6 +54,28 @@ export type EventClass = z.output<typeof EventClass>;
 export const RiskLevel = z.enum(["read", "edit", "shell", "merge", "deploy", "destructive"]);
 export type RiskLevel = z.output<typeof RiskLevel>;
 
+/**
+ * What a finished turn amounted to, read from the tool calls the agent made,
+ * plus the one next step worth offering. Evidence, never a verdict on whether
+ * the work is right: `checks: "ran"` means a check ran and the agent reported
+ * no failure, not that it passed.
+ */
+export const VoiceDebrief = z.object({
+  outcome: z.enum(["question", "checks_failed", "unchecked_edits", "checked_edits", "no_changes"]),
+  /** The agent's closing message, speakable. */
+  said: z.string().optional(),
+  /** Edit, delete and move steps. */
+  edits: z.number().int().nonnegative(),
+  /** Shell steps of any kind. */
+  commands: z.number().int().nonnegative(),
+  checks: z.enum(["none", "ran", "failed"]),
+  /** A yes/no offer to speak, e.g. "Have it run the tests?". */
+  nextStep: z.string().optional(),
+  /** The instruction to send with `follow_up` if the user accepts `nextStep`. */
+  followUp: z.string().optional(),
+});
+export type VoiceDebrief = z.output<typeof VoiceDebrief>;
+
 /** One task, as shown on screen and summarised to the model. */
 export const VoiceTask = z.object({
   taskId: z.string(),
@@ -74,6 +96,8 @@ export const VoiceTask = z.object({
       summary: z.string(),
     })
     .optional(),
+  /** Set when the agent's turn ends. Absent from older daemons. */
+  debrief: VoiceDebrief.optional(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
