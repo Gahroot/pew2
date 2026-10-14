@@ -120,6 +120,17 @@ test("every message the app actually sends is accepted", () => {
     { t: "workspaces", requestId: "r1" },
     { t: "workspaces", requestId: "r1", path: "/Users/someone" },
     { t: "workspace.status", sessionId: "s1", providerId: "claude-code" },
+    // Voice screenshots, as `voiceController.ts` sends them: the upload, the
+    // removal, and a send from the sheet through the model's own tool.
+    { t: "voice.attach", requestId: "shot-1", name: "fix.jpg", mimeType: "image/jpeg", data: "/9j/4A==" },
+    { t: "voice.detach", attachmentId: "a_1" },
+    {
+      t: "voice.tool",
+      voiceSessionId: "sheet",
+      callId: "sheet-a_1-t_1-x",
+      name: "attach_screenshot",
+      args: { attachmentId: "a_1", taskId: "t_1", instruction: "Apply it" },
+    },
   ];
 
   for (const message of messages) {

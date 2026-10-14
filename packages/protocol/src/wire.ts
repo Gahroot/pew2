@@ -216,6 +216,27 @@ export const AgentSession = z.object({
 });
 
 /**
+ * A linked git worktree: a second checkout of an existing repository.
+ *
+ * Agents that isolate work (ezcoder's `~/.ezcoder/worktrees/<repo>/ez-<id>`)
+ * run sessions in these, and by folder name alone each reads as an unrelated
+ * project called `ez-mun7ig9t`. This names the repository it belongs to.
+ */
+export const ProjectWorktree = z.object({
+  /** Folder name of the repository: what people call the project. */
+  repo: z.string(),
+  /** The main checkout's path; absent for a worktree of a bare repository. */
+  root: z.string().optional(),
+  /** Checked-out branch; absent when HEAD is detached. */
+  branch: z.string().optional(),
+  /**
+   * The checkout has been deleted (ezcoder removes one when its task is done).
+   * Its sessions still belong to the repository; nothing new can start there.
+   */
+  gone: z.boolean().optional(),
+});
+
+/**
  * A project the agent has worked in, derived from its stored sessions.
  *
  * The drawer's history is capped at the newest conversations, so it is not a
@@ -232,6 +253,8 @@ export const AgentProject = z.object({
   sessions: z.number().int().nonnegative(),
   /** ISO 8601 of the newest of those, when the agent dates them. */
   updatedAt: z.string().optional(),
+  /** Present when the folder is a linked worktree. Absent from older daemons. */
+  worktree: ProjectWorktree.optional(),
 });
 
 /** One slash command an agent offers, e.g. from `.claude/commands`. */
@@ -555,6 +578,10 @@ export const Workspace = z.object({
   repo: z.boolean(),
   /** Changed, staged and untracked entries, as `git status` counts them. */
   uncommitted: z.number().int().nonnegative(),
+  /** Checked-out branch; absent when detached, not a repo, or an older daemon. */
+  branch: z.string().optional(),
+  /** Present when `cwd` is a linked worktree. Absent from older daemons. */
+  worktree: ProjectWorktree.optional(),
 });
 
 /**
@@ -1184,6 +1211,7 @@ export type ProviderCapabilitiesRequest = z.output<typeof ProviderCapabilitiesRe
 export type ProviderCapabilities = z.output<typeof ProviderCapabilities>;
 export type ProviderConfig = z.output<typeof ProviderConfig>;
 export type AgentProject = z.output<typeof AgentProject>;
+export type ProjectWorktree = z.output<typeof ProjectWorktree>;
 export type ProviderSessionsRequest = z.output<typeof ProviderSessionsRequest>;
 export type ProviderSessions = z.output<typeof ProviderSessions>;
 export type StartSession = z.output<typeof StartSession>;

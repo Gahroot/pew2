@@ -77,6 +77,44 @@ export const VoiceDebrief = z.object({
 export type VoiceDebrief = z.output<typeof VoiceDebrief>;
 
 /** One task, as shown on screen and summarised to the model. */
+/**
+ * The repository a worktree belongs to, as a task or event carries it.
+ *
+ * ezcoder runs work in `~/.ezcoder/worktrees/<repo>/ez-<id>`, a second checkout
+ * of the repo on its own branch. Reported by directory, every one of those is a
+ * project nobody has heard of; this is what lets a client and the voice model
+ * say "black-mountain-fund, on fix/login" instead.
+ */
+export const VoiceRepo = z.object({
+  /** The main checkout's projectId; absent when it is not known. */
+  projectId: z.string().optional(),
+  /** The repository's folder name: what people call the project. */
+  name: z.string(),
+  /** The worktree's branch, or its folder when HEAD is detached. */
+  branch: z.string().optional(),
+});
+export type VoiceRepo = z.output<typeof VoiceRepo>;
+
+/**
+ * A screenshot the user handed to voice, as clients and the model see it.
+ *
+ * The bytes go up once (`voice.attach`) and live on the computer; after that
+ * everything refers to the id. Never a path: the model is not given paths, and
+ * a client has no use for one on another machine's disk.
+ */
+export const VoiceAttachment = z.object({
+  attachmentId: z.string(),
+  /** Display name, as the phone named it. */
+  name: z.string(),
+  mimeType: z.string(),
+  size: z.number().int().nonnegative(),
+  /** Epoch ms it arrived. */
+  at: z.number().int(),
+  /** Tasks it has been sent to, oldest first. Empty until it is. */
+  sentTo: z.array(z.string()).default([]),
+});
+export type VoiceAttachment = z.output<typeof VoiceAttachment>;
+
 export const VoiceTask = z.object({
   taskId: z.string(),
   projectId: z.string(),
@@ -98,10 +136,31 @@ export const VoiceTask = z.object({
     .optional(),
   /** Set when the agent's turn ends. Absent from older daemons. */
   debrief: VoiceDebrief.optional(),
+  /** Screenshots sent to this task's agent, by id. Absent when none, and from older daemons. */
+  attachmentIds: z.array(z.string()).optional(),
+  /**
+   * Set when the task runs in a linked git worktree: the repository it belongs
+   * to, so a client lists it under that repo as a branch rather than as a
+   * project of its own. Absent for an ordinary checkout and from older daemons.
+   */
+  repo: VoiceRepo.optional(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
 export type VoiceTask = z.output<typeof VoiceTask>;
+
+/**
+ * Set on a registry entry that is a linked git worktree. `repoId` is the
+ * projectId of the repository's main checkout, so work in a worktree can be
+ * grouped with the repo the user names. Ids only — never a path.
+ */
+export const VoiceWorktree = z.object({
+  repo: z.string(),
+  /** Absent for a worktree of a bare repository, which has no main checkout. */
+  repoId: z.string().optional(),
+  branch: z.string().optional(),
+});
+export type VoiceWorktree = z.output<typeof VoiceWorktree>;
 
 /** Registry entry: a project the user can name aloud. */
 export const VoiceProject = z.object({
@@ -110,6 +169,8 @@ export const VoiceProject = z.object({
   path: z.string(),
   aliases: z.array(z.string()).default([]),
   providerId: z.string().optional(),
+  /** Absent for an ordinary checkout, and from older daemons. */
+  worktree: VoiceWorktree.optional(),
 });
 export type VoiceProject = z.output<typeof VoiceProject>;
 
@@ -141,6 +202,8 @@ export const VoiceEvent = z.object({
   /** Short, speakable, secret-free text. Never raw logs or source. */
   text: z.string(),
   at: z.number().int(),
+  /** The task's repository when it runs on a worktree branch; see `VoiceRepo`. */
+  repo: VoiceRepo.optional(),
 });
 export type VoiceEvent = z.output<typeof VoiceEvent>;
 
@@ -167,6 +230,30 @@ export const VoiceOpen = z.object({
   /** Notification tap: the event / task that caused it. */
   focusEventId: z.number().int().nonnegative().optional(),
   focusTaskId: z.string().optional(),
+});
+
+/**
+ * App -> daemon. Hand a screenshot to voice: a partner's fix, an error on
+ * screen. Stored on the computer and answered with `voice.attached`; from then
+ * on the model and the app refer to it by `attachmentId`.
+ *
+ * Images only, inside the same per-file ceiling as a prompt's attachments
+ * (`MAX_ATTACHMENT_BYTES`), so one frame stays under the relay's limit.
+ */
+export const VoiceAttach = z.object({
+  t: z.literal("voice.attach"),
+  /** Echoed on the answer, so the phone can match it to the card it is showing. */
+  requestId: z.string().min(1).max(100),
+  name: z.string().min(1).max(200),
+  mimeType: z.string().min(1).max(100),
+  /** Base64, no `data:` prefix. */
+  data: z.string().min(1),
+});
+
+/** App -> daemon. Discard a screenshot that has not been wanted after all. */
+export const VoiceDetach = z.object({
+  t: z.literal("voice.detach"),
+  attachmentId: z.string().min(1).max(40),
 });
 
 export const VoiceToolCall = z.object({
@@ -229,6 +316,24 @@ export const VoiceToolResult = z.object({
   error: z.string().optional(),
   /** True when the app should end the voice session after the model finishes speaking. */
   endSession: z.boolean().optional(),
+  /** True when the app should open its photo picker: the model asked for a screenshot. */
+  openPicker: z.boolean().optional(),
+});
+
+/** Reply to `voice.attach`. */
+export const VoiceAttached = z.object({
+  t: z.literal("voice.attached"),
+  requestId: z.string(),
+  ok: z.boolean(),
+  attachment: VoiceAttachment.optional(),
+  /** Plain words, for the phone to show, when `ok` is false. */
+  error: z.string().optional(),
+});
+
+/** Broadcast: every screenshot voice is holding, after any change to them. */
+export const VoiceAttachments = z.object({
+  t: z.literal("voice.attachments"),
+  attachments: z.array(VoiceAttachment),
 });
 
 /** Broadcast: one orchestration event. Same stream drives UI, voice and push. */
@@ -244,15 +349,19 @@ export const VoiceState = z.object({
   t: z.literal("voice.state"),
   snapshot: VoiceSnapshot,
   events: z.array(VoiceEvent).default([]),
+  /** Screenshots held for voice. Absent from older daemons, so absent is not "none". */
+  attachments: z.array(VoiceAttachment).optional(),
 });
 
-export const VoiceClientMessages = [VoiceOpen, VoiceToolCall, VoiceClose, VoiceSync] as const;
+export const VoiceClientMessages = [VoiceOpen, VoiceToolCall, VoiceClose, VoiceSync, VoiceAttach, VoiceDetach] as const;
 export const VoiceServerMessages = [
   VoiceReady,
   VoiceUnavailable,
   VoiceToolResult,
   VoiceEventMessage,
   VoiceState,
+  VoiceAttached,
+  VoiceAttachments,
 ] as const;
 
 /**
