@@ -48,7 +48,7 @@ import { touchSlop } from "./controls";
 import { Sheet, SHEET_ROW_HEIGHT, SHEET_VISIBLE_ROWS, sheetCardStyle } from "./Sheet";
 import { haptics } from "./haptics";
 import { useReducedMotion } from "./useReducedMotion";
-import type { Project } from "../projects";
+import { branchCount, placeTitle, projectContains, projectTitle, type Project } from "../projects";
 
 /** The grid's last cell when browsing is possible. */
 const BROWSE_CELL = { browse: true } as const;
@@ -113,8 +113,10 @@ function NewChatSheetView({
   const [picked, setPicked] = useState<string | undefined>(undefined);
   // Chosen card: the user's pick, else the project already open, else the newest.
   const chosen = picked ?? currentCwd ?? projects[0]?.path;
+  // "billing · fix/login" when the chat would start on one of a repo's
+  // branches (continuing here from a worktree), the repo's name otherwise.
   const chosenName =
-    projects.find((p) => p.path === chosen)?.name ?? (chosen === currentCwd ? currentFolder : undefined) ?? (chosen ? folderOf(chosen) : undefined);
+    placeTitle(projects, chosen) ?? (chosen === currentCwd ? currentFolder : undefined) ?? (chosen ? folderOf(chosen) : undefined);
   const [now, setNow] = useState(() => Date.now());
   // Offered whenever the daemon can answer — including, especially, when there
   // are no projects at all. That is the cold start this exists for.
@@ -300,8 +302,10 @@ function NewChatSheetView({
                 <ProjectCard
                   project={item}
                   index={index}
-                  current={item.path === currentCwd}
-                  selected={item.path === chosen}
+                  // A card is a repository: it is "here" and chosen when the
+                  // path is its checkout or any of its branches.
+                  current={projectContains(item, currentCwd)}
+                  selected={projectContains(item, chosen)}
                   agent={agent}
                   now={now}
                   onPick={setPicked}
@@ -429,8 +433,11 @@ function ProjectCard({
 }) {
   const onPress = () => onPick(project.path);
   const ago = agoLabel(project.updatedAt, now);
+  const title = projectTitle(project);
   const meta = [
     current ? "here" : undefined,
+    project.worktree ? "worktree" : undefined,
+    project.branches?.length ? branchCount(project.branches.length) : undefined,
     project.sessions !== undefined ? `${project.sessions} chat${project.sessions === 1 ? "" : "s"}` : undefined,
     ago,
   ].filter((part): part is string => part !== undefined);
@@ -443,14 +450,14 @@ function ProjectCard({
         onPress={onPress}
         accessibilityRole="radio"
         accessibilityState={{ selected }}
-        accessibilityLabel={[project.name, ...meta].join(", ")}
+        accessibilityLabel={[title, ...meta].join(", ")}
         style={[
           styles.tile,
           selected ? { borderWidth: 1, borderColor: agent, backgroundColor: withAlpha(agent, 0.1) } : dashedOutline,
         ]}
       >
         <Text style={styles.cardTitle} numberOfLines={1}>
-          {project.name}
+          {title}
         </Text>
         {meta.length > 0 && (
           <Led tone={selected ? "agent" : "dim"} size={theme.stage.ledSize}>

@@ -262,6 +262,11 @@ describe("which events become notes", () => {
     expect(note).toContain('"nextStep":"Have it run the tests on that?"');
     expect(liveUpdateNote(event({ class: "approval", kind: "task.approval" }))).toContain("pending_approvals");
   });
+  test("an update on a worktree branch is told as the repository's", () => {
+    const note = liveUpdateNote(event({ projectName: "billing (fix/login)", repo: { name: "billing", branch: "fix/login" } }));
+    expect(note).toContain("[Update] billing, on the fix/login branch (taskId task_1)");
+    expect(note).not.toContain("(fix/login)");
+  });
 });
 
 test("parseArguments / outputText", () => {

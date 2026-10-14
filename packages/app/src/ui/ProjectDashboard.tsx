@@ -33,12 +33,14 @@ function useNow(active: boolean): number {
 
 function TaskLine({ task, now }: { task: VoiceTask; now: number }) {
   const status = taskStatus(task, now);
+  // A task on one of the repo's branches says which, beside its timing.
+  const timing = task.repo?.branch ? `${task.repo.branch} · ${status.timing}` : status.timing;
   return (
     <View style={styles.taskLine}>
       <Text style={styles.taskTitle} numberOfLines={2}>
         {task.title}
       </Text>
-      <Text style={styles.dim}>{status.timing}</Text>
+      <Text style={styles.dim}>{timing}</Text>
     </View>
   );
 }

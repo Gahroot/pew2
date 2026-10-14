@@ -408,7 +408,17 @@ function SheetView({ visible, title, onClose, onBack, dismissLabel, label, label
         </GestureDetector>
 
         {/* Contents resolve in on each open, after the card starts to land. */}
-        <Dissolve dissolveKey={visible ? "open" : "closed"} enabled={visible} delay={60} style={styles.dissolveBody}>
+        {/* A tall card has a fixed height, so the body has to *fill* it, not
+            just shrink into it: without the grow, a body laid out with
+            `flex: 1` resolved against an unsized parent and collapsed, so the
+            voice screen's footer was drawn over its hero and the rest of the
+            card stood empty. */}
+        <Dissolve
+          dissolveKey={visible ? "open" : "closed"}
+          enabled={visible}
+          delay={60}
+          style={tall ? styles.dissolveBodyTall : styles.dissolveBody}
+        >
           {children}
         </Dissolve>
       </Animated.View>
@@ -476,6 +486,7 @@ function CrossfadeIcon({ name }: { name: DotGlyphName }) {
 
 const styles = StyleSheet.create({
   dissolveBody: { flexShrink: 1 },
+  dissolveBodyTall: { flex: 1, minHeight: 0 },
   host: { ...StyleSheet.absoluteFillObject, zIndex: 20, justifyContent: "flex-end" },
   scrim: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)" },
   // Inset left and right so the thread stays visible down both sides, but sat

@@ -14,6 +14,8 @@ import { onVoiceNotificationChoice } from "./voiceNotifier";
 import { setVoicePresence } from "./notifier";
 import { emptyStore } from "../voice/voiceStore";
 import { initialState } from "../voice/voiceMachine";
+import { pickPhotos } from "./attachmentPicker";
+import type { ScreenshotCard } from "../voice/screenshots";
 
 interface Options {
   send: (message: Record<string, unknown>) => boolean;
@@ -21,7 +23,7 @@ interface Options {
 }
 
 export function useVoice({ send, online }: Options) {
-  const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore, transcript: [] });
+  const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore, transcript: [], screenshots: [], pickerRequests: 0 });
   const [sheetOpen, setSheetOpen] = useState(false);
   // Bumped on every activation: with the sheet already open, setSheetOpen(true) changes nothing, so the queued request would never run.
   const [activationTick, setActivationTick] = useState(0);
@@ -148,6 +150,36 @@ export function useVoice({ send, online }: Options) {
     });
   }, [view.machine.phase, sheetOpen, view.store.heardEventId]);
 
+  /**
+   * Pick one screenshot and upload it. Uses the chat composer's picker, so it
+   * is downscaled to a vision model's working size before its bytes are read.
+   * One at a time: each is something to say where it goes.
+   */
+  const pickingRef = useRef(false);
+  const pickScreenshot = useCallback(async () => {
+    if (pickingRef.current) return;
+    pickingRef.current = true;
+    try {
+      const outcome = await pickPhotos(1);
+      if (outcome.status === "picked") {
+        for (const file of outcome.attachments) get().attachScreenshot(file);
+      } else if (outcome.status === "denied" || outcome.status === "error") {
+        get().screenshotFailed("Screenshot", outcome.message);
+      }
+    } finally {
+      pickingRef.current = false;
+    }
+  }, []);
+
+  // The model asked for one (`request_screenshot`): open the sheet and the picker.
+  const lastPickerRequest = useRef(0);
+  useEffect(() => {
+    if (view.pickerRequests === lastPickerRequest.current) return;
+    lastPickerRequest.current = view.pickerRequests;
+    setSheetOpen(true);
+    void pickScreenshot();
+  }, [view.pickerRequests, pickScreenshot]);
+
   // Whatever arrives while the sheet is open or voice is live has been seen.
   useEffect(() => {
     if (sheetOpen || isOpen(view.machine.phase)) get().fold({ type: "heard", eventId: view.store.cursor });
@@ -167,6 +199,10 @@ export function useVoice({ send, online }: Options) {
       if (phase === "error" || phase === "closed") get().reset();
     },
     handleMessage: (message: Record<string, unknown>) => get().handleMessage(message),
+    /** Opens the photo picker and uploads what is chosen. Fire-and-forget: failures become a card. */
+    pickScreenshot: () => void pickScreenshot(),
+    removeScreenshot: (card: ScreenshotCard) => get().removeScreenshot(card),
+    sendScreenshot: (attachmentId: string, taskId: string) => get().sendScreenshot(attachmentId, taskId),
     /** On unpair: forget everything tied to that machine. */
     clear: () => get().clear(),
   };

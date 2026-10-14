@@ -8,10 +8,13 @@
  * The cold-start toggle is the case worth looking at: an agent with no history
  * has no projects, so the sheet has to lead with browsing or it is a dead end.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import * as SplashScreen from "expo-splash-screen";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { theme } from "../theme";
 import { NewChatSheet } from "./NewChatSheet";
 import type { Project } from "../projects";
@@ -19,6 +22,17 @@ import type { WorkspaceBrowse } from "../useDaemon";
 
 const PROJECTS: Project[] = [
   { path: "/Users/k/gg-projects/pew2", name: "pew2", sessions: 24 },
+  // A repository ezcoder has worked on in worktrees: one card, its checkouts as branches.
+  {
+    path: "/Users/k/black-mountain-fund",
+    name: "black-mountain-fund",
+    sessions: 207,
+    branches: Array.from({ length: 12 }, (_, i) => ({
+      path: `/Users/k/.ezcoder/worktrees/black-mountain-fund/ez-${i}`,
+      name: `ez-${i}`,
+      label: `feat/${i}`,
+    })),
+  },
   { path: "/Users/k/gg-projects/kencode-search", name: "kencode-search", sessions: 7 },
   { path: "/Users/k/work/acme-storefront", name: "acme-storefront", sessions: 3 },
   { path: "/Users/k/work/notes", name: "notes", sessions: 1 },
@@ -67,7 +81,14 @@ export default function NewChatSheetHarness() {
   const [cold, setCold] = useState(false);
   const [browse, setBrowse] = useState<WorkspaceBrowse | undefined>(undefined);
 
+  // The sheet's drag needs a gesture root and its card rides the keyboard,
+  // exactly as in the app; without them the harness throws before drawing.
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => undefined);
+  }, []);
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+    <KeyboardProvider>
     <SafeAreaProvider>
       <StatusBar style="light" />
       <View style={styles.screen}>
@@ -127,6 +148,8 @@ export default function NewChatSheetHarness() {
         }}
       />
     </SafeAreaProvider>
+    </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }
 

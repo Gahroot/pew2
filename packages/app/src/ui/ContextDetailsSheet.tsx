@@ -109,6 +109,18 @@ export function ContextDetailsSheet({
             <Led tone="dim" size={10}>Project</Led>
             <Text selectable style={styles.value} numberOfLines={1}>{details.project}</Text>
           </View>
+          {details.branch && (
+            <View style={styles.row}>
+              <Led tone="dim" size={10}>Branch</Led>
+              <Text selectable style={styles.value} numberOfLines={1}>{details.branch}</Text>
+            </View>
+          )}
+          {details.worktree && (
+            <View style={styles.row}>
+              <Led tone="dim" size={10}>Checkout</Led>
+              <Text style={styles.value} numberOfLines={1}>{details.worktree}</Text>
+            </View>
+          )}
           <View style={styles.row}>
             <Led tone="dim" size={10}>Changes</Led>
             <Text style={styles.value} numberOfLines={1} accessibilityLabel={details.changesAccessibility}>{details.changes}</Text>

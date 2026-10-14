@@ -13,6 +13,7 @@
  *    forbid. So every action *opens the app*, into voice or the approval sheet.
  */
 import { VoiceCallbackPushSchema, type EventClass, type VoiceCallbackPush, type VoiceEvent, type VoiceSource } from "./types";
+import { placeTitle, projectOf } from "./place";
 
 // ---- categories & actions ----------------------------------------------------
 
@@ -125,15 +126,16 @@ function pushData(event: VoiceEvent): VoiceCallbackPush {
 }
 
 function titleFor(event: VoiceEvent): string {
+  const place = placeTitle(event);
   switch (event.class) {
     case "approval":
-      return `${event.projectName}: needs your approval`;
+      return `${place}: needs your approval`;
     case "blocked":
-      return `${event.projectName}: blocked`;
+      return `${place}: blocked`;
     case "completed":
-      return `${event.projectName}: done`;
+      return `${place}: done`;
     case "informational":
-      return event.projectName;
+      return place;
   }
 }
 
@@ -152,7 +154,8 @@ export function summarise(events: VoiceEvent[]): VoiceNotice | undefined {
   const last = events.at(-1);
   if (!last) return undefined;
   if (events.length === 1) return single(last);
-  const projects = [...new Set(events.map((e) => e.projectName))].sort();
+  // By repository: three branches of one repo finishing is one project's news.
+  const projects = [...new Set(events.map(projectOf))].sort();
   const done = events.filter((e) => e.class === "completed").length;
   const head =
     projects.length === 1

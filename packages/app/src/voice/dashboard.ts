@@ -35,20 +35,36 @@ const FINISHED = new Set(["completed", "verified", "failed", "cancelled"]);
 const RESULT_KINDS = new Set(["task.completed", "task.verified", "task.failed", "task.cancelled"]);
 const LIVE_KINDS = new Set(["task.tool", "task.progress", "task.started", "task.resumed"]);
 
+/**
+ * Which row a task belongs on: its repository's when it ran on a worktree
+ * branch, so a repo with a dozen ezcoder checkouts is one row, not a dozen.
+ */
+export function rowKeyOf(task: Pick<VoiceTask, "projectId" | "repo"> | Pick<VoiceEvent, "projectId" | "repo">): string {
+  if (!task.repo) return task.projectId;
+  return task.repo.projectId ?? `repo:${task.repo.name}`;
+}
+
 export function buildDashboard(store: VoiceStore): ProjectRow[] {
   const byProject = new Map<string, { name: string; tasks: VoiceTask[] }>();
+  // Events name the directory a task ran in; this maps it to the task's row.
+  const rowOfProject = new Map<string, string>();
   for (const task of Object.values(store.tasks)) {
-    const entry = byProject.get(task.projectId) ?? { name: task.projectName, tasks: [] };
+    const key = rowKeyOf(task);
+    rowOfProject.set(task.projectId, key);
+    const entry = byProject.get(key) ?? { name: task.repo?.name ?? task.projectName, tasks: [] };
     entry.tasks.push(task);
-    byProject.set(task.projectId, entry);
+    byProject.set(key, entry);
   }
-  // Projects known only from events (their task left the snapshot) still get a row.
+  // Projects known only from events (their task left the snapshot) still get a
+  // row — the repository's, when the event says it ran on one of its branches.
+  const eventKey = (e: VoiceEvent) => rowOfProject.get(e.projectId) ?? rowKeyOf(e);
   for (const e of store.recent) {
-    if (!byProject.has(e.projectId)) byProject.set(e.projectId, { name: e.projectName, tasks: [] });
+    const key = eventKey(e);
+    if (!byProject.has(key)) byProject.set(key, { name: e.repo?.name ?? e.projectName, tasks: [] });
   }
   const rows: ProjectRow[] = [];
   for (const [projectId, { name, tasks }] of byProject) {
-    const events = store.recent.filter((e) => e.projectId === projectId);
+    const events = store.recent.filter((e) => eventKey(e) === projectId);
     rows.push(rowFor(projectId, name, tasks, events));
   }
   const rank: Record<AgentState, number> = { waiting: 0, blocked: 1, working: 2, done: 3, idle: 4 };

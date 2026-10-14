@@ -21,7 +21,7 @@ import { orderProvidersByRecency } from "../providerRecency";
 import type { DrawerRow } from "../historyMetadata";
 import { recentSessionsForProvider } from "../sessionHistory";
 import { useAppActive } from "./useAppActive";
-import { projectTabItems, sessionsInProject, type Project } from "../projects";
+import { projectFor, projectTabItems, projectTitle, sessionsInProject, type Project } from "../projects";
 import type { Provider, Status } from "../useDaemon";
 import { lastActiveLabel, sortGoals, type GoalSummary } from "../ggState";
 import { goalDrawerRow } from "../goalsAgent";
@@ -393,7 +393,9 @@ function SidebarView({
     return out;
   }, [sessions]);
 
-  const selectedProject = useMemo(() => projects.find((project) => project.path === selectedProjectPath), [projects, selectedProjectPath]);
+  // By membership, not equality: a selection saved before worktrees were
+  // grouped names a branch, and it should light up the repository it is in.
+  const selectedProject = useMemo(() => projectFor(projects, selectedProjectPath), [projects, selectedProjectPath]);
   const tabItems = useMemo(() => projectTabItems(projects), [projects]);
   // Narrowed before the recent-work cap, or a project's older conversations
   // would be cut away by a window they were never in.
@@ -523,7 +525,7 @@ function SidebarView({
                 <LedAction
                   key={selectedProject?.path ?? "all"}
                   label="New chat"
-                  a11y={selectedProject ? `New chat in ${selectedProject.name}` : "New chat"}
+                  a11y={selectedProject ? `New chat in ${projectTitle(selectedProject)}` : "New chat"}
                   onPress={() => onNewConversation(selectedProject?.path)}
                 />
               </ListHead>
@@ -547,7 +549,7 @@ function SidebarView({
                     <HistorySkeleton />
                   ) : (
                     <Text style={styles.empty} numberOfLines={2}>
-                      {selectedProject ? `No chats in ${selectedProject.name} yet.` : "No chats yet. Send a message to start one."}
+                      {selectedProject ? `No chats in ${projectTitle(selectedProject)} yet.` : "No chats yet. Send a message to start one."}
                     </Text>
                   )
                 }

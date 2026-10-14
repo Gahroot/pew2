@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  placeTitle,
+  projectFor,
   projectTabItems,
   projectLabel,
   projectsForProvider,
   projectSourceKey,
+  projectTitle,
+  readWorktree,
   sessionsInProject,
 } from "./projects";
 import type { Session } from "./useDaemon";
@@ -168,5 +172,148 @@ describe("projectTabItems", () => {
     const items = projectTabItems(projects);
     expect(items).toHaveLength(1001);
     expect(items[1000]?.path).toBe("/p/999");
+  });
+});
+
+describe("worktrees", () => {
+  const wire = {
+    path: "/Users/me/.ezcoder/worktrees/billing/ez-mun7ig9t",
+    name: "ez-mun7ig9t",
+    sessions: 2,
+    updatedAt: "2026-10-13T10:00:00Z",
+    worktree: { repo: "billing", root: "/Users/me/billing", branch: "fix/login" },
+  };
+
+  test("a worktree is listed as a branch of its repository, not a project of its own", () => {
+    const projects = projectsForProvider([wire], [], "ezcoder");
+    // The checkout was never worked in directly, so it is added for the branch to sit under.
+    expect(projects.map((p) => p.path)).toEqual(["/Users/me/billing"]);
+    const [project] = projects;
+    expect(project && projectTitle(project)).toBe("billing");
+    expect(project?.sessions).toBe(2);
+    expect(project?.branches).toEqual([
+      { path: wire.path, name: "ez-mun7ig9t", label: "fix/login", sessions: 2, updatedAt: wire.updatedAt },
+    ]);
+    expect(projectTabItems(projects)[1]).toEqual({ path: "/Users/me/billing", label: "billing", a11y: "Project billing, 1 branch" });
+    // Its conversations file under the repo, by path or by the folder the daemon stamped.
+    expect(project && sessionsInProject([session({ id: "a", cwd: wire.path }), session({ id: "b", folder: "ez-mun7ig9t" })], project)).toHaveLength(2);
+    expect(placeTitle(projects, wire.path)).toBe("billing · fix/login");
+    expect(placeTitle(projects, "/Users/me/billing")).toBe("billing");
+    expect(projectFor(projects, wire.path)?.path).toBe("/Users/me/billing");
+  });
+
+  test("a detached worktree falls back to its folder; malformed data is ignored", () => {
+    expect(projectTitle({ name: "ez-1", worktree: { repo: "api" } })).toBe("api · ez-1");
+    expect(readWorktree({ repo: "" })).toBeUndefined();
+    expect(readWorktree({ repo: 3 })).toBeUndefined();
+    expect(readWorktree("billing")).toBeUndefined();
+    expect(readWorktree({ repo: "api", root: 1, branch: "" })).toEqual({ repo: "api" });
+    const [plain] = projectsForProvider([{ ...wire, worktree: { nope: true } }], [], "ezcoder");
+    expect(plain?.worktree).toBeUndefined();
+    expect(plain && projectTitle(plain)).toBe("ez-mun7ig9t");
+    expect(readWorktree({ repo: "api", gone: "yes" })).toEqual({ repo: "api" });
+  });
+});
+
+describe("grouping worktrees under their repository", () => {
+  const ez = (id: string, extra: Record<string, unknown>, updatedAt = "2026-10-01T00:00:00Z") => ({
+    path: `/Users/me/.ezcoder/worktrees/bmf/${id}`,
+    name: id,
+    sessions: 1,
+    updatedAt,
+    worktree: { repo: "black-mountain-fund", ...extra },
+  });
+
+  test("a dozen ezcoder checkouts are one project with a dozen branches", () => {
+    const root = "/Users/me/black-mountain-fund";
+    const announced = [
+      { path: root, name: "black-mountain-fund", sessions: 195, updatedAt: "2026-10-10T00:00:00Z" },
+      ...Array.from({ length: 12 }, (_, i) => ez(`ez-${i}`, { root, branch: `feat/${i}` }, `2026-10-${String(i + 1).padStart(2, "0")}T00:00:00Z`)),
+      { path: "/Users/me/pew2", name: "pew2", sessions: 11, updatedAt: "2026-10-05T00:00:00Z" },
+    ];
+    const projects = projectsForProvider(announced, [], "ezcoder");
+    expect(projects.map((p) => projectTitle(p))).toEqual(["black-mountain-fund", "pew2"]);
+    const [bmf] = projects;
+    expect(bmf?.path).toBe(root);
+    expect(bmf?.sessions).toBe(195 + 12);
+    // Newest work in any branch is the repo's newest work.
+    expect(bmf?.updatedAt).toBe("2026-10-12T00:00:00Z");
+    expect(bmf?.branches?.map((b) => b.label).slice(0, 3)).toEqual(["feat/11", "feat/10", "feat/9"]);
+  });
+
+  test("a deleted checkout joins the repo with its name, after the live branches", () => {
+    const root = "/Users/me/black-mountain-fund";
+    const projects = projectsForProvider(
+      [
+        { path: root, name: "black-mountain-fund", sessions: 3 },
+        ez("ez-old", { gone: true }, "2026-10-09T00:00:00Z"),
+        ez("ez-live", { root, branch: "fix/x" }, "2026-10-01T00:00:00Z"),
+      ],
+      [],
+      "ezcoder",
+    );
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.branches?.map((b) => [b.label, b.gone ?? false])).toEqual([
+      ["fix/x", false],
+      ["ez-old", true],
+    ]);
+  });
+
+  test("worktrees whose checkout is unknown group by repo, and a new chat goes to the newest live one", () => {
+    const projects = projectsForProvider(
+      [
+        ez("ez-a", { branch: "a" }, "2026-10-01T00:00:00Z"),
+        ez("ez-gone", { branch: "g", gone: true }, "2026-10-09T00:00:00Z"),
+        ez("ez-b", { branch: "b" }, "2026-10-05T00:00:00Z"),
+      ],
+      [],
+      "ezcoder",
+    );
+    expect(projects).toHaveLength(1);
+    expect(projectTitle(projects[0]!)).toBe("black-mountain-fund");
+    expect(projects[0]?.path).toBe("/Users/me/.ezcoder/worktrees/bmf/ez-b");
+  });
+
+  test("one entry per directory, however the path was written", () => {
+    const projects = projectsForProvider(
+      [
+        { path: "/code/x", name: "x", sessions: 2, updatedAt: "2026-10-01T00:00:00Z" },
+        { path: "/code/x/", name: "x", sessions: 3, updatedAt: "2026-10-02T00:00:00Z" },
+      ],
+      [],
+      "ezcoder",
+    );
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.sessions).toBe(5);
+    expect(projects[0] && sessionsInProject([session({ id: "a", cwd: "/code/x/" })], projects[0])).toHaveLength(1);
+  });
+
+  test("two projects that would read the same are titled apart; their identity is untouched", () => {
+    const projects = projectsForProvider(
+      [
+        { path: "/work/api", name: "api", updatedAt: "2026-10-02T00:00:00Z" },
+        { path: "/oss/api", name: "api", updatedAt: "2026-10-01T00:00:00Z" },
+        // Which `api` this belongs to is a coin toss, so it is grouped by name and named apart too.
+        { path: "/wt/api/ez-1", name: "ez-1", worktree: { repo: "api", branch: "x" } },
+      ],
+      [],
+      "ezcoder",
+    );
+    const titles = projects.map((p) => projectTitle(p));
+    expect(new Set(titles).size).toBe(titles.length);
+    expect(titles).toContain("api (work)");
+    expect(titles).toContain("api (oss)");
+    expect(projects.map((p) => p.name).filter((n) => n === "api")).toHaveLength(3);
+  });
+
+  test("two branches that would read the same within a project get their folders", () => {
+    const root = "/Users/me/black-mountain-fund";
+    const [project] = projectsForProvider(
+      [ez("ez-1", { root }), ez("ez-2", { root, branch: "ez-1" })],
+      [],
+      "ezcoder",
+    );
+    const labels = project?.branches?.map((b) => b.label) ?? [];
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });

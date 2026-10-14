@@ -83,7 +83,8 @@ import { haptics } from "./src/ui/haptics";
 import { Sidebar, DRAWER_WIDTH } from "./src/ui/Sidebar";
 import { ConnectionSheet } from "./src/ui/ConnectionSheet";
 import { ContextDetailsSheet } from "./src/ui/ContextDetailsSheet";
-import { projectsForProvider, projectSourceKey } from "./src/projects";
+import { projectContains, projectFor, projectsForProvider, projectSourceKey } from "./src/projects";
+import { workspaceTitle } from "./src/contextDetails";
 import { greetingFor, hashSeed } from "./src/greeting";
 import { HomeGreeting } from "./src/ui/HomeGreeting";
 import { AgentCarousel } from "./src/ui/AgentCarousel";
@@ -708,6 +709,8 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
     [daemon.projects, projectKey, activeId],
   );
   const selectedProjectPath = activeId ? daemon.projectPath[activeId] : undefined;
+  // The project that selection names, its branches included.
+  const selectedProject = useMemo(() => projectFor(projects, selectedProjectPath), [projects, selectedProjectPath]);
   const selectProject = useCallback(
     (path?: string) => {
       if (activeId) selectDaemonProject(activeId, path);
@@ -816,14 +819,18 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
   const homeChats = useMemo(
     () =>
       drawerProjection.rows
-        .filter((row) => row.providerId === activeId && (!selectedProjectPath || row.cwd === selectedProjectPath))
+        .filter(
+          (row) =>
+            row.providerId === activeId &&
+            (!selectedProjectPath || (selectedProject ? projectContains(selectedProject, row.cwd) : row.cwd === selectedProjectPath)),
+        )
         .slice(0, 6)
         .map((row) => ({ id: row.id, title: row.title || "Untitled", startedAt: row.startedAt })),
-    [drawerProjection.rows, activeId, selectedProjectPath],
+    [drawerProjection.rows, activeId, selectedProjectPath, selectedProject],
   );
   const homeStatus = [
     daemon.busy ? "Working" : daemon.status === "online" && !daemon.unreachable ? "Ready" : "Offline",
-    daemon.workspace?.folder,
+    workspaceTitle(daemon.workspace),
     daemon.workspace?.repo && (daemon.workspace.uncommitted ?? 0) > 0 ? `${daemon.workspace.uncommitted} changed` : undefined,
   ]
     .filter(Boolean)
@@ -1732,7 +1739,7 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
           activity={daemon.activity}
           needs={daemon.permission ? daemon.permission.title : askHere ? "Question" : undefined}
           offline={daemon.status !== "online" || Boolean(daemon.unreachable)}
-          project={daemon.workspace?.folder}
+          project={workspaceTitle(daemon.workspace)}
           changes={daemon.workspace?.uncommitted}
           say={kenSays?.text}
         />
@@ -1971,7 +1978,7 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
 
       <NewChatSheet
         visible={newChatOpen}
-        currentFolder={daemon.workspace?.folder}
+        currentFolder={workspaceTitle(daemon.workspace)}
         currentCwd={daemon.workspace?.cwd}
         projects={projects}
         onStart={startNewChat}
@@ -2046,6 +2053,10 @@ function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => void })
           if (daemon.permission?.requestId === requestId) answerPermission(requestId, optionId, deny);
           else daemon.send({ t: "session.permission", sessionId, requestId, optionId });
         }}
+        screenshots={voice.view.screenshots}
+        onPickScreenshot={voice.pickScreenshot}
+        onRemoveScreenshot={voice.removeScreenshot}
+        onSendScreenshot={voice.sendScreenshot}
       />
 
       {/* After the voice sheet, not before: it opens from that sheet's Projects

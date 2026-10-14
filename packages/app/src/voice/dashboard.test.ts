@@ -33,6 +33,50 @@ const store = (tasks: VoiceTask[], recent: VoiceEvent[] = []): VoiceStore => ({
 });
 
 describe("buildDashboard", () => {
+  test("tasks on a repository's worktree branches share the repository's row", () => {
+    const repo = (branch: string) => ({ projectId: "p_bmf", name: "black-mountain-fund", branch });
+    const rows = buildDashboard(
+      store(
+        [
+          task({ taskId: "t1", projectId: "p_wt1", projectName: "black-mountain-fund (fix/a)", repo: repo("fix/a"), state: "running" }),
+          task({ taskId: "t2", projectId: "p_wt2", projectName: "black-mountain-fund (fix/b)", repo: repo("fix/b") }),
+          task({ taskId: "t3", projectId: "p_bmf", projectName: "black-mountain-fund" }),
+          task({ taskId: "t4", projectId: "p_pew2", projectName: "pew2" }),
+        ],
+        // An event names the worktree it ran in, and still lands on the repo's row.
+        [ev({ eventId: 1, taskId: "t1", projectId: "p_wt1", projectName: "black-mountain-fund (fix/a)", kind: "task.tool", text: "editing a.ts" })],
+      ),
+    );
+    expect(rows.map((r) => r.name).sort()).toEqual(["black-mountain-fund", "pew2"]);
+    const bmf = rows.find((r) => r.name === "black-mountain-fund");
+    expect(bmf?.projectId).toBe("p_bmf");
+    expect(bmf?.running.map((t) => t.taskId)).toEqual(["t1"]);
+    expect(bmf?.queued.map((t) => t.taskId).sort()).toEqual(["t2", "t3"]);
+    expect(bmf?.activity).toBe("editing a.ts");
+  });
+
+  test("an event whose task has left the snapshot still lands on its repository's row", () => {
+    const rows = buildDashboard(
+      store(
+        [task({ taskId: "t3", projectId: "p_bmf", projectName: "black-mountain-fund" })],
+        [
+          ev({
+            eventId: 1,
+            taskId: "t_old",
+            projectId: "p_wt_gone",
+            projectName: "black-mountain-fund (ez-old)",
+            repo: { projectId: "p_bmf", name: "black-mountain-fund", branch: "ez-old" },
+            kind: "task.completed",
+            class: "completed",
+            text: "Fixed the totals.",
+          }),
+        ],
+      ),
+    );
+    expect(rows.map((r) => r.name)).toEqual(["black-mountain-fund"]);
+    expect(rows[0]?.lastResult).toBe("Fixed the totals.");
+  });
+
   test("working project shows activity and queue", () => {
     const rows = buildDashboard(
       store([task({ taskId: "t1", state: "running", activity: "running tests" }), task({ taskId: "t2" })]),

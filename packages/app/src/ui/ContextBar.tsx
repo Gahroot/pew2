@@ -6,7 +6,7 @@
 import { memo } from "react";
 import { ScrollView, StyleSheet } from "react-native";
 import { theme } from "../theme";
-import { contextDetails } from "../contextDetails";
+import { contextDetails, workspaceTitle } from "../contextDetails";
 import type { ContextUsage } from "../contextUsage";
 import type { Workspace } from "../useDaemon";
 import { StageChip, STAGE_CHIP_HEIGHT } from "./StageChip";
@@ -39,7 +39,7 @@ function ContextBarView({ workspace, usage, showCommands, onCommands, onDetails,
         <StageChip label="Commands" accessibilityLabel="Show commands" onPress={onCommands}
           trailing={<DotGlyph name="chevron-down" size={10} color={theme.color.textDim} />} />
       )}
-      <StageChip label={workspace?.folder || "Project"} maxLabelWidth={140}
+      <StageChip label={workspaceTitle(workspace) || "Project"} maxLabelWidth={workspace?.worktree ? 200 : 140}
         accessibilityLabel={`${details.project}. Show project details`} onPress={onDetails}
         trailing={<DotGlyph name="chevron-down" size={10} color={theme.color.textDim} />} />
       {details.warning && (

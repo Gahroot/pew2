@@ -65,7 +65,7 @@ import {
   readAvailableCommands,
   type SlashCommand,
 } from "./slashCommands";
-import type { WireProject } from "./projects";
+import { readWorktree, type ProjectWorktree, type WireProject } from "./projects";
 import { readUsage, type ContextUsage } from "./contextUsage";
 import {
   applyChunk,
@@ -258,6 +258,10 @@ export interface Workspace {
   folder: string;
   repo?: boolean;
   uncommitted?: number;
+  /** Checked-out branch, when the daemon reports one. */
+  branch?: string;
+  /** Set when `cwd` is a linked worktree of another repository. */
+  worktree?: ProjectWorktree;
 }
 
 /** A directory offered by the picker: a suggested repo, or a browsed folder. */
@@ -1729,6 +1733,8 @@ export function useDaemon(
             folder: message.folder ?? message.cwd,
             repo: typeof message.repo === "boolean" ? message.repo : undefined,
             uncommitted: typeof message.uncommitted === "number" && Number.isFinite(message.uncommitted) && message.uncommitted >= 0 ? message.uncommitted : undefined,
+            branch: typeof message.branch === "string" && message.branch ? message.branch : undefined,
+            worktree: readWorktree(message.worktree),
           };
           setState((s) => ({ ...s, workspace }));
           return;

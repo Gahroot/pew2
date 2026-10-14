@@ -12,7 +12,8 @@
  * Grouping, wording and ages are pure and live in voice/taskBoard.ts.
  */
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Image } from "expo-image";
 import Animated, { cancelAnimation, Easing, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from "react-native-reanimated";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { theme } from "../theme";
@@ -24,7 +25,9 @@ import { cardApproval, type HeldPermission } from "../voice/approvals";
 import { isActive, type MachineState } from "../voice/voiceMachine";
 import { voiceStatus, type StatusKey } from "../voice/presentation";
 import { currentLine, groupTasks, summarize, taskStatus, taskTimeline, type GroupKey, type Tone } from "../voice/taskBoard";
+import { placeTitle } from "../voice/place";
 import type { TranscriptLine } from "../voice/transcript";
+import { sendTarget, type ScreenshotCard } from "../voice/screenshots";
 import type { VoiceStore } from "../voice/voiceStore";
 import type { VoiceTask } from "../voice/types";
 
@@ -39,6 +42,11 @@ interface Props {
   onTalk: () => void;
   onEnd: () => void;
   onAnswer: (sessionId: string, requestId: string, optionId: string, deny: boolean) => void;
+  /** Screenshots shared with voice, newest first. */
+  screenshots?: ScreenshotCard[];
+  onPickScreenshot?: () => void;
+  onRemoveScreenshot?: (card: ScreenshotCard) => void;
+  onSendScreenshot?: (attachmentId: string, taskId: string) => void;
 }
 
 const TONE: Record<Tone, string> = {
@@ -47,6 +55,12 @@ const TONE: Record<Tone, string> = {
   success: theme.color.success,
   dim: theme.color.textFaint,
 };
+
+/**
+ * Below this window height (iPhone SE and the like) the hero shrinks, so the
+ * task list keeps a usable share of the screen between it and the footer.
+ */
+const COMPACT_HEIGHT = 700;
 
 /** Finished tasks shown before "Show more": they are history, not the point. */
 const FINISHED_PREVIEW = 3;
@@ -182,7 +196,7 @@ function TaskCard({
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ expanded }}
-          accessibilityLabel={`${task.projectName}: ${task.title}. ${status.label}. ${status.timing}`}
+          accessibilityLabel={`${placeTitle(task)}: ${task.title}. ${status.label}. ${status.timing}`}
           accessibilityHint={expanded ? "Hides the timeline" : "Shows the timeline"}
           onPress={() => {
             haptics.tap();
@@ -192,7 +206,7 @@ function TaskCard({
         >
           <View style={styles.cardTop}>
             <Text style={styles.project} numberOfLines={1}>
-              {task.projectName}
+              {placeTitle(task)}
             </Text>
             <View style={[styles.badge, { backgroundColor: color + "26" }]}>
               <LiveDot color={color} live={task.state === "running" && !task.approval} />
@@ -248,7 +262,7 @@ const RING: Record<StatusKey, { color: string; period: number; scale: number }> 
 };
 
 /** A core with a halo whose tempo follows the phase. Reanimated, UI thread. */
-function Pulse({ status }: { status: StatusKey }) {
+function Pulse({ status, compact }: { status: StatusKey; compact: boolean }) {
   const reduce = useReducedMotion();
   const t = useSharedValue(0);
   const cfg = RING[status];
@@ -265,9 +279,90 @@ function Pulse({ status }: { status: StatusKey }) {
     opacity: 0.35 + 0.65 * (1 - t.value * 0.5),
   }));
   return (
-    <View style={styles.pulseBox} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-      <Animated.View style={[styles.halo, { borderColor: cfg.color, backgroundColor: cfg.color + "33" }, style]} />
-      <View style={[styles.core, { backgroundColor: cfg.color }]} />
+    <View style={[styles.pulseBox, compact && styles.pulseBoxCompact]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      <Animated.View style={[styles.halo, compact && styles.haloCompact, { borderColor: cfg.color, backgroundColor: cfg.color + "33" }, style]} />
+      <View style={[styles.core, compact && styles.coreCompact, { backgroundColor: cfg.color }]} />
+    </View>
+  );
+}
+
+/**
+ * One shared screenshot: what it is, where it is, and the one obvious next
+ * step. "Send to …" appears only when there is a single task it could mean;
+ * otherwise the card says to name one, which is a sentence to the voice agent.
+ */
+function ScreenshotRow({
+  card,
+  target,
+  onRemove,
+  onSend,
+}: {
+  card: ScreenshotCard;
+  target?: VoiceTask;
+  onRemove?: (card: ScreenshotCard) => void;
+  onSend?: (attachmentId: string, taskId: string) => void;
+}) {
+  const status =
+    card.status === "uploading"
+      ? "Sending to your computer…"
+      : card.status === "failed"
+        ? (card.error ?? "Could not be sent.")
+        : card.status === "sent"
+          ? `Sent to ${card.sentTo.at(-1)?.title ?? "a task"}`
+          : target
+            ? `Not sent yet. For “${target.title}”?`
+            : "Say which project or task it's for";
+  const tone = card.status === "failed" ? styles.error : card.status === "sent" ? styles.sentText : styles.dim;
+  return (
+    <View style={styles.shot} accessible={false}>
+      <View style={styles.thumb}>
+        {card.localUri ? (
+          <Image source={{ uri: card.localUri }} style={StyleSheet.absoluteFill} contentFit="cover" accessibilityIgnoresInvertColors />
+        ) : (
+          <Ionicons name="image-outline" size={22} color={theme.color.textFaint} />
+        )}
+        {card.status === "uploading" ? (
+          <View style={styles.thumbBusy}>
+            <ActivityIndicator color={theme.color.text} />
+          </View>
+        ) : null}
+      </View>
+      <View style={styles.shotBody}>
+        <Text style={styles.shotName} numberOfLines={1}>
+          {card.name}
+        </Text>
+        <Text style={[styles.shotStatus, tone]} numberOfLines={3} accessibilityLiveRegion="polite">
+          {status}
+        </Text>
+        {card.status === "held" && target && card.attachmentId && onSend ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Send ${card.name} to ${target.title}`}
+            style={({ pressed }) => [styles.sendBtn, pressed && styles.pressed]}
+            onPress={() => {
+              haptics.tap();
+              if (card.attachmentId) onSend(card.attachmentId, target.taskId);
+            }}
+          >
+            <Ionicons name="paper-plane-outline" size={14} color={theme.color.text} />
+            <Text style={styles.sendText}>Send to agent</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {card.status !== "uploading" && onRemove ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${card.name}`}
+          hitSlop={8}
+          style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
+          onPress={() => {
+            haptics.tap();
+            onRemove(card);
+          }}
+        >
+          <Ionicons name="close" size={18} color={theme.color.textDim} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -298,7 +393,22 @@ function Transcript({ lines }: { lines: TranscriptLine[] }) {
   );
 }
 
-export function VoiceSheet({ visible, machine, store, transcript, held, onOpenProjects, onClose, onTalk, onEnd, onAnswer }: Props) {
+export function VoiceSheet({
+  visible,
+  machine,
+  store,
+  transcript,
+  held,
+  onOpenProjects,
+  onClose,
+  onTalk,
+  onEnd,
+  onAnswer,
+  screenshots = [],
+  onPickScreenshot,
+  onRemoveScreenshot,
+  onSendScreenshot,
+}: Props) {
   const live = isActive(machine.phase);
   const now = useNow(visible);
   const status = voiceStatus(machine, store, transcript, now);
@@ -308,12 +418,14 @@ export function VoiceSheet({ visible, machine, store, transcript, held, onOpenPr
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
   const [showAllFinished, setShowAllFinished] = useState(false);
   const isOpenByDefault = (key: GroupKey) => key === "attention" || key === "working";
+  const compact = useWindowDimensions().height < COMPACT_HEIGHT;
+  const target = sendTarget(store.tasks);
 
   return (
     <Sheet visible={visible} title="Voice" onClose={onClose} tall>
       <View style={styles.body}>
-        <View style={styles.hero}>
-          <Pulse status={status.key} />
+        <View style={[styles.hero, compact && styles.heroCompact]}>
+          <Pulse status={status.key} compact={compact} />
           <View style={styles.statusRow}>
             {status.orb ? <ThinkingOrb state={status.orb} /> : null}
             <Text style={styles.state} accessibilityLiveRegion="polite">
@@ -332,12 +444,20 @@ export function VoiceSheet({ visible, machine, store, transcript, held, onOpenPr
         </View>
 
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {screenshots.length > 0 ? (
+            <View style={styles.stack}>
+              <Text style={styles.sectionTitle}>Screenshots</Text>
+              {screenshots.map((card) => (
+                <ScreenshotRow key={card.key} card={card} target={target} onRemove={onRemoveScreenshot} onSend={onSendScreenshot} />
+              ))}
+            </View>
+          ) : null}
           <Transcript lines={transcript} />
           {groups.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="sparkles-outline" size={22} color={theme.color.textFaint} />
               <Text style={styles.emptyTitle}>No tasks yet</Text>
-              <Text style={styles.dim}>Say what you want done, like "ask the pew2 agent to run the tests". Each task will appear here as it starts.</Text>
+              <Text style={styles.emptyText}>Say what you want done, like "ask the pew2 agent to run the tests", or share a screenshot of a fix. Each task will appear here as it starts.</Text>
             </View>
           ) : null}
           {groups.map((group) => {
@@ -377,6 +497,22 @@ export function VoiceSheet({ visible, machine, store, transcript, held, onOpenPr
             <Button kind="primary" icon="mic-outline" label={status.retry ? "Try again" : "Talk"} onPress={onTalk} />
           )}
           <Button icon="grid-outline" label="Projects" onPress={onOpenProjects} />
+          {onPickScreenshot ? (
+            // Icon-only to keep three controls on one row at 320pt; named for
+            // VoiceOver, and the empty state says screenshots can be shared.
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Share a screenshot"
+              accessibilityHint="Opens your photos to send a picture, like a partner's fix, to a coding agent"
+              style={({ pressed }) => [styles.btn, styles.iconBtn, pressed && styles.pressed]}
+              onPress={() => {
+                haptics.tap();
+                onPickScreenshot();
+              }}
+            >
+              <Ionicons name="image-outline" size={20} color={theme.color.text} />
+            </Pressable>
+          ) : null}
         </View>
       </View>
     </Sheet>
@@ -386,9 +522,15 @@ export function VoiceSheet({ visible, machine, store, transcript, held, onOpenPr
 const styles = StyleSheet.create({
   body: { flex: 1, gap: theme.space(3) },
   hero: { alignItems: "center", gap: theme.space(2), paddingTop: theme.space(1) },
-  pulseBox: { width: 88, height: 88, alignItems: "center", justifyContent: "center" },
+  // Sized for the halo at its largest (72 × the 1.3 speaking scale), so the
+  // pulse never spills over the status line under it.
+  pulseBox: { width: 96, height: 96, alignItems: "center", justifyContent: "center" },
   halo: { position: "absolute", width: 72, height: 72, borderRadius: 36, borderWidth: 2 },
   core: { width: 36, height: 36, borderRadius: 18 },
+  heroCompact: { gap: theme.space(1), paddingTop: 0 },
+  pulseBoxCompact: { width: 72, height: 72 },
+  haloCompact: { width: 54, height: 54, borderRadius: 27 },
+  coreCompact: { width: 28, height: 28, borderRadius: 14 },
   statusRow: { flexDirection: "row", alignItems: "center", gap: theme.space(2) },
   state: { color: theme.color.text, fontSize: 22, fontWeight: "700" },
   heroDetail: { color: theme.color.textDim, fontSize: theme.font.body, textAlign: "center" },
@@ -398,7 +540,9 @@ const styles = StyleSheet.create({
   chipDot: { width: 6, height: 6, borderRadius: 3 },
   chipText: { fontSize: theme.font.small, fontWeight: "600" },
   scroll: { flex: 1 },
-  scrollContent: { gap: theme.space(5), paddingBottom: theme.space(4) },
+  // Grows to the viewport so an empty screen can centre its hint between the
+  // hero and the footer instead of leaving a dead band above the buttons.
+  scrollContent: { flexGrow: 1, gap: theme.space(5), paddingBottom: theme.space(4) },
   stack: { gap: theme.space(2) },
   row: { flexDirection: "row", gap: theme.space(2), alignItems: "center", flexWrap: "wrap" },
   sectionTitle: { color: theme.color.textDim, fontSize: theme.font.small, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.6 },
@@ -407,8 +551,9 @@ const styles = StyleSheet.create({
   bubbleAssistant: { alignSelf: "flex-start", backgroundColor: theme.color.surface },
   said: { color: theme.color.text, fontSize: theme.font.body },
   reply: { color: theme.color.text, fontSize: theme.font.body },
-  empty: { alignItems: "center", gap: theme.space(2), paddingVertical: theme.space(6), paddingHorizontal: theme.space(4) },
+  empty: { flexGrow: 1, alignItems: "center", justifyContent: "center", gap: theme.space(2), paddingVertical: theme.space(6), paddingHorizontal: theme.space(4) },
   emptyTitle: { color: theme.color.text, fontSize: theme.font.title, fontWeight: "600" },
+  emptyText: { color: theme.color.textDim, fontSize: theme.font.small, textAlign: "center", maxWidth: 300 },
   card: { flexDirection: "row", borderRadius: theme.radius.lg, backgroundColor: theme.color.surface, overflow: "hidden" },
   bar: { width: 4 },
   cardBody: { flex: 1, padding: theme.space(3), gap: theme.space(2) },
@@ -432,6 +577,28 @@ const styles = StyleSheet.create({
   more: { alignSelf: "center", paddingVertical: theme.space(2), paddingHorizontal: theme.space(3), minHeight: theme.size.touch, justifyContent: "center" },
   moreText: { color: theme.color.accent, fontSize: theme.font.body, fontWeight: "600" },
   footer: { flexDirection: "row", gap: theme.space(2) },
+  iconBtn: { flex: 0, width: theme.size.touch + 6, paddingHorizontal: 0 },
+  shot: { flexDirection: "row", alignItems: "flex-start", gap: theme.space(3), padding: theme.space(3), borderRadius: theme.radius.lg, backgroundColor: theme.color.surfaceRaised },
+  thumb: { width: 56, height: 56, borderRadius: theme.radius.md, overflow: "hidden", alignItems: "center", justifyContent: "center", backgroundColor: theme.color.surfacePressed },
+  thumbBusy: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.45)" },
+  shotBody: { flex: 1, minWidth: 0, gap: 4 },
+  shotName: { color: theme.color.text, fontSize: theme.font.body, fontWeight: "600" },
+  shotStatus: { fontSize: theme.font.small },
+  sentText: { color: theme.color.success },
+  sendBtn: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: theme.space(1),
+    minHeight: theme.size.touch,
+    paddingHorizontal: theme.space(3),
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.color.accent,
+    maxWidth: "100%",
+  },
+  sendText: { color: "#fff", fontSize: theme.font.small, fontWeight: "700", flexShrink: 1 },
+  remove: { width: theme.size.touch, height: theme.size.touch, alignItems: "center", justifyContent: "center", marginTop: -theme.space(2), marginRight: -theme.space(2) },
   btn: {
     flex: 1,
     flexDirection: "row",

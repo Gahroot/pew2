@@ -15,6 +15,7 @@ import {
   offerEvent,
   parseVoicePush,
   routeVoiceResponse,
+  summarise,
   suppressVoicePush,
   type Presence,
 } from "./voiceNotifications";
@@ -163,5 +164,20 @@ describe("quiet hours", () => {
   });
   test("strict silences decisions too", () => {
     expect(offerEvent(emptyBatch, event(3, { class: "blocked" }), { ...quiet, quietAllowsUrgent: false }).show).toBeUndefined();
+  });
+});
+
+describe("worktree branches", () => {
+  const onBranch = (eventId: number, branch: string) =>
+    event(eventId, { taskId: `t${eventId}`, projectId: `p_${branch}`, projectName: `billing (${branch})`, repo: { name: "billing", branch } });
+
+  test("a banner names the repository, with the branch as a detail", () => {
+    expect(summarise([onBranch(1, "fix/login")])?.title).toBe("billing · fix/login: done");
+  });
+
+  test("several branches finishing is one project's news, not several projects", () => {
+    const notice = summarise([onBranch(1, "fix/a"), onBranch(2, "fix/b"), onBranch(3, "fix/c")]);
+    expect(notice?.title).toBe("billing");
+    expect(notice?.body).toContain("3 tasks finished");
   });
 });

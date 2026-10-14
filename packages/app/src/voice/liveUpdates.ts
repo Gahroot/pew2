@@ -10,6 +10,7 @@
  * Pure: no Expo, so `bun test` can load it.
  */
 import type { VoiceEvent, VoiceTask } from "./types";
+import { placeSpoken } from "./place";
 
 /** Chatter (tool steps, queued, started) is never worth speaking over the user. */
 const ANNOUNCED: ReadonlySet<VoiceEvent["class"]> = new Set(["completed", "blocked", "approval"]);
@@ -27,7 +28,8 @@ export function shouldAnnounce(event: VoiceEvent, state: AnnounceState): boolean
 
 /** The system note for one event. Ids are for tool calls; the rules say never to speak them. */
 export function liveUpdateNote(event: VoiceEvent, task?: VoiceTask): string {
-  const lines = [`[Update] ${event.projectName} (taskId ${event.taskId}): ${event.text}`];
+  // The repository, with any branch as a detail: work on a branch is that project's work.
+  const lines = [`[Update] ${placeSpoken(event)} (taskId ${event.taskId}): ${event.text}`];
   if (event.class === "completed" && task?.debrief) {
     lines.push(`Debrief: ${JSON.stringify(task.debrief)}`);
   }

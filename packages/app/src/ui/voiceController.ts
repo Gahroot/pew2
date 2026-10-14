@@ -21,12 +21,29 @@ import { LOST_CONNECTION_LINE, onNetworkLost, onNetworkRestored } from "../voice
 import { offerLiveEvent } from "./voiceAlerts";
 import { liveUpdateNote, shouldAnnounce } from "../voice/liveUpdates";
 import { connectRealtime, type RealtimeTransport } from "./realtimeTransport";
+import {
+  arrivalNote,
+  readHeld,
+  screenshotCards,
+  sentNote,
+  type HeldScreenshot,
+  type ScreenshotCard,
+  type Upload,
+} from "../voice/screenshots";
+import type { PendingAttachment } from "../attachments";
 
 export interface VoiceView {
   machine: MachineState;
   store: VoiceStore;
   transcript: TranscriptLine[];
+  /** Screenshots shared with voice, newest first. */
+  screenshots: ScreenshotCard[];
+  /** Bumped each time the model asks for a screenshot; the sheet opens the picker. */
+  pickerRequests: number;
 }
+
+/** Not a voice session: tool calls the sheet makes on the user's behalf. */
+const SHEET_SESSION = "sheet";
 
 export interface VoiceDeps {
   /** Sends one sealed message to the daemon; false when not connected. */
@@ -63,8 +80,25 @@ export function createVoiceController(deps: VoiceDeps) {
   /** Live news for this Realtime leg: what the opening snapshot covered, and what was since told. */
   let announceSince = 0;
   let announced = new Set<number>();
+  /** Screenshots: uploads in flight, what the computer holds, and which phone file became which. */
+  let uploads: Upload[] = [];
+  let held: HeldScreenshot[] = [];
+  let localUris: Record<string, { localUri?: string; key: string }> = {};
+  let pickerRequests = 0;
+  /** Sheet sends waiting on their answer: callId -> what was sent where. */
+  const sheetSends = new Map<string, { attachmentId: string; taskId: string }>();
 
-  const publish = () => deps.onChange({ machine, store, transcript });
+  const view = (): VoiceView => ({
+    machine,
+    store,
+    transcript,
+    screenshots: screenshotCards(uploads, held, localUris, store.tasks),
+    pickerRequests,
+  });
+  const publish = () => deps.onChange(view());
+
+  /** Tell a live conversation something; nothing to do when there is none. */
+  const tellModel = (note: string) => realtime?.notify(note);
 
   const newId = () => `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -218,7 +252,59 @@ export function createVoiceController(deps: VoiceDeps) {
   }
 
   return {
-    view: (): VoiceView => ({ machine, store, transcript }),
+    view,
+
+    /**
+     * Upload a picked screenshot. The card shows at once; the daemon's answer
+     * turns it into a held screenshot, or a reason it was refused.
+     */
+    attachScreenshot(file: PendingAttachment): void {
+      const requestId = `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const sent = deps.send({ t: "voice.attach", requestId, name: file.name, mimeType: file.mimeType, data: file.data });
+      uploads = [
+        {
+          requestId,
+          name: file.name,
+          ...(file.localUri ? { localUri: file.localUri } : null),
+          status: sent ? "uploading" : "failed",
+          ...(sent ? null : { error: "Your computer is not reachable right now. Try again when it is." }),
+          at: Date.now(),
+        },
+        ...uploads,
+      ];
+      publish();
+    },
+    /** A picker that could not open or read the file, shown as a refused card. */
+    screenshotFailed(name: string, error: string): void {
+      uploads = [{ requestId: `failed-${Date.now().toString(36)}`, name, status: "failed", error, at: Date.now() }, ...uploads];
+      publish();
+    },
+    /** Remove a card: a refused upload here, or a held screenshot on the computer too. */
+    removeScreenshot(card: Pick<ScreenshotCard, "key" | "attachmentId">): void {
+      uploads = uploads.filter((u) => u.requestId !== card.key);
+      if (card.attachmentId) {
+        deps.send({ t: "voice.detach", attachmentId: card.attachmentId });
+        held = held.filter((h) => h.attachmentId !== card.attachmentId);
+      }
+      publish();
+    },
+    /**
+     * Send a held screenshot to a task from the sheet, through the same tool
+     * the model uses — so the checks, the journal and the task's history are
+     * identical whichever of them did it.
+     */
+    sendScreenshot(attachmentId: string, taskId: string): void {
+      const callId = `sheet-${attachmentId}-${taskId}-${Date.now().toString(36)}`;
+      const ok = deps.send({
+        t: "voice.tool",
+        voiceSessionId: SHEET_SESSION,
+        callId,
+        name: "attach_screenshot",
+        args: { attachmentId, taskId, instruction: "Here is a screenshot the user forwarded, likely a fix from a partner. Look at it and apply it to this task." },
+      });
+      if (!ok) return;
+      sheetSends.set(callId, { attachmentId, taskId });
+    },
 
     start(focus: Focus): void {
       transcript = [];
@@ -242,6 +328,9 @@ export function createVoiceController(deps: VoiceDeps) {
       teardown();
       machine = initialState;
       transcript = [];
+      uploads = [];
+      held = [];
+      localUris = {};
       store = reduce(store, { type: "clear" });
       publish();
     },
@@ -299,8 +388,24 @@ export function createVoiceController(deps: VoiceDeps) {
         case "voice.unavailable":
           dispatch({ type: "unavailable", code: message.code, message: message.message });
           return;
-        case "voice.tool.result":
+        case "voice.tool.result": {
+          const fromSheet = typeof message.callId === "string" ? sheetSends.get(message.callId) : undefined;
+          if (message.voiceSessionId === SHEET_SESSION && fromSheet) {
+            sheetSends.delete(message.callId);
+            const shot = held.find((h) => h.attachmentId === fromSheet.attachmentId);
+            const task = store.tasks[fromSheet.taskId];
+            if (message.ok && shot && task) tellModel(sentNote(shot, task));
+            if (!message.ok && shot) {
+              uploads = [{ requestId: `send-${message.callId}`, name: shot.name, status: "failed", error: typeof message.error === "string" ? message.error : "It could not be sent.", at: Date.now() }, ...uploads];
+              publish();
+            }
+            return;
+          }
           if (message.voiceSessionId !== machine.voiceSessionId) return;
+          if (message.openPicker === true) {
+            pickerRequests++;
+            publish();
+          }
           fold({ type: "toolResult", output: message.output });
           realtime?.submitResult({
             callId: message.callId,
@@ -310,6 +415,34 @@ export function createVoiceController(deps: VoiceDeps) {
             endSession: message.endSession,
           });
           return;
+        }
+        case "voice.attached": {
+          const upload = uploads.find((u) => u.requestId === message.requestId);
+          if (!upload) return;
+          const attachment = message.attachment as HeldScreenshot | undefined;
+          if (message.ok === true && attachment && typeof attachment.attachmentId === "string") {
+            uploads = uploads.filter((u) => u.requestId !== message.requestId);
+            localUris = { ...localUris, [attachment.attachmentId]: { localUri: upload.localUri, key: upload.requestId } };
+            if (!held.some((h) => h.attachmentId === attachment.attachmentId)) held = [...held, ...(readHeld([attachment]) ?? [])];
+            // The user is in a conversation: the model hears it arrived and asks where it goes.
+            tellModel(arrivalNote(attachment));
+          } else {
+            uploads = uploads.map((u) =>
+              u.requestId === message.requestId
+                ? { ...u, status: "failed", error: typeof message.error === "string" ? message.error : "Your computer refused that picture." }
+                : u,
+            );
+          }
+          publish();
+          return;
+        }
+        case "voice.attachments": {
+          const list = readHeld(message.attachments);
+          if (!list) return;
+          held = list;
+          publish();
+          return;
+        }
         case "voice.event":
           // A live conversation hears it from the model; nothing else would tell it.
           if (realtime && message.event && shouldAnnounce(message.event, { since: announceSince, sent: announced })) {
@@ -319,11 +452,23 @@ export function createVoiceController(deps: VoiceDeps) {
           offerLiveEvent(message.event);
           fold({ type: "event", event: message.event, task: message.task });
           return;
-        case "voice.state":
+        case "voice.state": {
+          // Absent from an older daemon, which holds none: leave what is shown alone.
+          const list = readHeld(message.attachments);
+          if (list) held = list;
           fold({ type: "state", snapshot: message.snapshot, events: message.events ?? [] });
           return;
+        }
         case "error":
           if (message.code === "unknown_message" && machine.phase === "opening") dispatch({ type: "oldDaemon" });
+          // An older daemon has no `voice.attach`, and its refusal names no
+          // request: without this every upload would spin for ever.
+          if (message.code === "unknown_message" && uploads.some((u) => u.status === "uploading")) {
+            uploads = uploads.map((u) =>
+              u.status === "uploading" ? { ...u, status: "failed", error: "Your computer's pew2 is too old for screenshots. Update it, then try again." } : u,
+            );
+            publish();
+          }
           return;
         default:
           return;

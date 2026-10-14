@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { contextDetails } from "./contextDetails";
+import { contextDetails, workspaceTitle } from "./contextDetails";
 const workspace = { cwd: "/repo", folder: "repo", repo: true, uncommitted: 0 };
 test("routine usage and clean state remain available in details but not resting warnings", () => {
   const details = contextDetails(workspace, { used: 2000, size: 100000 });
@@ -29,4 +29,17 @@ test("unknown and invalid data never become zero or clean", () => {
   expect(contextDetails({ ...workspace, uncommitted: undefined }).changes).toBe(missing.changes);
   expect(contextDetails({ ...workspace, repo: undefined }).changes).toBe(missing.changes);
   expect(contextDetails({ ...workspace, repo: false }).changes).toBe("Not a Git repository");
+});
+
+test("a worktree is named by repo and branch, and says it is a separate checkout", () => {
+  const worktree = { ...workspace, folder: "ez-mun7ig9t", branch: "fix/login", worktree: { repo: "billing", branch: "fix/login" } };
+  expect(workspaceTitle(worktree)).toBe("billing · fix/login");
+  const details = contextDetails(worktree);
+  expect(details.project).toBe("billing · fix/login");
+  expect(details.branch).toBe("fix/login");
+  expect(details.worktree).toBe("Worktree of billing");
+  // An ordinary checkout keeps its folder name and has no worktree line.
+  expect(workspaceTitle(workspace)).toBe("repo");
+  expect(contextDetails({ ...workspace, branch: "main" }).worktree).toBeUndefined();
+  expect(workspaceTitle(undefined)).toBeUndefined();
 });
