@@ -29,6 +29,7 @@ import {
   type NoticeOrigin,
   type wire,
 } from "@pew2/protocol";
+import { placeTitle } from "./voice/place.js";
 
 type VoiceEvent = wire.VoiceEvent;
 type VoiceCallbackPush = wire.VoiceCallbackPush;
@@ -228,14 +229,17 @@ export function voiceMessages(registry: PushRegistry, event: VoiceEvent): ExpoMe
     projectId: event.projectId,
     class: event.class,
   };
+  // "black-mountain-fund · fix/login: finished": the repository, with the
+  // branch as a detail, never the worktree as a project of its own.
+  const place = placeTitle(event);
   const title =
     event.class === "approval"
-      ? `${event.projectName}: needs approval`
+      ? `${place}: needs approval`
       : event.class === "blocked"
-        ? `${event.projectName}: needs you`
+        ? `${place}: needs you`
         : event.class === "completed"
-          ? `${event.projectName}: finished`
-          : event.projectName;
+          ? `${place}: finished`
+          : place;
   return registry.list().map((target) => ({
     to: target.token,
     title,

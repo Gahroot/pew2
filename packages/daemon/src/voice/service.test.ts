@@ -4,7 +4,7 @@ import type { Daemon } from "../index.js";
 import { pushVoiceEvent, PushRegistry, voiceMessages } from "../push.js";
 import type { VoiceHost } from "./dispatcher.js";
 import { scratch } from "./scratch.js";
-import { VoiceService } from "./service.js";
+import { contextText, VoiceService } from "./service.js";
 import type { VoiceEvent } from "./types.js";
 
 function host(): VoiceHost & { permissionAnswers: string[] } {
@@ -170,4 +170,57 @@ test("voice push data is exactly VoiceCallbackPush, sent to registered tokens", 
   await pushVoiceEvent(registry, event, (async () => {
     throw new Error("must not be called with no targets");
   }) as unknown as typeof fetch);
+});
+
+test("tasks saved before repositories were tracked are filed under theirs at startup", async () => {
+  const dataDir = scratch();
+  const deps = {
+    dataDir,
+    env: { CODEX_HOME: "/nonexistent-codex-home" },
+    host: host(),
+    emit: () => undefined,
+    projectPaths: async () => ["/code/billing"],
+    usableProviders: () => ["echo"],
+    tickMs: 0,
+  };
+  // An older daemon's task in an ezcoder checkout that has since been deleted.
+  const first = await VoiceService.create({ ...deps, detectWorktree: async () => undefined });
+  const task = first.store.createTask({
+    projectId: "proj_old",
+    projectName: "ez-mun7ig9t",
+    cwd: "/home/.ezcoder/worktrees/billing/ez-mun7ig9t",
+    providerId: "echo",
+    title: "Fix the login",
+    prompt: "fix it",
+  });
+  first.store.transition(task.taskId, "completed", "task.completed", "Done.");
+  await first.store.flush();
+  first.dispose();
+
+  const second = await VoiceService.create({
+    ...deps,
+    detectWorktree: async (path: string) => (path.includes("/worktrees/billing/") ? { repo: "billing", gone: true } : undefined),
+  });
+  const billing = (await second.projects()).find((p) => p.name === "billing");
+  expect(second.store.getTask(task.taskId)?.repo).toEqual({ projectId: billing?.projectId, name: "billing", branch: "ez-mun7ig9t" });
+  // Idempotent: nothing left to fill on the next start.
+  expect(await second.backfillRepos()).toBe(0);
+  // And the model hears it as billing's work.
+  const text = contextText(await second.snapshot());
+  expect(text).toContain("billing, on the ez-mun7ig9t branch");
+  expect(text).not.toMatch(/Task t_\d+ ez-mun7ig9t/);
+  second.dispose();
+});
+
+test("a push about a branch is titled by its repository", () => {
+  const registry = new PushRegistry();
+  registry.register("d", "ExponentPushToken[abc]", "ios");
+  const [message] = voiceMessages(registry, {
+    ...event,
+    class: "completed",
+    kind: "task.completed",
+    projectName: "billing (fix/login)",
+    repo: { name: "billing", branch: "fix/login" },
+  });
+  expect(message?.title).toBe("billing · fix/login: finished");
 });

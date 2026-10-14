@@ -9,7 +9,7 @@
 import { join } from "node:path";
 import { EventBatcher } from "./classify.js";
 import { buildSnapshot } from "./context.js";
-import { Orchestrator, type VoiceHost } from "./dispatcher.js";
+import { Orchestrator, type PromptImage, type VoiceHost } from "./dispatcher.js";
 import { subscriptionToken } from "./codexAuth.js";
 import {
   DEFAULT_MODEL,
@@ -18,11 +18,21 @@ import {
   readVoicePrefs,
   resolveApiKey,
 } from "./mint.js";
-import { addAlias, buildRegistry, readAliases } from "./registry.js";
+import { addAlias, buildRegistry, readAliases, repoForPath } from "./registry.js";
 import { DEFAULT_APPROVAL_POLICY, type ApprovalPolicy } from "./safety.js";
-import { toVoiceTask, VoiceStore, type StoredTask } from "./store.js";
+import { toVoiceTask, VoiceStore, type StoredScreenshot, type StoredTask } from "./store.js";
 import { realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS } from "./tools.js";
-import type { VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
+import type { VoiceAttachment, VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
+import { detectWorktree, type WorktreeInfo } from "../worktree.js";
+import { placeSpoken } from "./place.js";
+import {
+  checkScreenshot,
+  deleteScreenshot,
+  MAX_SCREENSHOTS,
+  readScreenshot,
+  SCREENSHOT_TTL_MS,
+  writeScreenshot,
+} from "./screenshots.js";
 
 export interface VoiceServiceDeps {
   dataDir: string;
@@ -33,6 +43,8 @@ export interface VoiceServiceDeps {
   /** Project paths the daemon knows (known-projects + agent history). */
   projectPaths: () => Promise<string[]>;
   providerForPath?: (path: string) => string | undefined;
+  /** Which of those paths are linked git worktrees; defaults to reading `.git`. */
+  detectWorktree?: (path: string) => Promise<WorktreeInfo | undefined>;
   usableProviders: () => string[];
   lastUsedProvider?: () => string | undefined;
   /** Send a push for an event that is worth one. Never awaited by the service. */
@@ -70,7 +82,10 @@ export class VoiceService {
   ) {
     this.now = deps.now ?? Date.now;
     this.store = store;
-    this.orchestrator = new Orchestrator(store, deps.host, { now: this.now });
+    this.orchestrator = new Orchestrator(store, deps.host, {
+      now: this.now,
+      readAttachments: (ids) => this.readScreenshots(ids),
+    });
     this.tools = new ToolExecutor({
       store,
       orchestrator: this.orchestrator,
@@ -92,6 +107,8 @@ export class VoiceService {
     const store = await VoiceStore.open(join(deps.dataDir, "voice-state.json"), deps.now);
     const service = new VoiceService(deps, store);
     service.orchestrator.reconcile();
+    await service.backfillRepos().catch(() => undefined);
+    await service.pruneScreenshots();
     const tickMs = deps.tickMs ?? 5_000;
     if (tickMs > 0) {
       service.timer = setInterval(() => service.tick(), tickMs);
@@ -110,6 +127,30 @@ export class VoiceService {
     for (const event of this.batcher.due(this.now())) this.pushIfIdle(event);
   }
 
+  /**
+   * File tasks saved before repositories were tracked under their repository.
+   *
+   * Read from each task's own `cwd` rather than the registry, because the
+   * checkout may since have been deleted and dropped from it — and that is
+   * exactly the finished work someone asks about ("what got done in
+   * black-mountain-fund?"). Runs at startup only; new tasks record theirs.
+   */
+  async backfillRepos(): Promise<number> {
+    const missing = this.store.tasks().filter((t) => !t.repo);
+    if (missing.length === 0) return 0;
+    const detect = this.deps.detectWorktree ?? ((path: string) => detectWorktree(path));
+    const found = new Map<string, WorktreeInfo>();
+    await Promise.all(
+      [...new Set(missing.map((t) => t.cwd))].map(async (cwd) => {
+        const info = await detect(cwd).catch(() => undefined);
+        if (info) found.set(cwd, info);
+      }),
+    );
+    if (found.size === 0) return 0;
+    const projects = await this.projects();
+    return this.store.backfillRepos((task) => repoForPath(task.cwd, found.get(task.cwd), projects));
+  }
+
   /** Registry, refreshed when older than the TTL or when `fresh` is asked for. */
   async projects(fresh = false): Promise<VoiceProject[]> {
     const cached = this.projectCache;
@@ -118,7 +159,15 @@ export class VoiceService {
       this.deps.projectPaths().catch(() => [] as string[]),
       readAliases(this.deps.dataDir),
     ]);
-    const list = buildRegistry(paths, aliases, this.deps.providerForPath);
+    const detect = this.deps.detectWorktree ?? ((path: string) => detectWorktree(path));
+    const worktrees = new Map<string, WorktreeInfo>();
+    await Promise.all(
+      paths.map(async (path) => {
+        const info = await detect(path).catch(() => undefined);
+        if (info) worktrees.set(path, info);
+      }),
+    );
+    const list = buildRegistry(paths, aliases, this.deps.providerForPath, (path) => worktrees.get(path));
     this.projectCache = { at: this.now(), list };
     return list;
   }
@@ -200,7 +249,72 @@ export class VoiceService {
       output: result.output,
       ...(result.error ? { error: result.error } : null),
       ...(result.endSession ? { endSession: true } : null),
+      ...(result.openPicker ? { openPicker: true } : null),
     };
+  }
+
+  // ---- screenshots ---------------------------------------------------------
+
+  /**
+   * Keep a screenshot the phone sent. Answered to the sender, and the new list
+   * is broadcast so every screen showing voice agrees on what is held.
+   *
+   * Written to disk before it is recorded: a record whose file never landed
+   * would be offered to the model and then fail the task it was sent with.
+   */
+  async attach(message: { requestId: string; name: string; mimeType: string; data: string }) {
+    const answer = (fields: { ok: boolean; attachment?: VoiceAttachment; error?: string }) => ({
+      t: "voice.attached" as const,
+      requestId: message.requestId,
+      ...fields,
+    });
+    const checked = checkScreenshot(message.mimeType, message.data);
+    if (!checked.ok) return answer({ ok: false, error: checked.error });
+    const name = message.name.trim().slice(0, 120) || "screenshot";
+    let path: string;
+    try {
+      path = await writeScreenshot(this.deps.dataDir, this.store.peekScreenshotId(), name, checked.bytes);
+    } catch {
+      return answer({ ok: false, error: "The computer could not save that picture. Check it has disk space, then try again." });
+    }
+    const shot = this.store.addScreenshot({ name, mimeType: checked.mimeType, size: checked.bytes.byteLength, path });
+    await this.pruneScreenshots();
+    await this.store.flush();
+    this.broadcastScreenshots();
+    return answer({ ok: true, attachment: attachmentView(shot) });
+  }
+
+  /** Drop a screenshot and its file. A missing id is already the outcome wanted. */
+  async detach(attachmentId: string): Promise<void> {
+    const shot = this.store.removeScreenshot(attachmentId);
+    if (!shot) return;
+    await deleteScreenshot(shot.path);
+    await this.store.flush();
+    this.broadcastScreenshots();
+  }
+
+  /** Every screenshot held, oldest first, as clients see them. */
+  screenshots(): VoiceAttachment[] {
+    return this.store.screenshots().map(attachmentView);
+  }
+
+  private broadcastScreenshots() {
+    this.deps.emit({ t: "voice.attachments", attachments: this.screenshots() });
+  }
+
+  private async pruneScreenshots(): Promise<void> {
+    const removed = this.store.pruneScreenshots(MAX_SCREENSHOTS, SCREENSHOT_TTL_MS);
+    await Promise.all(removed.map((shot) => deleteScreenshot(shot.path)));
+  }
+
+  private async readScreenshots(ids: readonly string[]): Promise<PromptImage[]> {
+    return Promise.all(
+      ids.map(async (id) => {
+        const shot = this.store.screenshot(id);
+        if (!shot) throw new Error("A screenshot for this task was removed. Attach it again.");
+        return { name: shot.name, mimeType: shot.mimeType, data: await readScreenshot(shot.path, shot.name) };
+      }),
+    );
   }
 
   close(message: { voiceSessionId: string; heardEventId?: number }) {
@@ -214,8 +328,13 @@ export class VoiceService {
       t: "voice.state",
       snapshot: await this.snapshot(),
       events: this.store.eventsSince(since, 200),
+      attachments: this.screenshots(),
     };
   }
+}
+
+function attachmentView(shot: StoredScreenshot): VoiceAttachment {
+  return { attachmentId: shot.attachmentId, name: shot.name, mimeType: shot.mimeType, size: shot.size, at: shot.at, sentTo: [...shot.sentTo] };
 }
 
 /** Plain-text rendering of a snapshot for the model's instructions. */
@@ -226,12 +345,12 @@ export function contextText(snapshot: VoiceSnapshot): string {
     lines.push(`Projects: ${snapshot.projects.map((p) => `${p.name} [${p.projectId}]`).join(", ")}`);
   }
   for (const t of snapshot.tasks) {
-    lines.push(`Task ${t.taskId} ${t.projectName}: ${t.title} - ${t.state}${t.activity ? ` (${t.activity})` : ""}${t.approval ? ` awaiting ${t.approval.risk} approval ${t.approval.requestId}` : ""}`);
+    lines.push(`Task ${t.taskId} ${placeSpoken(t)}: ${t.title} - ${t.state}${t.activity ? ` (${t.activity})` : ""}${t.approval ? ` awaiting ${t.approval.risk} approval ${t.approval.requestId}` : ""}`);
     if (t.state === "completed" && t.debrief) lines.push(`  Debrief: ${JSON.stringify(t.debrief)}`);
   }
   if (snapshot.unheard.length) {
     lines.push("Not yet heard:");
-    for (const e of snapshot.unheard) lines.push(`- #${e.eventId} ${e.projectName}: ${e.text}`);
+    for (const e of snapshot.unheard) lines.push(`- #${e.eventId} ${placeSpoken(e)}: ${e.text}`);
   }
   if (lines.length === (snapshot.opening ? 1 : 0)) lines.push("No tasks yet.");
   return lines.join("\n");

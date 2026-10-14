@@ -10,6 +10,7 @@
  * Pure and ACP-free so the grouping rules are directly testable.
  */
 import { folderName } from "./workspace.js";
+import type { WorktreeInfo } from "./worktree.js";
 
 interface SessionLike {
   cwd: string;
@@ -21,6 +22,8 @@ export interface AgentProject {
   name: string;
   sessions: number;
   updatedAt?: string;
+  /** Set when the folder is a linked worktree; see `annotateWorktrees`. */
+  worktree?: WorktreeInfo;
 }
 
 /**
@@ -64,11 +67,12 @@ export function foldProjects(sessions: readonly SessionLike[]): AgentProject[] {
   return [...byPath.values()].sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 }
 
-/** The agent's own conversations in one project, newest first. */
+/** The agent's own conversations in one project (or any of its directories), newest first. */
 export function sessionsInProject<T extends SessionLike>(
   sessions: readonly T[],
-  cwd: string,
+  cwd: string | ReadonlySet<string>,
   limit: number,
 ): T[] {
-  return sessions.filter((session) => session.cwd === cwd).slice(0, limit);
+  const matches = typeof cwd === "string" ? (path: string) => path === cwd : (path: string) => cwd.has(path);
+  return sessions.filter((session) => matches(session.cwd)).slice(0, limit);
 }

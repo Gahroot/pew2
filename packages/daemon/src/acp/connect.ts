@@ -15,6 +15,7 @@ import { promptBlocks, type PromptCapabilities } from "./promptBlocks.js";
 import { SESSION_HISTORY_LIMIT } from "../session-history.js";
 import { hydrateMessageCounts } from "./messageCounts.js";
 import { foldProjects, type AgentProject } from "../projects.js";
+import { annotateWorktrees } from "../worktree.js";
 import { DETACH_CHILDREN, registerChild, terminateChild, unregisterChild } from "../children.js";
 
 /**
@@ -1157,7 +1158,11 @@ export async function connectProvider(options: ConnectOptions): Promise<AcpSessi
       // Folded from the uncapped list deliberately: the cap below is a
       // recent-work window, and grouping *that* would offer only the projects
       // the user has touched this week as if they were all that existed.
-      const projects = foldProjects(all);
+      //
+      // Worktrees are labelled here, once, so the probe cache carries them:
+      // ezcoder runs every task in `~/.ezcoder/worktrees/<repo>/ez-<id>`, and
+      // unlabelled each one is a stranger named after a random id.
+      const projects = await annotateWorktrees(foldProjects(all));
       // Capped before counts are hydrated. This turns a provider with 600
       // archived chats into 30 small local reads instead of 600. The rows are
       // shared with `all`, so the newest ones carry their counts either way.

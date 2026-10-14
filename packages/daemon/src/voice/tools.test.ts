@@ -6,7 +6,10 @@ import { scratch } from "./scratch.js";
 import { VoiceStore } from "./store.js";
 import { realtimeSession, ToolExecutor, TOOL_NAMES, VOICE_INSTRUCTIONS, VOICE_TOOLS } from "./tools.js";
 
-function harness(store = VoiceStore.memory()) {
+function harness(
+  store = VoiceStore.memory(),
+  projects = buildRegistry(["/code/pew2", "/code/billing-api", "/code/billing-web"], {}),
+) {
   const prompts: string[] = [];
   const answered: string[] = [];
   const host: VoiceHost = {
@@ -26,7 +29,6 @@ function harness(store = VoiceStore.memory()) {
     lastText: () => undefined,
   };
   const orchestrator = new Orchestrator(store, host);
-  const projects = buildRegistry(["/code/pew2", "/code/billing-api", "/code/billing-web"], {});
   const aliases: string[] = [];
   const executor = new ToolExecutor({
     store,
@@ -214,4 +216,78 @@ test("details are redacted and bounded; events are coalesced; alias and end_sess
   expect(h.aliases).toEqual(["the app"]);
   expect(await h.call("end_session")).toMatchObject({ ok: true, endSession: true });
   expect((await h.call("nope")).ok).toBe(false);
+});
+
+test("a repository's tasks include its worktrees', and list_projects says which is which", async () => {
+  const worktree = { repo: "billing", root: "/code/billing", branch: "fix/login" };
+  const projects = buildRegistry(["/wt/billing/ez-abc123", "/code/pew2"], {}, undefined, (path) =>
+    path === "/wt/billing/ez-abc123" ? worktree : undefined,
+  );
+  const h = harness(VoiceStore.memory(), projects);
+  // "the login fix" names the worktree by branch; plain "billing" is the main checkout.
+  // Reported as the repository's work, with the branch as a detail.
+  const inWorktree = await h.call("start_task", { project: "fix login", instruction: "a" });
+  expect(inWorktree.output).toMatchObject({ started: true, task: { project: "billing", branch: "fix/login" } });
+  await h.call("start_task", { project: "pew2", instruction: "b" });
+
+  const repo = projects.find((p) => p.name === "billing");
+  const listed = (await h.call("list_tasks", { projectId: repo?.projectId })).output as { tasks: { project: string }[] };
+  expect(listed.tasks.map((t) => t.project)).toEqual(["billing"]);
+
+  // One entry per repository: the worktree is a branch under billing, not a project of its own.
+  const { projects: spoken } = (await h.call("list_projects")).output as { projects: Record<string, unknown>[] };
+  expect(spoken.map((p) => p.name)).toEqual(["billing", "pew2"]);
+  const inBranch = projects.find((p) => p.worktree)?.projectId;
+  expect(spoken[0]).toEqual({ projectId: repo?.projectId, name: "billing", branches: [{ projectId: inBranch, branch: "fix/login" }] });
+
+  // The task knows its repository, so a client lists it under billing too.
+  const view = h.store.tasks().find((t) => t.projectName === "billing (fix/login)");
+  expect(view?.repo).toEqual({ projectId: repo?.projectId, name: "billing", branch: "fix/login" });
+});
+
+test("progress and completion on a branch are reported as the repository's", async () => {
+  const projects = buildRegistry(["/wt/billing/ez-abc123"], {}, undefined, () => ({
+    repo: "billing",
+    root: "/code/billing",
+    branch: "fix/login",
+  }));
+  const h = harness(VoiceStore.memory(), projects);
+  const events: { repo?: unknown; projectName: string }[] = [];
+  h.store.subscribe((e) => events.push(e));
+  await h.call("start_task", { project: "fix login", instruction: "a" });
+  const task = h.store.tasks()[0];
+  if (!task) throw new Error("no task");
+  h.store.transition(task.taskId, "completed", "task.completed", "The agent says it finished.");
+
+  // Every event the task emits carries its repository, so each reader can say so.
+  const repo = { projectId: projects.find((p) => p.path === "/code/billing")?.projectId, name: "billing", branch: "fix/login" };
+  expect(events.length).toBeGreaterThan(1);
+  for (const e of events) expect(e.repo).toEqual(repo);
+
+  const { events: told } = (await h.call("recent_events", { sinceEventId: 0 })).output as { events: Record<string, unknown>[] };
+  expect(told.at(-1)).toMatchObject({ project: "billing", branch: "fix/login", kind: "task.completed" });
+});
+
+test("a dozen ezcoder checkouts are one repository with branches, and deleted ones are not offered", async () => {
+  const worktrees: Record<string, { repo: string; root?: string; branch?: string; gone?: boolean }> = {};
+  const paths = ["/code/black-mountain-fund"];
+  for (let i = 0; i < 9; i++) {
+    const path = `/home/.ezcoder/worktrees/black-mountain-fund/ez-${i}`;
+    paths.push(path);
+    worktrees[path] = { repo: "black-mountain-fund", root: "/code/black-mountain-fund", branch: `feat/${i}` };
+  }
+  // Deleted: only the layout is left, so the checkout is found by name.
+  worktrees["/home/.ezcoder/worktrees/black-mountain-fund/ez-old"] = { repo: "black-mountain-fund", gone: true };
+  paths.push("/home/.ezcoder/worktrees/black-mountain-fund/ez-old", "/code/pew2");
+  const projects = buildRegistry(paths, {}, undefined, (path) => worktrees[path]);
+  expect(projects.some((p) => p.path.endsWith("ez-old"))).toBe(false);
+
+  const h = harness(VoiceStore.memory(), projects);
+  const { projects: spoken } = (await h.call("list_projects")).output as {
+    projects: { name: string; branches?: unknown[]; moreBranches?: number }[];
+  };
+  expect(spoken.map((p) => p.name)).toEqual(["black-mountain-fund", "pew2"]);
+  // Named up to a handful, then counted: still one short line to say.
+  expect(spoken[0]?.branches).toHaveLength(6);
+  expect(spoken[0]?.moreBranches).toBe(3);
 });

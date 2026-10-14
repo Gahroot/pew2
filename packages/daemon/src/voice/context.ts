@@ -6,6 +6,7 @@
  */
 import { coalesce, unheard } from "./classify.js";
 import { toVoiceTask, TERMINAL, type StoredTask } from "./store.js";
+import { placeSpoken } from "./place.js";
 import type { TaskState, VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
 
 export interface SnapshotInput {
@@ -33,21 +34,24 @@ const SOURCE_LINES: Record<string, string> = {
 /** One sentence on why this session exists. */
 export function openingLine(input: SnapshotInput): string {
   if (input.focusEvent) {
-    return `Opened from a notification: ${input.focusEvent.projectName}: ${input.focusEvent.text}`;
+    return `Opened from a notification: ${placeSpoken(input.focusEvent)}: ${input.focusEvent.text}`;
   }
   const base = SOURCE_LINES[input.source ?? ""] ?? "Opened from a notification.";
   const focus = input.focusTaskId ? input.tasks.find((t) => t.taskId === input.focusTaskId) : undefined;
-  return focus ? `${base} Focus: ${focus.projectName}, ${focus.title} (${focus.state}).` : base;
+  return focus ? `${base} Focus: ${placeSpoken(focus)}, ${focus.title} (${focus.state}).` : base;
 }
 
 export function buildSnapshot(input: SnapshotInput): VoiceSnapshot {
   const active = input.tasks.filter((t) => !TERMINAL.has(t.state));
   const finished = input.tasks.filter((t) => TERMINAL.has(t.state)).slice(0, MAX_FINISHED);
-  // Projects with live work first, then registry order, capped.
+  // Projects with live work first, then repositories. An idle worktree is
+  // left out entirely: it is a branch of a repo already listed, ezcoder makes
+  // one per task, and a dozen `ez-…` checkouts would crowd every repo the user
+  // can name out of a capped list. `list_projects` still names its branches.
   const busy = new Set(active.map((t) => t.projectId));
   const projects = [
     ...input.projects.filter((p) => busy.has(p.projectId)),
-    ...input.projects.filter((p) => !busy.has(p.projectId)),
+    ...input.projects.filter((p) => !busy.has(p.projectId) && !p.worktree),
   ].slice(0, MAX_PROJECTS);
   const focus = input.focusTaskId
     ? input.tasks.filter((t) => t.taskId === input.focusTaskId && !active.includes(t) && !finished.includes(t))
@@ -55,7 +59,14 @@ export function buildSnapshot(input: SnapshotInput): VoiceSnapshot {
 
   return {
     eventId: input.lastEventId,
-    projects: projects.map((p) => ({ projectId: p.projectId, name: p.name, path: "", aliases: p.aliases.slice(0, 4), ...(p.providerId ? { providerId: p.providerId } : null) })),
+    projects: projects.map((p) => ({
+      projectId: p.projectId,
+      name: p.name,
+      path: "",
+      aliases: p.aliases.slice(0, 4),
+      ...(p.providerId ? { providerId: p.providerId } : null),
+      ...(p.worktree ? { worktree: p.worktree } : null),
+    })),
     tasks: [...active, ...finished, ...focus].map(toVoiceTask),
     unheard: coalesce(unheard(input.events, input.heardEventId)),
     opening: openingLine(input),

@@ -9,3 +9,5 @@ export type VoiceProject = wire.VoiceProject;
 export type VoiceSnapshot = wire.VoiceSnapshot;
 export type VoiceTask = wire.VoiceTask;
 export type VoiceDebrief = wire.VoiceDebrief;
+export type VoiceRepo = wire.VoiceRepo;
+export type VoiceAttachment = wire.VoiceAttachment;

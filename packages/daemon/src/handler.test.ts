@@ -345,6 +345,43 @@ test("the agent's record beats a client naming some other project", async () => 
   expect(await readKnownProjects(env)).toEqual(["/Users/someone/code/api"]);
 });
 
+test("a repository known only through its worktrees can be opened, and lists their conversations", async () => {
+  // ezcoder runs every task in its own checkout, so the agent's history can hold
+  // a dozen worktrees of a repo and not one session in the repo itself. The app
+  // lists that repo as one project with branches and starts new chats in its
+  // main checkout, which this daemon published as the worktrees' `root`.
+  const env = scratchHome();
+  const root = "/Users/someone/code/billing";
+  const branch = (name: string) => `/Users/someone/.ezcoder/worktrees/billing/${name}`;
+  await writeProbeCache(
+    "echo",
+    {
+      canResume: true,
+      configOptions: [],
+      sessions: [],
+      projects: [
+        { path: branch("ez-1"), name: "ez-1", sessions: 1, worktree: { repo: "billing", root, branch: "fix/login" } },
+        { path: branch("ez-old"), name: "ez-old", sessions: 1, worktree: { repo: "billing", root, gone: true } },
+        { path: "/Users/someone/code/other", name: "other", sessions: 1 },
+      ],
+    },
+    env,
+    [
+      { sessionId: "a", cwd: branch("ez-1"), updatedAt: "2026-08-10T12:00:00Z" },
+      { sessionId: "b", cwd: branch("ez-old"), updatedAt: "2026-08-09T12:00:00Z" },
+      { sessionId: "c", cwd: "/Users/someone/code/other", updatedAt: "2026-08-08T12:00:00Z" },
+    ],
+  );
+  const daemon = new Daemon({ id: "test", name: "test" }, true, env);
+
+  expect(await daemon.knownProject("echo", root)).toBe(root);
+  // Only a published root: a guess at some other checkout is still refused.
+  expect(await daemon.knownProject("echo", "/Users/someone/code/billing-2")).toBeUndefined();
+
+  const listed = await daemon.sessionsForProject("echo", root);
+  expect(listed.map((s) => s.sessionId)).toEqual(["a", "b"]);
+});
+
 test("a push token is kept against the device that proved who it was", async () => {
   const { daemon } = stubbed();
 

@@ -26,6 +26,8 @@ export interface StoredTask {
   taskId: string;
   projectId: string;
   projectName: string;
+  /** The repository a worktree task belongs to; see `VoiceTask.repo`. */
+  repo?: NonNullable<VoiceTask["repo"]>;
   /** Where the agent runs. Taken from the registry, never from the model. */
   cwd: string;
   providerId: string;
@@ -49,12 +51,27 @@ export interface StoredTask {
   interrupted?: boolean;
   /** Start by prompting the existing session instead of opening a new one. */
   resume?: boolean;
+  /** Screenshots to go with the next prompt this task sends; see `screenshots.ts`. */
+  pendingAttachmentIds?: string[];
+  /** Screenshots already handed to this task's agent, oldest first. */
+  attachmentIds?: string[];
   attempts: number;
   maxAttempts: number;
   history: HistoryEntry[];
   createdAt: number;
   updatedAt: number;
   startedAt?: number;
+}
+
+/** A screenshot held for voice. `path` stays on this machine; clients get `VoiceAttachment`. */
+export interface StoredScreenshot {
+  attachmentId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  path: string;
+  at: number;
+  sentTo: string[];
 }
 
 export interface Decision {
@@ -79,6 +96,9 @@ interface Document {
   journal: Record<string, JournalEntry>;
   decisions: Decision[];
   heardEventId: number;
+  /** Absent from a file written before screenshots existed; `open` fills it in. */
+  screenshots: Record<string, StoredScreenshot>;
+  nextScreenshot: number;
 }
 
 export const MAX_EVENTS = 2000;
@@ -98,6 +118,9 @@ export type Listener = (event: VoiceEvent, task: StoredTask) => void;
 export interface NewTask {
   projectId: string;
   projectName: string;
+  /** Screenshots to send with the task's first prompt. */
+  attachmentIds?: string[];
+  repo?: NonNullable<VoiceTask["repo"]>;
   cwd: string;
   providerId: string;
   title: string;
@@ -123,6 +146,8 @@ function emptyDocument(): Document {
     journal: {},
     decisions: [],
     heardEventId: 0,
+    screenshots: {},
+    nextScreenshot: 1,
   };
 }
 
@@ -131,6 +156,7 @@ export function toVoiceTask(task: StoredTask): VoiceTask {
     taskId: task.taskId,
     projectId: task.projectId,
     projectName: task.projectName,
+    ...(task.repo ? { repo: task.repo } : null),
     ...(task.sessionId ? { sessionId: task.sessionId } : null),
     title: task.title,
     state: task.state,
@@ -138,6 +164,7 @@ export function toVoiceTask(task: StoredTask): VoiceTask {
     ...(task.activity ? { activity: task.activity } : null),
     ...(task.approval ? { approval: task.approval } : null),
     ...(task.debrief ? { debrief: task.debrief } : null),
+    ...(task.attachmentIds?.length ? { attachmentIds: [...task.attachmentIds] } : null),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
@@ -237,6 +264,7 @@ export class VoiceStore {
       taskId,
       projectId: input.projectId,
       projectName: input.projectName,
+      ...(input.repo ? { repo: input.repo } : null),
       cwd: input.cwd,
       providerId: input.providerId,
       title: input.title,
@@ -245,6 +273,7 @@ export class VoiceStore {
       priority: input.priority ?? 0,
       readOnly: input.readOnly ?? false,
       dependsOn: [...(input.dependsOn ?? [])],
+      ...(input.attachmentIds?.length ? { pendingAttachmentIds: [...input.attachmentIds] } : null),
       attempts: 0,
       maxAttempts: input.maxAttempts ?? 2,
       history: [{ at: now, state: "queued" }],
@@ -281,6 +310,92 @@ export class VoiceStore {
     task.updatedAt = now;
     const event = this.emit(task, kind, text);
     return { event, task };
+  }
+
+  /**
+   * Record which repository each task belongs to, for tasks saved before that
+   * was tracked. Silent and idempotent: it announces nothing, never overwrites
+   * a `repo` already set, and writes only when something changed. Events
+   * already logged are history and keep what they said.
+   */
+  backfillRepos(repoOf: (task: StoredTask) => StoredTask["repo"]): number {
+    let filled = 0;
+    for (const task of Object.values(this.doc.tasks)) {
+      if (task.repo) continue;
+      const repo = repoOf(task);
+      if (!repo) continue;
+      task.repo = repo;
+      filled += 1;
+    }
+    if (filled > 0) this.persist();
+    return filled;
+  }
+
+  // ---- screenshots ---------------------------------------------------------
+
+  /** Record a screenshot already written to `path`. Ids are this store's, never the phone's. */
+  addScreenshot(input: Omit<StoredScreenshot, "attachmentId" | "at" | "sentTo">): StoredScreenshot {
+    const shot: StoredScreenshot = {
+      ...input,
+      attachmentId: `a_${this.doc.nextScreenshot++}`,
+      at: this.now(),
+      sentTo: [],
+    };
+    this.doc.screenshots[shot.attachmentId] = shot;
+    this.persist();
+    return shot;
+  }
+
+  /** The id an `addScreenshot` call will hand out, so its file can be named first. */
+  peekScreenshotId(): string {
+    return `a_${this.doc.nextScreenshot}`;
+  }
+
+  screenshot(attachmentId: string): StoredScreenshot | undefined {
+    return this.doc.screenshots[attachmentId];
+  }
+
+  /** Oldest first. */
+  screenshots(): StoredScreenshot[] {
+    return Object.values(this.doc.screenshots).sort((a, b) => a.at - b.at || a.attachmentId.localeCompare(b.attachmentId, "en", { numeric: true }));
+  }
+
+  /** Note that `taskId`'s agent has been handed it. Idempotent. */
+  markScreenshotSent(attachmentId: string, taskId: string): void {
+    const shot = this.doc.screenshots[attachmentId];
+    if (!shot || shot.sentTo.includes(taskId)) return;
+    shot.sentTo.push(taskId);
+    this.persist();
+  }
+
+  removeScreenshot(attachmentId: string): StoredScreenshot | undefined {
+    const shot = this.doc.screenshots[attachmentId];
+    if (!shot) return undefined;
+    delete this.doc.screenshots[attachmentId];
+    // Not handed to anyone yet: nothing will send it now.
+    for (const task of Object.values(this.doc.tasks)) {
+      if (task.pendingAttachmentIds?.includes(attachmentId)) {
+        task.pendingAttachmentIds = task.pendingAttachmentIds.filter((id) => id !== attachmentId);
+      }
+    }
+    this.persist();
+    return shot;
+  }
+
+  /**
+   * Drop what is past its age or beyond the count, oldest first, and return
+   * them so the caller can delete their files. A screenshot still waiting to
+   * go out with a queued task is kept whatever its age: that task will send it.
+   */
+  pruneScreenshots(maxCount: number, maxAgeMs: number): StoredScreenshot[] {
+    const waiting = new Set(Object.values(this.doc.tasks).flatMap((t) => (TERMINAL.has(t.state) ? [] : t.pendingAttachmentIds ?? [])));
+    const all = this.screenshots();
+    const cutoff = this.now() - maxAgeMs;
+    const excess = Math.max(0, all.length - maxCount);
+    const removed = all.filter((shot, index) => !waiting.has(shot.attachmentId) && (index < excess || shot.at < cutoff));
+    for (const shot of removed) delete this.doc.screenshots[shot.attachmentId];
+    if (removed.length > 0) this.persist();
+    return removed;
   }
 
   /** Update fields without announcing (activity line, last output, session id). */
@@ -378,6 +493,8 @@ export class VoiceStore {
       class: classifyKind(kind),
       text,
       at: this.now(),
+      // Every report of this event can then name the repository, not the checkout.
+      ...(task.repo ? { repo: task.repo } : null),
     };
     this.doc.events.push(event);
     if (this.doc.events.length > MAX_EVENTS) this.doc.events.splice(0, this.doc.events.length - MAX_EVENTS);

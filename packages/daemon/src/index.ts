@@ -372,6 +372,12 @@ export class Daemon {
    * agent again.
    */
   private readonly projectHistory = new Map<string, AgentSession[]>();
+  /**
+   * The projects last announced per provider, worktrees labelled. Read for
+   * what folding the history above cannot say: which directories are branches
+   * of which repository (`worktree.root`).
+   */
+  private readonly announcedProjects = new Map<string, AgentProject[]>();
 
   /**
    * Directories recently shown to a browsing client.
@@ -1558,6 +1564,13 @@ export class Daemon {
   async knownProject(providerId: string, cwd: string): Promise<string | undefined> {
     const known = await this.projectsWithHistory(providerId);
     if (known.some((session) => session.cwd === cwd)) return this.rememberProject(cwd);
+    // The main checkout of a worktree this daemon announced. The app files a
+    // repository's branches under it and starts new chats there, and the path
+    // was published as that worktree's `root` — even when no agent ever ran in
+    // the checkout itself, which is exactly the ezcoder case.
+    if ((await this.projectList(providerId)).some((project) => project.worktree?.root === cwd)) {
+      return this.rememberProject(cwd);
+    }
     // A directory this daemon just offered in a `workspaces` answer counts for
     // the same reason: it published the string, so echoing it back reveals
     // nothing new. Without this a project reached by browsing is unknown until
@@ -1579,6 +1592,16 @@ export class Daemon {
    * recognising a perfectly genuine project a race against a spawn. This reads
    * the same file the probe would serve from and never starts an agent.
    */
+  /** The announced projects, from memory or else the probe cache, never a spawn. */
+  private async projectList(providerId: string): Promise<AgentProject[]> {
+    const known = this.announcedProjects.get(providerId);
+    if (known) return known;
+    const cached = (await readProbeCache(providerId, this.env))?.projects;
+    if (!cached?.length) return [];
+    this.announcedProjects.set(providerId, cached);
+    return cached;
+  }
+
   private async projectsWithHistory(providerId: string): Promise<AgentSession[]> {
     const known = this.projectHistory.get(providerId);
     if (known) return known;
@@ -1686,7 +1709,10 @@ export class Daemon {
     // Copied before hydrating: `hydrateMessageCounts` writes counts into the
     // objects it is given, and these are the cached list itself. Mutating them
     // would leave counts on rows the next probe overwrites wholesale.
-    const picked = sessionsInProject(known, cwd, PROJECT_SESSION_LIMIT).map((s) => ({ ...s }));
+    // A repository's conversations include its worktrees': the app lists those
+    // as branches of this project, so asking for the project asks for them too.
+    const branches = (await this.projectList(providerId)).filter((p) => p.worktree?.root === cwd).map((p) => p.path);
+    const picked = sessionsInProject(known, new Set([cwd, ...branches]), PROJECT_SESSION_LIMIT).map((s) => ({ ...s }));
     await hydrateMessageCounts(providerId, picked);
     return picked;
   }
@@ -1864,6 +1890,7 @@ export class Daemon {
         // would pay the spawn and the list a second time for data this process
         // is already holding.
         this.projectHistory.set(providerId, all);
+        this.announcedProjects.set(providerId, projects);
 
         const capabilities: ProviderCapabilities = {
           // The agent's own list, at the agent's own values. `capabilitiesFor`
@@ -2751,9 +2778,12 @@ export class Daemon {
         this.markLive(sessionId);
         return sessionId;
       },
-      prompt: async (sessionId, text) => {
+      prompt: async (sessionId, text, attachments = []) => {
         try {
-          await this.prompt(sessionId, text);
+          // The chat path's own: stored in the session's attachment directory,
+          // echoed on every screen, and delivered in whichever block form the
+          // agent says it accepts (`promptBlocks.ts`).
+          await this.prompt(sessionId, text, [...attachments]);
         } finally {
           this.send({ t: "session.idle", sessionId, ...this.sessionOrigin(sessionId) });
         }

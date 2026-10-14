@@ -439,6 +439,19 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
         break;
       }
 
+      case "voice.attach": {
+        // Answered to the sender; the list it changes is broadcast by the service.
+        const voice = await daemon.voice();
+        reply(await voice.attach(message));
+        break;
+      }
+
+      case "voice.detach": {
+        const voice = await daemon.voice();
+        await voice.detach(message.attachmentId);
+        break;
+      }
+
       case "session.permission": {
         daemon.answerPermission(message.sessionId, message.requestId, message.optionId);
         break;

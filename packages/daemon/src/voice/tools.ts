@@ -7,8 +7,9 @@
  * against the registry.
  */
 import { coalesce } from "./classify.js";
+import { placeFields, placeSpoken } from "./place.js";
 import type { Orchestrator } from "./dispatcher.js";
-import { chooseProvider, resolveProject } from "./registry.js";
+import { chooseProvider, groupByRepo, repoOf, resolveProject, worktreesOf } from "./registry.js";
 import {
   ConfirmationTokens,
   DEFAULT_POLICY,
@@ -19,7 +20,8 @@ import {
   speakable,
   type SafetyPolicy,
 } from "./safety.js";
-import { ACTIVE, TERMINAL, type StoredTask, type VoiceStore } from "./store.js";
+import { wire } from "@pew2/protocol";
+import { ACTIVE, TERMINAL, type StoredScreenshot, type StoredTask, type VoiceStore } from "./store.js";
 import type { VoiceProject } from "./types.js";
 
 // ---- definitions -----------------------------------------------------------
@@ -52,14 +54,20 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
       priority: { type: "integer", description: "Higher runs first. Default 0." },
       dependsOn: { type: "array", items: { type: "string" }, description: "taskIds that must complete first." },
       readOnly: { type: "boolean", description: "True if the task only reads and never edits." },
+      attachmentIds: { type: "array", items: { type: "string" }, description: "Screenshots to send with it, by attachmentId from list_screenshots." },
     },
     ["project", "instruction"],
   ),
-  def("follow_up", "Send another instruction to an existing task, including a debrief's followUp once the user accepts its nextStep.", { taskId: str("Task id."), instruction: str("The instruction.") }, ["taskId", "instruction"]),
+  def(
+    "follow_up",
+    "Send another instruction to an existing task, including a debrief's followUp once the user accepts its nextStep.",
+    { taskId: str("Task id."), instruction: str("The instruction."), attachmentIds: { type: "array", items: { type: "string" }, description: "Screenshots to send with it, by attachmentId from list_screenshots." } },
+    ["taskId", "instruction"],
+  ),
   def("task_status", "Fresh status of one task. Omit taskId when only one task is active.", { taskId: str("Task id.") }),
   def("list_tasks", "List tasks, newest first.", {
     state: str("Filter by state."),
-    projectId: str("Filter by project."),
+    projectId: str("Filter by project; a repository includes its worktrees."),
     limit: { type: "integer", description: "Max 10." },
   }),
   def("reprioritize_task", "Change the priority of a queued task.", { taskId: str("Task id."), priority: { type: "integer" } }, ["taskId", "priority"]),
@@ -103,6 +111,21 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
   def("get_details", "More detail on one task: history, last output, errors.", { taskId: str("Task id.") }, ["taskId"]),
   def("remember_decision", "Persist a decision or instruction the user wants kept.", { text: str("The decision."), taskId: str("Related task.") }, ["text"]),
   def("add_project_alias", "Remember another spoken name for a project.", { projectId: str("Project id."), alias: str("The name.") }, ["projectId", "alias"]),
+  def(
+    "request_screenshot",
+    "Open the photo picker on the user's phone so they can share a screenshot, e.g. a partner's fix or an error. Call when they offer one or you need to see something. You hear when it arrives.",
+    { reason: str("Why, in a few words, shown to the user.") },
+  ),
+  def("list_screenshots", "Screenshots the user has shared, newest first, with which tasks each was sent to."),
+  def(
+    "attach_screenshot",
+    "Send a shared screenshot to an existing task's coding agent, with what to do with it. For new work use start_task with attachmentIds instead.",
+    {
+      attachmentId: str("From list_screenshots. Optional when exactly one screenshot is unsent."),
+      taskId: str("Task id. Optional when exactly one task is active."),
+      instruction: str("What the agent should do with it, as the user said it."),
+    },
+  ),
   def("end_session", "End the voice session when the user is done."),
 ];
 
@@ -120,6 +143,8 @@ export const VOICE_INSTRUCTIONS = [
   "Never say project ids, task ids, request ids, tokens, file paths, URLs, hashes or code aloud. Use project names and plain words. Summarise tool activity in plain words ('editing the login screen', 'running tests'), never as raw commands.",
   "Never say work is done, merged, deployed or fixed until a tool result says the agent reported it. 'Completed' means the agent says it finished, not that it is verified; say so plainly. If a result says failed or interrupted, say that.",
   "Projects: pass what the user said to start_task or resolve_project; partial names, different casing and misheard names are matched for you. If one project clearly matches, just proceed without asking. If the result is ambiguous, ask once: 'Did you mean A or B?' naming at most three candidates, then continue with the answer. Never guess between close matches. Existing work gets follow_up, not a new task.",
+  "Branches: list_projects gives one entry per repository, with its worktrees as branches under it. A worktree is a separate checkout of that repository on its own branch, so its work does not touch the main checkout. The repository's plain name means the main checkout; to work on a branch, pass its projectId or say the repository and branch ('billing, fix login'). Work on a branch still counts as that repository's when the user asks what is happening there. Task and event results name the repository as `project` and add `branch` for work on one; report progress and completion that way ('billing, on the fix login branch, is done'), never as separate projects, and never say a random folder id like 'ez-mun7ig9t'.",
+  "Screenshots: the user can share pictures, typically a partner's fix or an error, from the phone. You never see the picture; you get its attachmentId and name. When they offer one, call request_screenshot. When one arrives, say you have it in a few words, then ask which project or task it is for unless they already said. Send it with start_task or follow_up attachmentIds, or attach_screenshot for a task already running, together with what they want done ('apply this fix'). Never describe what is in it, and never claim the agent applied it until a result says so.",
   "Call task_status before acting on a task you have not checked this session; state changes while you talk.",
   "Approvals: when an agent is waiting, read the 'say' sentence from pending_approvals in plain words and ask 'Approve or deny?'. Safe means read-only; risky means writes outside the project, deletes, network, installs or git push, so name the risk in a few words. Only call answer_approval after an explicit answer. 'Approve all safe ones' means approve_safe; 'stop asking about safe ones' means set_approval_policy. Risky approvals are never auto-approved. For merge, deploy and destructive actions, and cancelling running work, call once to get a confirmToken, ask 'Are you sure?', and call again with userConfirmed true only after they say yes. Never reuse or invent tokens.",
   "Start by briefly stating what changed from the opening context, if anything, offering the next step on anything that finished. Say nothing about what the user already heard.",
@@ -172,6 +197,8 @@ export interface ToolResult {
   output: unknown;
   error?: string;
   endSession?: boolean;
+  /** The app should open its photo picker (`request_screenshot`). */
+  openPicker?: boolean;
 }
 
 export interface ToolDeps {
@@ -199,11 +226,15 @@ function int(args: Record<string, unknown>, key: string): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : undefined;
 }
 
+const { MAX_ATTACHMENTS } = wire;
+
 export function taskView(store: VoiceStore, t: StoredTask) {
   const waiting = t.state === "queued" ? store.waitingFor(t) : undefined;
   return {
     taskId: t.taskId,
-    project: t.projectName,
+    // The repository, with the branch beside it: work on a branch is that
+    // project's work, and the model reports it that way.
+    ...placeFields(t),
     title: t.title,
     state: t.state,
     priority: t.priority,
@@ -214,7 +245,49 @@ export function taskView(store: VoiceStore, t: StoredTask) {
     ...(t.interrupted ? { interrupted: true } : null),
     ...(t.state === "completed" ? { note: "Agent says finished; not verified." } : null),
     ...(t.debrief && t.state === "completed" ? { debrief: t.debrief } : null),
+    ...(t.attachmentIds?.length ? { screenshots: t.attachmentIds.length } : null),
+    ...(t.pendingAttachmentIds?.length ? { screenshotsWaiting: t.pendingAttachmentIds.length } : null),
   };
+}
+
+/** A screenshot as the model sees it: never a path. */
+function screenshotView(store: VoiceStore, shot: StoredScreenshot) {
+  return {
+    attachmentId: shot.attachmentId,
+    name: shot.name,
+    sentTo: shot.sentTo.map((taskId) => {
+      const task = store.getTask(taskId);
+      return task ? { taskId, title: task.title, ...placeFields(task) } : { taskId };
+    }),
+  };
+}
+
+/**
+ * The screenshot a call names, or the one obvious one when it names none:
+ * exactly one not yet sent anywhere. Otherwise a reason to ask.
+ */
+function pickScreenshot(store: VoiceStore, attachmentId: string | undefined): StoredScreenshot | string {
+  if (attachmentId) return store.screenshot(attachmentId) ?? `No screenshot ${attachmentId}. Call list_screenshots.`;
+  const unsent = store.screenshots().filter((shot) => shot.sentTo.length === 0);
+  if (unsent.length === 1 && unsent[0]) return unsent[0];
+  return unsent.length === 0
+    ? "There is no unsent screenshot. Call request_screenshot to ask for one."
+    : "Several screenshots are unsent; pass attachmentId from list_screenshots.";
+}
+
+/**
+ * `attachmentIds` from a call, checked: each must be one the user actually
+ * shared, and no more than a prompt can carry. Ids only — a model can name a
+ * screenshot, never a file.
+ */
+function attachmentsOf(store: VoiceStore, args: Record<string, unknown>): string[] | string {
+  const raw = args.attachmentIds;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return "attachmentIds must be a list of ids.";
+  const ids = [...new Set(raw.filter((id): id is string => typeof id === "string" && id.trim() !== "").map((id) => id.trim()))];
+  if (ids.length > MAX_ATTACHMENTS) return `At most ${MAX_ATTACHMENTS} screenshots go with one instruction.`;
+  const unknown = ids.find((id) => !store.screenshot(id));
+  return unknown ? `No screenshot ${unknown}. Call list_screenshots.` : ids;
 }
 
 /** "Did you mean A or B?" for at most three names. */
@@ -298,9 +371,17 @@ export class ToolExecutor {
 
     switch (name) {
       case "list_projects": {
-        const projects = await this.deps.projects();
+        // One entry per repository, its worktrees as branches under it: a repo
+        // with twelve ezcoder checkouts is still one line to say.
+        const groups = groupByRepo(await this.deps.projects());
         return good({
-          projects: projects.slice(0, 20).map((p) => ({ projectId: p.projectId, name: p.name, aliases: p.aliases.slice(0, 3) })),
+          projects: groups.slice(0, 20).map((g) => ({
+            ...(g.projectId ? { projectId: g.projectId } : null),
+            name: g.name,
+            ...(g.aliases.length ? { aliases: g.aliases } : null),
+            ...(g.branches.length ? { branches: g.branches } : null),
+            ...(g.moreBranches ? { moreBranches: g.moreBranches } : null),
+          })),
         });
       }
       case "resolve_project": {
@@ -334,6 +415,8 @@ export class ToolExecutor {
           : [];
         const missing = dependsOn.find((d) => !store.getTask(d));
         if (missing) return fail(`No task ${missing} to depend on.`);
+        const shots = attachmentsOf(store, args);
+        if (typeof shots === "string") return fail(shots);
         // The same instruction already waiting or running is the same request.
         const duplicate = store
           .tasks()
@@ -345,12 +428,14 @@ export class ToolExecutor {
         const task = orchestrator.enqueue({
           projectId: project.projectId,
           projectName: project.name,
+          ...((repo) => (repo ? { repo } : null))(repoOf(project)),
           cwd: project.path,
           providerId,
           title: text(args, "title", 80) ?? speakable(instruction, 60),
           prompt: instruction,
           dependsOn,
           readOnly: args.readOnly === true,
+          ...(shots.length ? { attachmentIds: shots } : null),
           ...(priority !== undefined ? { priority } : null),
         });
         return good({ started: true, task: taskView(store, task) });
@@ -360,8 +445,46 @@ export class ToolExecutor {
         if (typeof t === "string") return fail(t);
         const instruction = text(args, "instruction");
         if (!instruction) return fail("instruction is required.");
-        const r = orchestrator.followUp(t.taskId, instruction);
+        const shots = attachmentsOf(store, args);
+        if (typeof shots === "string") return fail(shots);
+        const r = orchestrator.followUp(t.taskId, instruction, shots);
         return r.ok ? good({ task: taskView(store, r.value) }) : fail(r.error);
+      }
+      case "request_screenshot": {
+        const reason = text(args, "reason", 120);
+        return good(
+          {
+            pickerOpened: true,
+            ...(reason ? { reason } : null),
+            note: "The photo picker is opening on the user's phone. Wait for the screenshot to arrive before sending it anywhere.",
+          },
+          { openPicker: true },
+        );
+      }
+      case "list_screenshots": {
+        return good({ screenshots: store.screenshots().reverse().slice(0, 10).map((shot) => screenshotView(store, shot)) });
+      }
+      case "attach_screenshot": {
+        const shot = pickScreenshot(store, text(args, "attachmentId", 40));
+        if (typeof shot === "string") return fail(shot);
+        let t: StoredTask | string;
+        if (text(args, "taskId", 40)) t = taskOf();
+        else {
+          const active = store.tasks().filter((x) => !TERMINAL.has(x.state));
+          if (active.length === 1 && active[0]) t = active[0];
+          else {
+            return good({
+              needsClarification: true,
+              reason: active.length ? "Several tasks are active." : "No task is active; use start_task with attachmentIds.",
+              active: active.slice(0, 8).map((x) => taskView(store, x)),
+            });
+          }
+        }
+        if (typeof t === "string") return fail(t);
+        if (t.state === "cancelled") return fail("That task was cancelled; start a new one with the screenshot instead.");
+        const instruction = text(args, "instruction") ?? "Here is a screenshot the user forwarded. Use it for this task.";
+        const r = orchestrator.followUp(t.taskId, instruction, [shot.attachmentId]);
+        return r.ok ? good({ sent: true, screenshot: shot.name, task: taskView(store, r.value) }) : fail(r.error);
       }
       case "task_status": {
         let t: StoredTask | string;
@@ -377,9 +500,14 @@ export class ToolExecutor {
         const state = text(args, "state", 20);
         const projectId = text(args, "projectId", 40);
         const limit = Math.min(10, Math.max(1, int(args, "limit") ?? 6));
+        // A repository's work includes its worktrees': "what's happening in
+        // billing" must not miss the task ezcoder is running in a checkout of it.
+        const inProject = projectId
+          ? new Set([projectId, ...worktreesOf(projectId, await this.deps.projects()).map((p) => p.projectId)])
+          : undefined;
         const tasks = store
           .tasks()
-          .filter((t) => (!state || t.state === state) && (!projectId || t.projectId === projectId))
+          .filter((t) => (!state || t.state === state) && (!inProject || inProject.has(t.projectId)))
           .slice(0, limit);
         return good({ tasks: tasks.map((t) => taskView(store, t)) });
       }
@@ -414,7 +542,7 @@ export class ToolExecutor {
             return good({
               needsConfirmation: true,
               confirmToken: this.confirm.issue(subject),
-              question: `Cancel ${t.title} in ${t.projectName}? Work in progress is stopped.`,
+              question: `Cancel ${t.title} in ${placeSpoken(t)}? Work in progress is stopped.`,
             });
           }
         }
@@ -431,7 +559,7 @@ export class ToolExecutor {
         return good({
           approvals: orchestrator.pendingApprovals().map((t) => ({
             taskId: t.taskId,
-            project: t.projectName,
+            ...placeFields(t),
             title: t.title,
             requestId: t.approval?.requestId,
             risk: t.approval?.risk,
@@ -518,7 +646,7 @@ export class ToolExecutor {
         const pool = since !== undefined ? store.eventsSince(since, 200) : store.recentEvents(taskId, 40);
         const events = coalesce(pool.filter((e) => !taskId || e.taskId === taskId), limit);
         return good({
-          events: events.map((e) => ({ eventId: e.eventId, taskId: e.taskId, project: e.projectName, kind: e.kind, text: e.text })),
+          events: events.map((e) => ({ eventId: e.eventId, taskId: e.taskId, ...placeFields(e), kind: e.kind, text: e.text })),
         });
       }
       case "get_details": {

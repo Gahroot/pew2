@@ -59,15 +59,30 @@ function rootsFrom(script: string): string[] {
     .map((token) => resolve(repoRoot, token));
 }
 
+/**
+ * Every test file git would carry: committed, or new and not ignored.
+ *
+ * Asked of git rather than found by walking `packages/`, because the walk
+ * crossed every gitignored tree too — `packages/app/ios` alone is thousands of
+ * directories of Pods and Xcode output on any machine that has built the app —
+ * and under a loaded full run that walk outlasted the 5s test timeout. Ignored
+ * files are not ours to run either, so nothing the check is for is skipped:
+ * a new test file outside the roots still shows up here, uncommitted or not.
+ */
 async function testFiles(): Promise<string[]> {
-  const glob = new Bun.Glob("packages/**/*.test.ts");
-  const files: string[] = [];
-  for await (const entry of glob.scan({ cwd: repoRoot, absolute: true })) {
+  const listed = Bun.spawnSync(
+    ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "packages/**/*.test.ts"],
+    { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+  );
+  if (listed.exitCode !== 0) throw new Error(`git ls-files failed: ${listed.stderr.toString().trim()}`);
+  return listed.stdout
+    .toString()
+    .split("\n")
+    .filter(Boolean)
     // Dependencies ship their own tests and are not ours to run.
-    if (entry.includes("node_modules")) continue;
-    files.push(entry);
-  }
-  return files.sort();
+    .filter((file) => !file.includes("node_modules"))
+    .map((file) => join(repoRoot, file))
+    .sort();
 }
 
 test("every test file lives under a root the test script names", async () => {

@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { countPorcelain, workspaceStatus } from "./git.js";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { countPorcelain, parseStatusBranch, workspaceStatus } from "./git.js";
 
 describe("countPorcelain", () => {
   test("counts one entry per line", () => {
@@ -33,4 +35,36 @@ describe("workspaceStatus", () => {
     expect(status.uncommitted).toBe(0);
     expect(status.folder.startsWith("pew2-git-")).toBe(true);
   });
+});
+
+describe("parseStatusBranch", () => {
+  test("reads the branch from git's header line in each of its shapes", () => {
+    expect(parseStatusBranch("## main...origin/main [ahead 1]")).toBe("main");
+    expect(parseStatusBranch("## ez/mun7ig9t")).toBe("ez/mun7ig9t");
+    expect(parseStatusBranch("## No commits yet on main")).toBe("main");
+    expect(parseStatusBranch("## HEAD (no branch)")).toBeUndefined();
+    expect(parseStatusBranch(" M src/a.ts")).toBeUndefined();
+  });
+});
+
+test("a worktree reports its branch, its repository, and only real changes", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "pew2-git-wt-")));
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "init.defaultBranch=main", ...args], { cwd, stdio: "ignore" });
+  const root = join(base, "billing");
+  mkdirSync(root);
+  git(root, "init");
+  writeFileSync(join(root, "a.txt"), "a");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "init");
+  const tree = join(base, "ez-1");
+  git(root, "worktree", "add", "-b", "fix/login", tree);
+  writeFileSync(join(tree, "b.txt"), "b");
+
+  const status = await workspaceStatus(tree);
+  // The `## ` header is the branch, not an uncommitted file.
+  expect(status).toMatchObject({ repo: true, uncommitted: 1, branch: "fix/login", worktree: { repo: "billing", root } });
+  const main = await workspaceStatus(root);
+  expect(main).toMatchObject({ uncommitted: 0, branch: "main" });
+  expect(main.worktree).toBeUndefined();
 });

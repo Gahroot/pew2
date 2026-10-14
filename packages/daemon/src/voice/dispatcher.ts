@@ -23,11 +23,23 @@ import {
 import { ACTIVE, TERMINAL, type NewTask, type StoredTask, type VoiceStore } from "./store.js";
 
 /** The slice of Daemon the dispatcher needs; a fake in tests. */
+/** A screenshot as a prompt carries it: the bytes, inline, and a name to call it by. */
+export interface PromptImage {
+  name: string;
+  mimeType: string;
+  /** Base64, no `data:` prefix. */
+  data: string;
+}
+
 export interface VoiceHost {
   /** Open a session in `cwd` and announce it to clients. Resolves with the session id. */
   startSession(providerId: string, cwd: string, tag: string): Promise<string>;
-  /** Resolves when the turn ends; rejects if it failed. */
-  prompt(sessionId: string, text: string): Promise<void>;
+  /**
+   * Resolves when the turn ends; rejects if it failed. `attachments` go to the
+   * agent the same way a chat prompt's do — which block form each takes is the
+   * daemon's to decide from what the agent says it accepts.
+   */
+  prompt(sessionId: string, text: string, attachments?: readonly PromptImage[]): Promise<void>;
   cancel(sessionId: string): Promise<void>;
   answerPermission(sessionId: string, requestId: string, optionId: string): boolean;
   hasSession(sessionId: string): boolean;
@@ -41,6 +53,17 @@ export interface OrchestratorOptions {
   /** A running (not blocked) task with no sign of life for this long is failed. */
   taskTimeoutMs?: number;
   retryBackoffMs?: number;
+  /**
+   * Screenshots by id, read for a prompt. Throws a speakable error when one is
+   * gone. Without it a task that names any fails rather than going out blind.
+   */
+  readAttachments?: (attachmentIds: readonly string[]) => Promise<PromptImage[]>;
+}
+
+/** One message for a running task's next turn, with any screenshots that go with it. */
+interface FollowUp {
+  text: string;
+  attachmentIds: string[];
 }
 
 interface Pending {
@@ -58,7 +81,8 @@ export class Orchestrator {
   private readonly backoffMs: number;
   /** Open permission requests per task, with the options to answer them. */
   private readonly permissions = new Map<string, Map<string, Pending>>();
-  private readonly followUps = new Map<string, string[]>();
+  private readonly followUps = new Map<string, FollowUp[]>();
+  private readonly readAttachments?: OrchestratorOptions["readAttachments"];
   private readonly retryAt = new Map<string, number>();
   private readonly lastActivity = new Map<string, number>();
   /** Prompt loops currently awaiting an agent turn. */
@@ -75,6 +99,7 @@ export class Orchestrator {
     this.maxConcurrent = options.maxConcurrent ?? 3;
     this.timeoutMs = options.taskTimeoutMs ?? 30 * 60_000;
     this.backoffMs = options.retryBackoffMs ?? 5_000;
+    this.readAttachments = options.readAttachments;
   }
 
   // ---- startup -------------------------------------------------------------
@@ -113,7 +138,7 @@ export class Orchestrator {
    * current prompt (one prompt per session at a time); to a finished task it
    * reopens the same conversation, or starts a fresh one if the session is gone.
    */
-  followUp(taskId: string, text: string): Outcome {
+  followUp(taskId: string, text: string, attachmentIds: readonly string[] = []): Outcome {
     const task = this.store.getTask(taskId);
     if (!task) return { ok: false, error: `No task ${taskId}.` };
     if (task.state === "cancelled") return { ok: false, error: "That task was cancelled." };
@@ -122,11 +147,15 @@ export class Orchestrator {
 
     if (ACTIVE.has(task.state) || task.state === "queued" || task.state === "paused") {
       if (task.state === "queued" || task.state === "paused") {
-        // Not started: fold into the task's own prompt so the agent sees one instruction.
-        this.store.patch(taskId, { prompt: `${task.prompt}\n\nAdditional instruction: ${line}` });
+        // Not started: fold into the task's own prompt so the agent sees one
+        // instruction, and its screenshots go out with that first prompt.
+        this.store.patch(taskId, {
+          prompt: `${task.prompt}\n\nAdditional instruction: ${line}`,
+          ...withPending(task, attachmentIds),
+        });
       } else {
         const list = this.followUps.get(taskId) ?? [];
-        list.push(line);
+        list.push({ text: line, attachmentIds: [...attachmentIds] });
         this.followUps.set(taskId, list);
         this.store.transition(taskId, task.state, "task.progress", `Follow-up queued: ${speakable(line, 80)}`);
       }
@@ -143,6 +172,7 @@ export class Orchestrator {
       attempts: 0,
       error: undefined,
       interrupted: undefined,
+      ...withPending(task, attachmentIds),
     });
     this.pump();
     return { ok: true, value: this.store.getTask(taskId) ?? task };
@@ -357,7 +387,34 @@ export class Orchestrator {
       await this.safeCancel(sessionId);
       return;
     }
-    await this.promptLoop(taskId, sessionId, now.prompt);
+    await this.promptLoop(taskId, sessionId, { text: now.prompt, attachmentIds: now.pendingAttachmentIds ?? [] });
+  }
+
+  /**
+   * One prompt to the agent, with its screenshots.
+   *
+   * The pictures are read *before* anything is sent: a prompt that says "use
+   * the attached screenshot" and arrives without it would have the agent guess
+   * at a fix it was never shown. A missing file therefore fails the turn with
+   * a reason the user can act on ("attach it again").
+   *
+   * Recorded as sent once handed over, not once the turn ends — the agent has
+   * it from that moment, and a turn that later fails still saw the picture.
+   */
+  private async sendTurn(taskId: string, sessionId: string, turn: FollowUp): Promise<void> {
+    if (turn.attachmentIds.length === 0) {
+      await this.host.prompt(sessionId, turn.text);
+      return;
+    }
+    if (!this.readAttachments) throw new Error("Screenshots cannot be sent from here.");
+    const images = await this.readAttachments(turn.attachmentIds);
+    const names = images.map((image) => image.name).join(", ");
+    const text = `${turn.text}\n\n${images.length === 1 ? "A screenshot is" : `${images.length} screenshots are`} attached (${names}), forwarded by the user. Look at ${images.length === 1 ? "it" : "them"} before acting on the instruction above.`;
+    const task = this.store.getTask(taskId);
+    const sent = [...new Set([...(task?.attachmentIds ?? []), ...turn.attachmentIds])];
+    this.store.patch(taskId, { attachmentIds: sent, pendingAttachmentIds: undefined });
+    for (const id of turn.attachmentIds) this.store.markScreenshotSent(id, taskId);
+    await this.host.prompt(sessionId, text, images);
   }
 
   private startFailed(taskId: string, error: unknown) {
@@ -384,18 +441,18 @@ export class Orchestrator {
     this.pump();
   }
 
-  private async promptLoop(taskId: string, sessionId: string, firstText: string) {
+  private async promptLoop(taskId: string, sessionId: string, first: FollowUp) {
     this.looping.add(taskId);
     const evidence = new TurnEvidence();
     this.evidence.set(taskId, evidence);
     try {
-      let text: string | undefined = firstText;
-      while (text !== undefined) {
-        await this.host.prompt(sessionId, text);
+      let next: FollowUp | undefined = first;
+      while (next !== undefined) {
+        await this.sendTurn(taskId, sessionId, next);
         const task = this.store.getTask(taskId);
         if (!task || !ACTIVE.has(task.state)) return; // cancelled, paused or timed out meanwhile
         this.lastActivity.set(taskId, this.now());
-        text = this.followUps.get(taskId)?.shift();
+        next = this.followUps.get(taskId)?.shift();
       }
       const lastText = this.host.lastText(sessionId);
       const summary = speakable(lastText, 220);
@@ -501,4 +558,10 @@ export class Orchestrator {
       // The session may already be gone; the task state is what matters.
     }
   }
+}
+
+/** A task's screenshots still to send, with `more` added and nothing twice. */
+function withPending(task: StoredTask, more: readonly string[]): Partial<StoredTask> {
+  if (more.length === 0) return {};
+  return { pendingAttachmentIds: [...new Set([...(task.pendingAttachmentIds ?? []), ...more])] };
 }
