@@ -20,10 +20,12 @@ import { theme } from "../theme";
 import { haptics } from "./haptics";
 import { Sheet } from "./Sheet";
 import { ThinkingOrb } from "./ThinkingOrb";
+import { Pew } from "../pew/Pew";
+import { useAgentColor } from "./stage/agentColor";
 import { useReducedMotion } from "./useReducedMotion";
 import { cardApproval, type HeldPermission } from "../voice/approvals";
 import { isActive, type MachineState } from "../voice/voiceMachine";
-import { voiceStatus, type StatusKey } from "../voice/presentation";
+import { voiceMood, voiceStatus } from "../voice/presentation";
 import { currentLine, groupTasks, summarize, taskStatus, taskTimeline, type GroupKey, type Tone } from "../voice/taskBoard";
 import { placeTitle } from "../voice/place";
 import type { TranscriptLine } from "../voice/transcript";
@@ -247,44 +249,12 @@ function TaskCard({
   );
 }
 
-const RING: Record<StatusKey, { color: string; period: number; scale: number }> = {
-  idle: { color: theme.color.textFaint, period: 0, scale: 1 },
-  connecting: { color: theme.color.textFaint, period: 1200, scale: 1.15 },
-  listening: { color: theme.color.accent, period: 1600, scale: 1.25 },
-  thinking: { color: theme.color.accent, period: 700, scale: 1.12 },
-  speaking: { color: theme.color.success, period: 500, scale: 1.3 },
-  dispatching: { color: theme.color.accent, period: 400, scale: 1.14 },
-  reconnecting: { color: theme.color.danger, period: 900, scale: 1.1 },
-  paused: { color: theme.color.textFaint, period: 0, scale: 1 },
-  ending: { color: theme.color.textFaint, period: 0, scale: 1 },
-  ended: { color: theme.color.textFaint, period: 0, scale: 1 },
-  error: { color: theme.color.danger, period: 0, scale: 1 },
-};
-
-/** A core with a halo whose tempo follows the phase. Reanimated, UI thread. */
-function Pulse({ status, compact }: { status: StatusKey; compact: boolean }) {
-  const reduce = useReducedMotion();
-  const t = useSharedValue(0);
-  const cfg = RING[status];
-  useEffect(() => {
-    cancelAnimation(t);
-    t.value = 0;
-    if (cfg.period > 0 && !reduce) {
-      t.value = withRepeat(withTiming(1, { duration: cfg.period, easing: Easing.inOut(Easing.quad) }), -1, true);
-    }
-    return () => cancelAnimation(t);
-  }, [cfg.period, reduce, t]);
-  const style = useAnimatedStyle(() => ({
-    transform: [{ scale: 1 + (cfg.scale - 1) * t.value }],
-    opacity: 0.35 + 0.65 * (1 - t.value * 0.5),
-  }));
-  return (
-    <View style={[styles.pulseBox, compact && styles.pulseBoxCompact]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-      <Animated.View style={[styles.halo, compact && styles.haloCompact, { borderColor: cfg.color, backgroundColor: cfg.color + "33" }, style]} />
-      <View style={[styles.core, compact && styles.coreCompact, { backgroundColor: cfg.color }]} />
-    </View>
-  );
-}
+/**
+ * Pew's box. Its globe fills the middle ~60%; the rest is room to bounce.
+ * Above a 140pt edge he is built from the full dot set, as on home.
+ */
+const HERO_PEW = 148;
+const HERO_PEW_COMPACT = 100;
 
 /**
  * One shared screenshot: what it is, where it is, and the one obvious next
@@ -420,12 +390,20 @@ export function VoiceSheet({
   const isOpenByDefault = (key: GroupKey) => key === "attention" || key === "working";
   const compact = useWindowDimensions().height < COMPACT_HEIGHT;
   const target = sendTarget(store.tasks);
+  const agentColor = useAgentColor();
 
   return (
     <Sheet visible={visible} title="Voice" onClose={onClose} tall>
       <View style={styles.body}>
         <View style={[styles.hero, compact && styles.heroCompact]}>
-          <Pulse status={status.key} compact={compact} />
+          <Pew
+            size={compact ? HERO_PEW_COMPACT : HERO_PEW}
+            mood={voiceMood(status.key)}
+            color={agentColor}
+            interactive
+            paused={!visible}
+            style={styles.heroPew}
+          />
           <View style={styles.statusRow}>
             {status.orb ? <ThinkingOrb state={status.orb} /> : null}
             <Text style={styles.state} accessibilityLiveRegion="polite">
@@ -522,15 +500,9 @@ export function VoiceSheet({
 const styles = StyleSheet.create({
   body: { flex: 1, gap: theme.space(3) },
   hero: { alignItems: "center", gap: theme.space(2), paddingTop: theme.space(1) },
-  // Sized for the halo at its largest (72 × the 1.3 speaking scale), so the
-  // pulse never spills over the status line under it.
-  pulseBox: { width: 96, height: 96, alignItems: "center", justifyContent: "center" },
-  halo: { position: "absolute", width: 72, height: 72, borderRadius: 36, borderWidth: 2 },
-  core: { width: 36, height: 36, borderRadius: 18 },
+  // Pew's box is mostly bounce room; pull the label up under its globe.
+  heroPew: { marginVertical: -theme.space(3) },
   heroCompact: { gap: theme.space(1), paddingTop: 0 },
-  pulseBoxCompact: { width: 72, height: 72 },
-  haloCompact: { width: 54, height: 54, borderRadius: 27 },
-  coreCompact: { width: 28, height: 28, borderRadius: 14 },
   statusRow: { flexDirection: "row", alignItems: "center", gap: theme.space(2) },
   state: { color: theme.color.text, fontSize: 22, fontWeight: "700" },
   heroDetail: { color: theme.color.textDim, fontSize: theme.font.body, textAlign: "center" },

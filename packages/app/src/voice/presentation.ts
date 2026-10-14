@@ -5,6 +5,7 @@
 import type { MachineState } from "./voiceMachine";
 import type { TranscriptLine } from "./transcript";
 import type { VoiceStore } from "./voiceStore";
+import type { PewMood } from "../pew/engine";
 
 export type StatusKey =
   | "idle"
@@ -80,4 +81,27 @@ export function voiceStatus(
       return { key: "listening", label: "Listening", orb: "listening", retry: false };
     }
   }
+}
+
+/**
+ * Pew's mood in the voice hero, where the pulsing circle used to be. Ready is
+ * the same idle Pew that waits on home; it listens awake, thinks while the
+ * model works out a reply, talks while it speaks, and dozes once voice stops.
+ */
+const VOICE_MOOD: Record<StatusKey, PewMood> = {
+  idle: "idle",
+  connecting: "thinking",
+  listening: "idle",
+  thinking: "thinking",
+  speaking: "talking",
+  dispatching: "working",
+  reconnecting: "thinking",
+  paused: "sleepy",
+  ending: "sleepy",
+  ended: "sleepy",
+  error: "oops",
+};
+
+export function voiceMood(key: StatusKey): PewMood {
+  return VOICE_MOOD[key];
 }

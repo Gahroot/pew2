@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildDashboard } from "./dashboard";
 import { appendLine, TRANSCRIPT_LIMIT } from "./transcript";
-import { voiceStatus } from "./presentation";
+import { voiceMood, voiceStatus } from "./presentation";
 import { emptyStore, type VoiceStore } from "./voiceStore";
 import { initialState, type MachineState } from "./voiceMachine";
 import type { VoiceEvent, VoiceTask } from "./types";
@@ -133,5 +133,10 @@ describe("voiceStatus", () => {
     const s = store([], [ev({ eventId: 1, kind: "task.queued", at: 1000 })]);
     expect(voiceStatus(m({ phase: "listening" }), s, lines, 2000).key).toBe("dispatching");
     expect(voiceStatus(m({ phase: "listening" }), s, [], 60000).key).toBe("listening");
+  });
+  test("Pew waits idle when ready, talks while speaking, frowns on error", () => {
+    expect(voiceMood(voiceStatus(m({ phase: "idle" }), emptyStore, [], 0).key)).toBe("idle");
+    expect(voiceMood(voiceStatus(m({ phase: "speaking" }), emptyStore, [], 0).key)).toBe("talking");
+    expect(voiceMood(voiceStatus(m({ phase: "error", errorCode: "offline" }), emptyStore, [], 0).key)).toBe("oops");
   });
 });

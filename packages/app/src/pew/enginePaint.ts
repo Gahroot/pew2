@@ -17,8 +17,11 @@ import {
   clamp,
   effectiveMood,
   fract,
+  gridCols,
+  gridRows,
   hash,
   motion,
+  pewCount,
   sleepClock,
   smooth,
   talkOpen,
@@ -173,8 +176,13 @@ function sleepFace(u: number, w: number, T: number, sl: number): number {
   }
 }
 
-/** Is the LED at face coordinates (u, w) part of the face for this mood? 0..1 */
-export function ledFace(u: number, w: number, mood: PewMood, open: number, t: number, sleepIn?: number): number {
+/**
+ * Is the LED at face coordinates (u, w) part of the face for this mood? 0..1
+ *
+ * `rows` is the globe's row count (`gridRows`), for the features counted in
+ * whole dots rather than drawn as a shape.
+ */
+export function ledFace(u: number, w: number, mood: PewMood, open: number, t: number, sleepIn?: number, rows = 28): number {
   "worklet";
   if (mood === "sleepy") return sleepFace(u, w, t, sleepIn ?? 0);
   for (let side = -1; side <= 1; side += 2) {
@@ -202,12 +210,20 @@ export function ledFace(u: number, w: number, mood: PewMood, open: number, t: nu
       return Math.abs(d - 0.15) < 0.06 && w < my + 0.03 && Math.abs(u) < 0.15 ? 1 : 0;
     }
     case "talking": {
-      const o = talkOpen(t);
-      const rw = 0.11;
-      const rh = 0.035 + 0.08 * o;
-      const du = u / rw;
-      const dw = (w - (my + 0.01)) / rh;
-      return du * du + dw * dw < 1 ? 1 : 0;
+      // One row of dots: a single dot between syllables, three in a line on
+      // one. Measured in the grid's own steps (a band one row of latitude
+      // tall, and k steps of the row's longitude wide), a window always holds
+      // exactly one row and exactly k dots however far the globe has turned,
+      // so it snaps between one and three and never shows a lopsided two.
+      const step = Math.PI / rows;
+      const lat = Math.asin(clamp(w, -1, 1));
+      const ring = Math.cos(lat);
+      const lon = Math.asin(clamp(u / Math.max(1e-6, ring), -1, 1));
+      // Open on about a third of frames, some 1.5 syllables a second, with the
+      // phrase pauses talkOpen already has.
+      const wide = talkOpen(t) > 0.25 ? 1.5 : 0.5;
+      const row = Math.abs(lat - Math.asin(my - 0.03)) < step / 2;
+      return row && Math.abs(lon) < ((wide * 2) * Math.PI) / gridCols(rows, ring) ? 1 : 0;
     }
     case "oops": {
       const d = Math.hypot(u, w - my);
@@ -240,6 +256,7 @@ function paintLeds(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: numbe
   }
   const lit = mood === "oops" ? PEW_AMBER : pal.base;
   const ledFaceOn = B.n >= LED_FACE_MIN;
+  const rows = gridRows(pewCount(B.S));
   const T = mood === "sleepy" ? sleepClock(B, t) : t;
   // How much of the previous face is still showing: 1 at the change, eased to
   // 0 over FACE_BLEND seconds.
@@ -264,11 +281,11 @@ function paintLeds(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: numbe
     const r = B.rnd[i]!;
     let on = 0;
     if (ledFaceOn && facing > 0.2) {
-      on = ledFace(u - gu, w - gw, mood, open, T, B.sleep);
+      on = ledFace(u - gu, w - gw, mood, open, T, B.sleep, rows);
       // Mid-change, the old face fades out as the new one fades in, so the
       // lit dots cross-dissolve instead of the face snapping.
       if (blendOld > 0) {
-        const old = ledFace(u - gu, w - gw, prev, open, prev === "sleepy" ? sleepClock(B, t) : t, B.sleep);
+        const old = ledFace(u - gu, w - gw, prev, open, prev === "sleepy" ? sleepClock(B, t) : t, B.sleep, rows);
         on = on * (1 - blendOld) + old * blendOld;
       }
     }

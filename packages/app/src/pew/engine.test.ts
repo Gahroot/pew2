@@ -8,6 +8,7 @@ import {
   PEW_MOODS,
   dragPew,
   gridPoints,
+  gridRows,
   ledFace,
   makePewBody,
   PEW_SLEEP_STYLES,
@@ -112,6 +113,40 @@ describe("face", () => {
     const opens = Array.from({ length: 200 }, (_, i) => talkOpen(i * 0.02));
     expect(Math.max(...opens)).toBeGreaterThan(0.6);
     expect(Math.min(...opens)).toBeLessThan(0.2);
+  });
+  test("talking is one dot between syllables and three in a row on one, however the globe turns", () => {
+    let shut = 0;
+    let wide = 0;
+    for (let k = 0; k < 400; k++) {
+      const o = talkOpen(k * 0.013);
+      if (o < 0.1) shut = k * 0.013;
+      if (o > 0.6) wide = k * 0.013;
+    }
+    for (const S of [100, 148, 200]) {
+      const home = gridPoints(pewCount(S));
+      const n = home.length / 3;
+      const rows = gridRows(pewCount(S));
+      for (let yaw = 0; yaw < 0.6; yaw += 0.037) {
+        const mouth = (t: number) => {
+          const lit: [number, number][] = [];
+          for (let i = 0; i < n; i++) {
+            const x0 = home[i * 3]!;
+            const z0 = home[i * 3 + 2]!;
+            const u = x0 * Math.cos(yaw) + z0 * Math.sin(yaw);
+            const w = home[i * 3 + 1]!;
+            const z = -x0 * Math.sin(yaw) + z0 * Math.cos(yaw);
+            // Below the eyes, on the side facing us.
+            if (z > 0.2 && w < 0 && ledFace(u, w, "talking", 1, t, 0, rows) > 0) lit.push([u, w]);
+          }
+          return lit;
+        };
+        expect(mouth(shut).length).toBe(1);
+        const open = mouth(wide);
+        expect(open.length).toBe(3);
+        const ws = open.map((d) => d[1]);
+        expect(Math.max(...ws) - Math.min(...ws)).toBeLessThan(1e-6);
+      }
+    }
   });
   test("small Pews draw their face as shapes, big ones in lit dots", () => {
     const small = run(24, "happy", 1);

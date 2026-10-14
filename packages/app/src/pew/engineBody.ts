@@ -184,17 +184,29 @@ export function pewCount(S: number): number {
   return S > 140 ? 1000 : S > 50 ? 420 : S > 28 ? 180 : 120;
 }
 
+/** How many rows of dots a globe of about `target` dots has. */
+export function gridRows(target: number): number {
+  "worklet";
+  return Math.max(7, Math.round(Math.sqrt(target / 1.27)));
+}
+
+/** How many dots go round a row whose radius is `ring` (cos of its latitude). */
+export function gridCols(rows: number, ring: number): number {
+  "worklet";
+  return Math.max(4, Math.round(rows * 2 * ring));
+}
+
 /**
  * Rows of dots, like an LED globe: the pew2 icon wrapped round a ball.
  * Alternate rows are offset half a dot so the grid reads as a weave.
  */
 export function gridPoints(target: number): Float32Array {
   "worklet";
-  const rows = Math.max(7, Math.round(Math.sqrt(target / 1.27)));
+  const rows = gridRows(target);
   const pts: number[] = [];
   for (let r = 0; r < rows; r++) {
     const lat = -Math.PI / 2 + ((r + 0.5) / rows) * Math.PI;
-    const cols = Math.max(4, Math.round(rows * 2 * Math.cos(lat)));
+    const cols = gridCols(rows, Math.cos(lat));
     for (let c = 0; c < cols; c++) {
       const lon = (c / cols) * TAU + (r % 2) * (Math.PI / cols);
       pts.push(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
