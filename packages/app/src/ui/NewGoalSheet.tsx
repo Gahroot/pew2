@@ -10,19 +10,27 @@
  * Stage "launch pad" at the bottom: hold Ken until the dot ring fills.
  */
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { AccessibilityInfo, Alert, Modal, Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from "react-native";
-import Reanimated, { FadeIn, FadeInDown, FadeOut, LinearTransition, ZoomIn, ZoomOut, useReducedMotion } from "react-native-reanimated";
+import { Alert, Modal, StyleSheet, Text, View } from "react-native";
+import Reanimated, {
+  Easing,
+  FadeIn,
+  FadeInDown,
+  FadeOut,
+  runOnJS,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardAwareScrollView, KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import Ionicons from "@expo/vector-icons/Ionicons";
 import { theme } from "../theme";
 import { haptics } from "./haptics";
 import { CircleButton } from "./controls";
 import { DotGlyph } from "./stage/DotGlyph";
 import { FolderPicker } from "./FolderPicker";
 import { Led } from "./stage/Led";
-import { dashedOutline } from "./stage/DashedRule";
 import { StageButton } from "./stage/StageButton";
 import { Pew } from "../pew/Pew";
 import { AgentColorProvider } from "./stage/agentColor";
@@ -31,9 +39,16 @@ import { suggestGoalName } from "../goalsAgent";
 import type { GoalResult, GoalSummary } from "../ggState";
 import type { WorkspaceBrowse } from "../useDaemon";
 import { EASE_OUT } from "./motion/ease";
-import { SPRING } from "../motion";
+import { DUR } from "../motion";
 import { addAttachments, MAX_ATTACHMENTS, toWireAttachments, type PendingAttachment, type WireAttachment } from "../attachments";
 import { pickFiles } from "./attachmentPicker";
+import { LaunchFx, type LaunchFxValues } from "./LaunchFx";
+import { sounds } from "./sounds";
+import { BURST_MIN_S, type FxScene } from "../launchFx";
+import { LaunchPad, COVER_LAG_S, usePlainLaunch } from "./GoalLaunchPad";
+import { CHIP_LAYOUT, CONTEXT_MAX, ContextChips, GOAL_MAX, INSTRUCTIONS_MAX, INSTRUCTIONS_PLACEHOLDER, NAME_MAX, StageInput } from "./goalForm";
+// The form pieces moved to `goalForm.tsx`; re-exported so goal settings keeps importing them from here.
+export { CHIP_LAYOUT, CONTEXT_MAX, ContextChips, Field, GOAL_MAX, INSTRUCTIONS_MAX, INSTRUCTIONS_PLACEHOLDER, NAME_MAX, StageInput } from "./goalForm";
 
 interface NewGoalSheetProps {
   visible: boolean;
@@ -50,11 +65,18 @@ interface NewGoalSheetProps {
 }
 
 function NewGoalSheetView(props: NewGoalSheetProps) {
+  const [quiet, setQuiet] = useState(false);
+  useEffect(() => {
+    if (props.visible) setQuiet(false);
+  }, [props.visible]);
   return (
     <Modal
       visible={props.visible}
-      animationType="slide"
-      presentationStyle="fullScreen"
+      // Transparent, so the launch can open a hole onto the goal's session
+      // behind it; the screen paints its own background. After a launch it
+      // leaves without the slide: the reveal already took it away.
+      animationType={quiet ? "none" : "slide"}
+      transparent
       onRequestClose={props.onClose}
     >
       {/* A native modal is its own window: the app's gesture, keyboard and
@@ -65,7 +87,7 @@ function NewGoalSheetView(props: NewGoalSheetProps) {
             {/* Everything lit on this screen is GG Goals' own purple (Ken), not
                 the chat's agent colour behind it. */}
             <AgentColorProvider value={KEN_COLOR}>
-              <NewGoalScreen {...props} />
+              <NewGoalScreen {...props} onQuietExit={() => setQuiet(true)} />
             </AgentColorProvider>
           </KeyboardProvider>
         </SafeAreaProvider>
@@ -90,10 +112,11 @@ const STEP_TITLE: Record<Step, string> = {
 /**
  * One step at a time (the user's call: the single form was too cluttered).
  * Ken (GG Goals' own Pew) stays above every step, centred, keeping you
- * company; each step is just a title and its field, no descriptions. Next /
- * Back move between steps; the last one is the launch pad.
+ * company; each step is just a title and its field, no descriptions. Next
+ * (top right) and Back (top left, beside Close) move between steps, clear of
+ * the keyboard; the last step is the launch pad.
  */
-function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse, onBrowse, prefill, online }: NewGoalSheetProps) {
+function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse, onBrowse, prefill, online, onQuietExit }: NewGoalSheetProps & { onQuietExit: () => void }) {
   const insets = useSafeAreaInsets();
   const reduce = useReducedMotion();
   const [step, setStep] = useState<Step>("name");
@@ -106,9 +129,43 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
   const [instructions, setInstructions] = useState("");
   const [pending, setPending] = useState<string>();
   const [error, setError] = useState<string>();
+  const plain = usePlainLaunch();
+  // The launch, all on the UI thread (see LaunchFx). `launched` is the React
+  // side of the same fact: the wizard under the blast stops taking touches.
+  const fx: LaunchFxValues = {
+    clock: useSharedValue(0),
+    charge: useSharedValue(0),
+    burst: useSharedValue(-1),
+    reveal: useSharedValue(0),
+    fade: useSharedValue(1),
+  };
+  const [launched, setLaunched] = useState(false);
+  const launchedRef = useRef(false);
+  const [waitingLong, setWaitingLong] = useState(false);
+  const [scene, setScene] = useState<FxScene>();
+  const firedAt = useRef(0);
+  /** The create has been answered: nothing may say "Launching" after this. */
+  const answered = useRef(false);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const later = (ms: number, run: () => void) => {
+    timers.current.push(setTimeout(run, ms));
+  };
+  const clearTimers = () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+  };
+  useEffect(() => clearTimers, []);
 
   useEffect(() => {
     if (!visible) return;
+    clearTimers();
+    fx.charge.value = 0;
+    fx.burst.value = -1;
+    fx.reveal.value = 0;
+    fx.fade.value = 1;
+    launchedRef.current = false;
+    setLaunched(false);
+    setWaitingLong(false);
     // `EXPO_PUBLIC_DEV_GOAL_STEP=<step>` (development only) opens on that step,
     // with a name and goal filled in, for checking it on the simulator.
     const devStep = __DEV__ ? (process.env.EXPO_PUBLIC_DEV_GOAL_STEP as Step | undefined) : undefined;
@@ -120,7 +177,38 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
     setInstructions("");
     setPending(undefined);
     setError(undefined);
+    // Shared values are stable; the reset belongs to opening only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, prefill]);
+
+  /** Calls the blast off: the cover fades and the wizard comes back as it was. */
+  const abortLaunch = () => {
+    clearTimers();
+    setWaitingLong(false);
+    if (!launchedRef.current) return;
+    launchedRef.current = false;
+    setLaunched(false);
+    const { burst, charge, reveal, fade } = fx;
+    fade.value = withTiming(0, { duration: DUR.dissolve, easing: EASE_OUT }, () => {
+      burst.value = -1;
+      charge.value = 0;
+      reveal.value = 0;
+      fade.value = 1;
+    });
+  };
+
+  /** The session is open behind the cover: widen the hole onto it, then go. */
+  const openUp = () => {
+    setWaitingLong(false);
+    const done = () => {
+      onQuietExit();
+      later(60, onClose);
+    };
+    sounds.play("reveal");
+    fx.reveal.value = withTiming(1, { duration: REVEAL_MS, easing: Easing.linear }, (finished) => {
+      if (finished) runOnJS(done)();
+    });
+  };
 
   const result = pending ? results[pending] : undefined;
   // A launch that hears nothing back gives up rather than sitting on
@@ -130,15 +218,21 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
     if (!pending) return;
     const t = setTimeout(() => {
       setPending(undefined);
+      abortLaunch();
       haptics.failed();
       setError("Your computer didn't answer. Check it's online, then hold Ken again.");
     }, LAUNCH_TIMEOUT_MS);
     return () => clearTimeout(t);
+    // The clock belongs to this launch: `abortLaunch` is a fresh closure every
+    // render, and listing it would restart the timeout on each one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending]);
   // How many phone files went out with the create, to check they arrived.
   const sentFiles = useRef(0);
   useEffect(() => {
     if (!result) return;
+    answered.current = true;
+    setWaitingLong(false);
     setPending(undefined);
     if (result.ok) {
       // An older pew2 on the computer drops `files` without a word and its
@@ -150,12 +244,30 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
           "The goal was created, but pew2 on your computer is too old to receive files from your phone. Update it, then add them in goal settings.",
         );
       }
-      onCreated(result.goal);
+      const created = result.goal;
+      if (!launchedRef.current || !created) {
+        onCreated(created);
+        onClose();
+        return;
+      }
+      // Let the blast play out, then open the goal's session behind the cover
+      // (a beat for it to mount) and widen the hole onto it. Timers live in a
+      // ref, not this effect: clearing `pending` re-runs it straight away.
+      const wait = Math.max(0, BURST_MIN_S * 1000 - (Date.now() - firedAt.current));
+      later(wait, () => {
+        onCreated(created);
+        later(SESSION_MOUNT_MS, openUp);
+      });
     } else {
+      abortLaunch();
       haptics.failed();
       setError(result.error ?? "Couldn't create the goal");
     }
-  }, [result, onCreated]);
+    // Runs once per answer. The callbacks it reaches are recreated every render
+    // and `onCreated` comes from the parent; listing them would replay the
+    // outcome (alert, navigation) on unrelated renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
 
   // The system file picker. Files join the goal's context row as chips and
   // are sent with the goal; the same per-message limits as attachments apply.
@@ -189,7 +301,10 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
   };
 
   const launch = () => {
-    if (!ready) return;
+    if (!ready) {
+      abortLaunch();
+      return;
+    }
     setError(undefined);
     // Recorded before the reply can arrive.
     sentFiles.current = files.length;
@@ -200,41 +315,109 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
       instructions: instructions.trim() || undefined,
       ...(files.length > 0 ? { files: toWireAttachments(files) } : {}),
     });
-    if (id) setPending(id);
-    else setError("Not connected to your computer");
+    if (id) {
+      answered.current = false;
+      setPending(id);
+      // Still waiting after the blast has had its moment: say so on the cover
+      // (only if no answer has come by then; see `answered`).
+      later(BURST_MIN_S * 1000 + 900, () => {
+        if (!answered.current) setWaitingLong(true);
+      });
+    } else {
+      abortLaunch();
+      haptics.failed();
+      setError("Not connected to your computer");
+    }
   };
 
+  /** The charge completed (the blast already started on the UI thread). */
+  const fire = () => {
+    sounds.play("burst");
+    haptics.attention();
+    later(90, haptics.sent);
+    firedAt.current = Date.now();
+    launchedRef.current = true;
+    setLaunched(true);
+    launch();
+  };
+
+  // The wizard under the blast: gone the moment it starts (the cover is
+  // already opaque), back as a launch called off fades.
+  //
+  // Not on the blast's very first frame: the canvas paints its cover a frame
+  // after the value flips, and hiding the wizard on the flip showed whatever
+  // was behind the sheet (another conversation) for that one frame.
+  const wizardStyle = useAnimatedStyle(() => ({ opacity: fx.burst.value < COVER_LAG_S ? 1 : 1 - fx.fade.value }));
+
   // Ken's mood follows the step: listening while you write, happy at the end.
-  const kenMood = pending ? "happy" : step === "launch" ? "happy" : step === "goal" ? "thinking" : "idle";
+  const kenMood = step === "goal" ? "thinking" : "idle";
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <View style={styles.fill}>
+    <Reanimated.View style={[styles.screen, { paddingTop: insets.top }, wizardStyle]} pointerEvents={launched ? "none" : "auto"}>
+      {/* Back and Next live up here, not under the field: the steps open the
+          keyboard themselves, and a row along the bottom sat under it, so
+          every step meant closing the keyboard to reach the next one. */}
       <View style={styles.bar}>
-        <CircleButton label="Close new goal" size={40} onPress={onClose}>
-          <DotGlyph name="close" size={14} />
-        </CircleButton>
+        <View style={styles.barSide}>
+          <CircleButton label="Close new goal" size={40} onPress={onClose}>
+            <DotGlyph name="close" size={14} />
+          </CircleButton>
+          {index > 0 && (
+            <Reanimated.View entering={reduce ? undefined : FadeIn.duration(DUR.enter)} exiting={reduce ? undefined : FadeOut.duration(DUR.exit)}>
+              <CircleButton label="Back" size={40} feel={() => undefined} onPress={() => go(index - 1)}>
+                <DotGlyph name="back" size={16} />
+              </CircleButton>
+            </Reanimated.View>
+          )}
+        </View>
         <View style={styles.progress} accessibilityLabel={`Step ${index + 1} of ${STEPS.length}`}>
           {STEPS.map((s, i) => (
             <View key={s} style={[styles.progressDot, i <= index && styles.progressDotOn, i === index && styles.progressDotNow]} />
           ))}
         </View>
-        <View style={styles.barSpacer} />
+        <View style={[styles.barSide, styles.barSideEnd]}>
+          {step !== "launch" && (
+            <StageButton
+              compact
+              color={KEN_COLOR}
+              style={styles.next}
+              disabled={!canNext}
+              label={(step === "context" && context.length === 0 && files.length === 0) || (step === "instructions" && !instructions.trim()) ? "Skip" : "Next"}
+              feel="none"
+              onPress={() => go(index + 1)}
+            />
+          )}
+        </View>
       </View>
 
+      {step === "launch" ? (
+        // Not in the scroll view: the hold area is most of the screen, and
+        // the blast is drawn from where Ken sits, so he must not move.
+        <View style={[styles.fill, { paddingBottom: insets.bottom + theme.space(4) }]}>
+          <Reanimated.View entering={reduce ? undefined : FadeInDown.duration(260)} style={styles.launchHead}>
+            <Text style={styles.stepTitle} accessibilityRole="header" numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+              {STEP_TITLE.launch}
+            </Text>
+            {error ? (
+              <Text style={[styles.error, styles.errorCentred]} accessibilityLiveRegion="polite">
+                {error}
+              </Text>
+            ) : null}
+          </Reanimated.View>
+          <LaunchPad ready={ready} pending={pending !== undefined} plain={plain} fx={fx} onFire={fire} onLaunch={launch} onScene={setScene} />
+        </View>
+      ) : (
       <KeyboardAwareScrollView
         style={styles.fill}
-        // The launch step is only Ken's pad: centred in the screen rather than
-        // hanging from the top like the steps that hold a field.
-        contentContainerStyle={[styles.body, step === "launch" && styles.bodyCentred]}
+        contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + theme.space(8) }]}
         keyboardShouldPersistTaps="handled"
         bottomOffset={theme.space(6)}
       >
         {/* Ken stays put across steps (not keyed): only the step below changes. */}
-        {step !== "launch" && (
-          <View style={styles.ken}>
-            <Pew size={112} mood={kenMood} color={KEN_COLOR} accessibilityLabel="Ken" />
-          </View>
-        )}
+        <View style={styles.ken}>
+          <Pew size={112} mood={kenMood} color={KEN_COLOR} accessibilityLabel="Ken" />
+        </View>
         <Reanimated.View
           key={step}
           entering={reduce ? undefined : FadeInDown.duration(260)}
@@ -311,280 +494,48 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
             />
           )}
 
-          {step === "launch" && <LaunchPad ready={ready} pending={pending !== undefined} onLaunch={launch} />}
-
-          {/* Centred on the step it belongs to, so a failed launch is read where
-              the eye already is, under Ken. */}
           {error ? (
-            <Text style={[styles.error, step === "launch" && styles.errorCentred]} accessibilityLiveRegion="polite">
+            <Text style={styles.error} accessibilityLiveRegion="polite">
               {error}
             </Text>
           ) : null}
         </Reanimated.View>
       </KeyboardAwareScrollView>
-
-      <View style={[styles.nav, { paddingBottom: insets.bottom + theme.space(3) }]}>
-        {index > 0 ? (
-          <StageButton compact kind="secondary" style={styles.navBtn} label="Back" feel="none" onPress={() => go(index - 1)} />
-        ) : (
-          <View style={styles.navBtn} />
-        )}
-        {step !== "launch" ? (
-          <StageButton
-            compact
-            color={KEN_COLOR}
-            style={styles.navBtn}
-            disabled={!canNext}
-            label={(step === "context" && context.length === 0) || (step === "instructions" && !instructions.trim()) ? "Skip" : "Next"}
-            feel="none"
-            onPress={() => go(index + 1)}
-          />
-        ) : (
-          <View style={styles.navBtn} />
-        )}
-      </View>
-    </View>
-  );
-}
-
-export const NAME_MAX = 15;
-export const GOAL_MAX = 2000;
-export const CONTEXT_MAX = 20;
-export const INSTRUCTIONS_MAX = 4000;
-export const INSTRUCTIONS_PLACEHOLDER = "Keep the current design. Ask before adding dependencies.";
-
-export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <View style={styles.field}>
-      <Led tone="dim">{label}</Led>
-      {hint ? <Text style={styles.hint} numberOfLines={2}>{hint}</Text> : null}
-      {children}
-    </View>
-  );
-}
-
-/** Text input on the surface with the composer border; focus lights it GG Goals purple. */
-export function StageInput(props: TextInputProps) {
-  const [focused, setFocused] = useState(false);
-  return (
-    <TextInput
-      placeholderTextColor={theme.composer.placeholder}
-      {...props}
-      editable={props.editable}
-      style={[styles.input, focused && styles.inputFocused, props.editable === false && styles.inputOff, props.style]}
-      onFocus={(e) => {
-        setFocused(true);
-        props.onFocus?.(e);
-      }}
-      onBlur={(e) => {
-        setFocused(false);
-        props.onBlur?.(e);
-      }}
-    />
-  );
-}
-
-/** Chosen context (folders and files) as dashed chips; tap × to remove. */
-export function ContextChips({
-  chosen,
-  onChange,
-  disabled,
-  phoneFiles = [],
-  onRemovePhoneFile,
-}: {
-  chosen: readonly string[];
-  onChange: (next: string[]) => void;
-  disabled?: boolean;
-  /** Files picked on this phone, shown in the same row (sent with the goal). */
-  phoneFiles?: readonly PendingAttachment[];
-  onRemovePhoneFile?: (id: string) => void;
-}) {
-  const reduce = useReducedMotion();
-  if (chosen.length === 0 && phoneFiles.length === 0) return null;
-  return (
-    // Each chip springs in where it lands and shrinks away when removed; the
-    // others slide to close the gap. The row's own height change is animated
-    // by the caller's layout transition, so what's under it glides too.
-    <Reanimated.View
-      style={styles.chips}
-      entering={reduce ? undefined : FadeIn.duration(180)}
-      exiting={reduce ? undefined : FadeOut.duration(160)}
-      layout={reduce ? undefined : CHIP_LAYOUT}
-    >
-      {chosen.map((path) => (
-        <Reanimated.View
-          key={path}
-          style={[styles.chip, dashedOutline]}
-          entering={reduce ? undefined : ZoomIn.duration(SPRING.arrive.duration).easing(EASE_OUT)}
-          exiting={reduce ? undefined : ZoomOut.duration(160)}
-          layout={reduce ? undefined : CHIP_LAYOUT}
-        >
-          <Text style={styles.chipText} numberOfLines={1}>{path.split("/").filter(Boolean).pop() ?? path}</Text>
-          {disabled ? null : (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Remove ${path}`}
-              hitSlop={10}
-              onPress={() => {
-                haptics.tap();
-                onChange(chosen.filter((entry) => entry !== path));
-              }}
-            >
-              <Ionicons name="close" size={13} color={theme.color.textDim} />
-            </Pressable>
-          )}
-        </Reanimated.View>
-      ))}
-      {phoneFiles.map((file) => (
-        <Reanimated.View
-          key={file.id}
-          style={[styles.chip, dashedOutline]}
-          entering={reduce ? undefined : ZoomIn.duration(SPRING.arrive.duration).easing(EASE_OUT)}
-          exiting={reduce ? undefined : ZoomOut.duration(160)}
-          layout={reduce ? undefined : CHIP_LAYOUT}
-        >
-          <Ionicons name="phone-portrait-outline" size={12} color={theme.color.textDim} />
-          <Text style={styles.chipText} numberOfLines={1}>{file.name}</Text>
-          {disabled || !onRemovePhoneFile ? null : (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Remove ${file.name}`}
-              hitSlop={10}
-              onPress={() => {
-                haptics.tap();
-                onRemovePhoneFile(file.id);
-              }}
-            >
-              <Ionicons name="close" size={13} color={theme.color.textDim} />
-            </Pressable>
-          )}
-        </Reanimated.View>
-      ))}
-    </Reanimated.View>
-  );
-}
-
-/** One spring for everything that moves to make room (chips, the list below). */
-export const CHIP_LAYOUT = LinearTransition.duration(SPRING.settle.duration).easing(EASE_OUT);
-
-/** True when the user wants motion off or uses a screen reader: offer a plain button instead of hold. */
-function usePlainLaunch(): boolean {
-  const reduce = useReducedMotion();
-  const [reader, setReader] = useState(false);
-  useEffect(() => {
-    const sub = AccessibilityInfo.addEventListener("screenReaderChanged", setReader);
-    void AccessibilityInfo.isScreenReaderEnabled().then(setReader);
-    return () => sub.remove();
-  }, []);
-  return reduce || reader;
-}
-
-const DOTS = 16;
-const HOLD_MS = 1200;
-const RING = 132;
-
-/** A ring of dots around Ken's Pew: hold to fill it dot by dot, release early to drain. */
-function LaunchPad({ ready, pending, onLaunch }: { ready: boolean; pending: boolean; onLaunch: () => void }) {
-  const plain = usePlainLaunch();
-  const [lit, setLit] = useState(0);
-  const [holding, setHolding] = useState(false);
-  const [launched, setLaunched] = useState(false);
-  const timer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
-  const stop = () => {
-    if (timer.current) clearInterval(timer.current);
-    timer.current = undefined;
-  };
-  useEffect(() => stop, []);
-  useEffect(() => {
-    if (!pending) setLaunched(false);
-  }, [pending]);
-
-  const press = () => {
-    if (!ready) {
-      haptics.warned();
-      return;
-    }
-    stop();
-    setHolding(true);
-    timer.current = setInterval(() => {
-      setLit((n) => {
-        const next = Math.min(DOTS, n + 1);
-        if (next === DOTS) {
-          stop();
-          setHolding(false);
-          haptics.sent();
-          setLaunched(true);
-          // Commit outside the updater (an updater may run twice).
-          setTimeout(() => {
-            onLaunch();
-            setLit(0);
-          }, 0);
-        } else if (next % 4 === 0) haptics.detent();
-        return next;
-      });
-    }, HOLD_MS / DOTS);
-  };
-  const release = () => {
-    if (!timer.current) return;
-    stop();
-    setHolding(false);
-    timer.current = setInterval(() => {
-      setLit((n) => {
-        if (n <= 1) stop();
-        return Math.max(0, n - 1);
-      });
-    }, 30);
-  };
-
-  const mood = launched || pending ? "happy" : holding ? "working" : "idle";
-  // The step's title already says "Hold Ken to launch"; this only reports state.
-  const caption = pending ? "Launching" : ready ? (holding ? "Keep holding" : "Ready") : "Name and goal first";
-  return (
-    <View style={[styles.pad, !ready && !pending && styles.padOff]}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Hold to launch goal"
-        accessibilityState={{ disabled: !ready }}
-        onPressIn={press}
-        onPressOut={release}
-        style={styles.ring}
-      >
-        {Array.from({ length: DOTS }, (_, i) => {
-          const a = (i / DOTS) * Math.PI * 2 - Math.PI / 2;
-          const r = RING / 2 - 4;
-          return (
-            <View
-              key={i}
-              style={[
-                styles.dot,
-                { left: RING / 2 - 3 + r * Math.cos(a), top: RING / 2 - 3 + r * Math.sin(a) },
-                i < lit && styles.dotOn,
-              ]}
-            />
-          );
-        })}
-        <Pew size={88} mood={mood} color={KEN_COLOR} accessibilityLabel="Ken" />
-      </Pressable>
-      <Led tone={ready ? "agent" : "dim"} color={ready ? KEN_COLOR : undefined} numberOfLines={1}>{caption}</Led>
-      {plain && (
-        <StageButton color={KEN_COLOR} disabled={!ready} feel="sent" label={pending ? "Launching…" : "Launch goal"} onPress={onLaunch} />
       )}
+    </Reanimated.View>
+    {step === "launch" && scene && !plain && <LaunchFx scene={scene} color={KEN_COLOR} values={fx} />}
+    {launched && waitingLong && (
+      <Reanimated.View style={styles.launching} pointerEvents="none" entering={FadeIn.duration(DUR.dissolve)} exiting={FadeOut.duration(DUR.exit)}>
+        <Led tone="agent" color={KEN_COLOR}>Launching</Led>
+      </Reanimated.View>
+    )}
     </View>
   );
 }
+
+/** The opening onto the session. */
+const REVEAL_MS = 900;
+/** A beat for the goal's session to mount behind the cover before it opens. */
+const SESSION_MOUNT_MS = 260;
+
+/** Close + Back on the left, Next on the right. */
+const BAR_SIDE = 40 + theme.space(2) + 40;
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
-  screen: { flex: 1, backgroundColor: theme.color.bg },
+  screen: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.color.bg },
   bar: { flexDirection: "row", alignItems: "center", gap: theme.space(3), paddingHorizontal: theme.gutter, paddingVertical: theme.space(2) },
-  barSpacer: { width: 40 },
+  // Both sides one width, so the progress dots stay centred whichever
+  // buttons are showing.
+  barSide: { width: BAR_SIDE, flexDirection: "row", alignItems: "center", gap: theme.space(2) },
+  barSideEnd: { justifyContent: "flex-end" },
+  next: { minWidth: BAR_SIDE - theme.space(2), paddingHorizontal: theme.space(4) },
   progress: { flex: 1, flexDirection: "row", justifyContent: "center", gap: theme.space(1.5) },
   progressDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.stage.dash },
   progressDotOn: { backgroundColor: KEN_COLOR },
   progressDotNow: { width: 18 },
   // Centred column: Ken, then the step's title, then its one field.
   body: { flexGrow: 1, alignItems: "center", paddingHorizontal: theme.gutter, paddingTop: theme.space(6), paddingBottom: theme.space(8) },
-  bodyCentred: { justifyContent: "center", paddingTop: 0 },
   ken: { alignItems: "center", marginBottom: theme.space(2) },
   step: { alignSelf: "stretch", alignItems: "center", gap: theme.space(3) },
   stepTitle: { color: theme.color.text, fontFamily: theme.display.regular, fontSize: 24, lineHeight: 30, textAlign: "center" },
@@ -592,33 +543,10 @@ const styles = StyleSheet.create({
   wide: { alignSelf: "stretch", gap: theme.space(3) },
   goal: { alignSelf: "stretch", minHeight: 140, textAlignVertical: "top" },
   multi: { alignSelf: "stretch", minHeight: 120, textAlignVertical: "top" },
-  nav: { flexDirection: "row", gap: theme.space(3), paddingHorizontal: theme.gutter, paddingTop: theme.space(3) },
-  navBtn: { flex: 1 },
-  field: { gap: theme.space(2) },
-  hint: { color: theme.color.textDim, fontSize: theme.font.small },
-  input: {
-    minHeight: theme.size.touch,
-    borderRadius: theme.composer.radius,
-    borderWidth: 1,
-    borderColor: theme.composer.border,
-    backgroundColor: theme.composer.fill,
-    color: theme.color.text,
-    fontSize: theme.font.body,
-    paddingHorizontal: theme.space(3),
-    paddingVertical: theme.space(2.5),
-  },
-  inputFocused: { borderColor: KEN_COLOR },
-  inputOff: { opacity: 0.5 },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: theme.space(2) },
-  chip: { flexDirection: "row", alignItems: "center", gap: theme.space(1.5), maxWidth: "100%", paddingHorizontal: theme.space(3), paddingVertical: theme.space(1.5), borderRadius: theme.radius.pill },
-  chipText: { flexShrink: 1, color: theme.color.text, fontSize: theme.font.small },
   error: { color: theme.color.danger, fontSize: theme.font.small },
   errorCentred: { textAlign: "center", alignSelf: "stretch", lineHeight: 20 },
-  pad: { alignItems: "center", gap: theme.space(3), paddingTop: theme.space(4) },
-  padOff: { opacity: 0.45 },
-  ring: { width: RING, height: RING, alignItems: "center", justifyContent: "center" },
-  dot: { position: "absolute", width: 6, height: 6, borderRadius: 3, backgroundColor: theme.stage.dash },
-  dotOn: { backgroundColor: KEN_COLOR },
+  launchHead: { alignItems: "center", gap: theme.space(2), paddingHorizontal: theme.gutter, paddingTop: theme.space(6) },
+  launching: { position: "absolute", left: 0, right: 0, bottom: theme.space(24), alignItems: "center" },
   pressed: { opacity: 0.7 },
 });
 
