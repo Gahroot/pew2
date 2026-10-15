@@ -313,6 +313,19 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   const selectedProjectPath = activeId ? daemon.projectPath[activeId] : undefined;
   // The project that selection names, its branches included.
   const selectedProject = useMemo(() => projectFor(projects, selectedProjectPath), [projects, selectedProjectPath]);
+  // The same rows the drawer animates, named by project, so the voice dashboard
+  // never says "Idle" next to a spinning conversation.
+  const dashboardSessions = useMemo(
+    () =>
+      drawerProjection.rows
+        .filter((row) => row.busy || row.permission)
+        .map((row) => ({
+          project: projectFor(projects, row.cwd)?.name ?? row.folder ?? "Unknown project",
+          busy: row.busy,
+          permission: row.permission,
+        })),
+    [drawerProjection.rows, projects],
+  );
   const selectProject = useCallback(
     (path?: string) => {
       if (activeId) selectDaemonProject(activeId, path);
@@ -1086,7 +1099,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
 
       {/* After the voice sheet, not before: it opens from that sheet's Projects
           button, and a sheet earlier in the tree paints underneath it. */}
-      <ProjectDashboard visible={dashboardOpen} store={voice.view.store} onClose={() => setDashboardOpen(false)} />
+      <ProjectDashboard visible={dashboardOpen} store={voice.view.store} sessions={dashboardSessions} onClose={() => setDashboardOpen(false)} />
 
       <GoalSheets
         daemon={daemon}

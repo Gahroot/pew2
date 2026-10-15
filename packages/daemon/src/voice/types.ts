@@ -11,3 +11,15 @@ export type VoiceTask = wire.VoiceTask;
 export type VoiceDebrief = wire.VoiceDebrief;
 export type VoiceRepo = wire.VoiceRepo;
 export type VoiceAttachment = wire.VoiceAttachment;
+
+/** A conversation this daemon holds open, as the voice model may hear of it. */
+export interface RunningSession {
+  sessionId: string;
+  providerId: string;
+  agentName?: string;
+  cwd: string;
+  /** Same three states the sidebar draws: a turn in flight, blocked on the user, or at rest. */
+  state: "working" | "needs_you" | "idle";
+  /** Milliseconds since it was last used; lets the model say "just now". */
+  idleMs: number;
+}

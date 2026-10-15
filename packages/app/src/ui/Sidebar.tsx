@@ -25,6 +25,7 @@ import { projectFor, projectTabItems, projectTitle, sessionsInProject, type Proj
 import type { Provider, Status } from "../useDaemon";
 import { lastActiveLabel, sortGoals, type GoalSummary } from "../ggState";
 import { goalDrawerRow } from "../goalsAgent";
+import { sessionMark, type Mark } from "../sessionMark";
 import { Pew } from "../pew/Pew";
 import { pewInk } from "../pew/palette";
 import { Led } from "./stage/Led";
@@ -118,14 +119,7 @@ const COLUMN_PAD = theme.space(4);
 /** Fixed status column so every row's title starts at the same x. */
 const STATUS_COL = 16;
 
-type Mark = "live" | "attention" | "unread" | undefined;
-
-function rowMark(row: Pick<DrawerRow, "busy" | "unread"> & { permission?: unknown }): Mark {
-  if (row.permission) return "attention";
-  if (row.busy) return "live";
-  if (row.unread) return "unread";
-  return undefined;
-}
+const rowMark = sessionMark;
 
 /** "4m", "2h", "3d": the right-hand time, short so the title keeps the room. */
 function shortWhen(ms?: number): string {

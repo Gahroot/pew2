@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildDashboard } from "./dashboard";
+import { sessionMark } from "../sessionMark";
 import { appendLine, TRANSCRIPT_LIMIT } from "./transcript";
 import { voiceMood, voiceStatus } from "./presentation";
 import { emptyStore, type VoiceStore } from "./voiceStore";
@@ -138,5 +139,43 @@ describe("voiceStatus", () => {
     expect(voiceMood(voiceStatus(m({ phase: "idle" }), emptyStore, [], 0).key)).toBe("idle");
     expect(voiceMood(voiceStatus(m({ phase: "speaking" }), emptyStore, [], 0).key)).toBe("talking");
     expect(voiceMood(voiceStatus(m({ phase: "error", errorCode: "offline" }), emptyStore, [], 0).key)).toBe("oops");
+  });
+});
+
+describe("running conversations beside tasks", () => {
+  test("a busy conversation makes an otherwise idle project working, like the sidebar", () => {
+    const rows = buildDashboard(store([task({ taskId: "t1", state: "completed" })]), [{ project: "pew2", busy: true }]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: "working", liveSessions: 1 });
+  });
+
+  test("a conversation waiting on an approval outranks working, and says so", () => {
+    const rows = buildDashboard(store([]), [
+      { project: "billing", busy: true },
+      { project: "billing", busy: true, permission: { requestId: "r" } },
+    ]);
+    expect(rows[0]).toMatchObject({ name: "billing", state: "waiting", liveSessions: 2 });
+    expect(rows[0]?.approval).toBeDefined();
+  });
+
+  test("a task's own blocked state is never lowered by a working conversation", () => {
+    const rows = buildDashboard(store([task({ taskId: "t1", state: "blocked" })]), [{ project: "pew2", busy: true }]);
+    expect(rows[0]?.state).toBe("blocked");
+  });
+
+  test("an unread or at-rest conversation changes nothing", () => {
+    const rows = buildDashboard(store([task({ taskId: "t1", state: "completed" })]), [{ project: "pew2", unread: true }, { project: "pew2" }]);
+    expect(rows[0]).toMatchObject({ state: "done", liveSessions: 0 });
+  });
+
+  test("no sessions argument behaves exactly as before", () => {
+    expect(buildDashboard(store([task({ taskId: "t1", state: "running" })]))[0]).toMatchObject({ state: "working", liveSessions: 0 });
+  });
+
+  test("the sidebar and the dashboard read one rule", () => {
+    expect(sessionMark({ busy: true, permission: {} })).toBe("attention");
+    expect(sessionMark({ busy: true })).toBe("live");
+    expect(sessionMark({ unread: true })).toBe("unread");
+    expect(sessionMark({})).toBeUndefined();
   });
 });

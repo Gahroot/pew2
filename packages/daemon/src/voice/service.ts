@@ -46,6 +46,8 @@ export interface VoiceServiceDeps {
   /** Which of those paths are linked git worktrees; defaults to reading `.git`. */
   detectWorktree?: (path: string) => Promise<WorktreeInfo | undefined>;
   usableProviders: () => string[];
+  /** Conversations the daemon holds open, whoever started them. */
+  runningSessions?: () => import("./types.js").RunningSession[];
   lastUsedProvider?: () => string | undefined;
   /** Send a push for an event that is worth one. Never awaited by the service. */
   push?: (event: VoiceEvent) => void | Promise<void>;
@@ -91,6 +93,7 @@ export class VoiceService {
       orchestrator: this.orchestrator,
       projects: () => this.projects(true),
       usableProviders: deps.usableProviders,
+      runningSessions: deps.runningSessions,
       lastUsedProvider: deps.lastUsedProvider,
       approvalPolicy: { get: () => this.approvalPolicy, set: (p) => void (this.approvalPolicy = p) },
       rememberAlias: async (path, alias) => {

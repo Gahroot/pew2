@@ -8,7 +8,7 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { theme } from "../theme";
 import { Sheet } from "./Sheet";
-import { buildDashboard, type AgentState, type ProjectRow } from "../voice/dashboard";
+import { buildDashboard, type AgentState, type ProjectRow, type SessionRef } from "../voice/dashboard";
 import { taskStatus } from "../voice/taskBoard";
 import type { VoiceTask } from "../voice/types";
 import type { VoiceStore } from "../voice/voiceStore";
@@ -61,6 +61,12 @@ function Row({ row, now }: { row: ProjectRow; now: number }) {
           </View>
         </View>
 
+        {row.liveSessions > 0 && row.running.length === 0 ? (
+          <Text style={styles.activity}>
+            {row.liveSessions === 1 ? "A conversation is open and active" : `${row.liveSessions} conversations are open and active`}
+          </Text>
+        ) : null}
+
         {row.approval ? (
           <View style={styles.approval}>
             <Ionicons name="shield-checkmark-outline" size={16} color={theme.color.danger} />
@@ -98,8 +104,8 @@ function Row({ row, now }: { row: ProjectRow; now: number }) {
   );
 }
 
-export function ProjectDashboard({ visible, store, onClose }: { visible: boolean; store: VoiceStore; onClose: () => void }) {
-  const rows = useMemo(() => buildDashboard(store), [store]);
+export function ProjectDashboard({ visible, store, sessions, onClose }: { visible: boolean; store: VoiceStore; sessions?: readonly SessionRef[]; onClose: () => void }) {
+  const rows = useMemo(() => buildDashboard(store, sessions), [store, sessions]);
   const now = useNow(visible);
   return (
     <Sheet visible={visible} title="Projects" onClose={onClose} tall>

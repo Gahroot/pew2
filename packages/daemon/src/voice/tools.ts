@@ -22,7 +22,8 @@ import {
 } from "./safety.js";
 import { wire } from "@pew2/protocol";
 import { ACTIVE, TERMINAL, type StoredScreenshot, type StoredTask, type VoiceStore } from "./store.js";
-import type { VoiceProject } from "./types.js";
+import { basename } from "node:path";
+import type { RunningSession, VoiceProject } from "./types.js";
 
 // ---- definitions -----------------------------------------------------------
 
@@ -65,6 +66,10 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
     ["taskId", "instruction"],
   ),
   def("task_status", "Fresh status of one task. Omit taskId when only one task is active.", { taskId: str("Task id.") }),
+  def(
+    "whats_running",
+    "What is happening on the computer right now: voice tasks plus every agent conversation already open, including ones the user started at the desk or in the app. Use for 'what's running', 'anything going on', 'what's the status'.",
+  ),
   def("list_tasks", "List tasks, newest first.", {
     state: str("Filter by state."),
     projectId: str("Filter by project; a repository includes its worktrees."),
@@ -145,6 +150,7 @@ export const VOICE_INSTRUCTIONS = [
   "Projects: pass what the user said to start_task or resolve_project; partial names, different casing and misheard names are matched for you. If one project clearly matches, just proceed without asking. If the result is ambiguous, ask once: 'Did you mean A or B?' naming at most three candidates, then continue with the answer. Never guess between close matches. Existing work gets follow_up, not a new task.",
   "Branches: list_projects gives one entry per repository, with its worktrees as branches under it. A worktree is a separate checkout of that repository on its own branch, so its work does not touch the main checkout. The repository's plain name means the main checkout; to work on a branch, pass its projectId or say the repository and branch ('billing, fix login'). Work on a branch still counts as that repository's when the user asks what is happening there. Task and event results name the repository as `project` and add `branch` for work on one; report progress and completion that way ('billing, on the fix login branch, is done'), never as separate projects, and never say a random folder id like 'ez-mun7ig9t'.",
   "Screenshots: the user can share pictures, typically a partner's fix or an error, from the phone. You never see the picture; you get its attachmentId and name. When they offer one, call request_screenshot. When one arrives, say you have it in a few words, then ask which project or task it is for unless they already said. Send it with start_task or follow_up attachmentIds, or attach_screenshot for a task already running, together with what they want done ('apply this fix'). Never describe what is in it, and never claim the agent applied it until a result says so.",
+  "When asked what is running or how things are going, call whats_running, not just list_tasks: it also shows conversations the user started at the desk or in the app. 'needs_you' means an agent is blocked on an approval; mention that first.",
   "Call task_status before acting on a task you have not checked this session; state changes while you talk.",
   "Approvals: when an agent is waiting, read the 'say' sentence from pending_approvals in plain words and ask 'Approve or deny?'. Safe means read-only; risky means writes outside the project, deletes, network, installs or git push, so name the risk in a few words. Only call answer_approval after an explicit answer. 'Approve all safe ones' means approve_safe; 'stop asking about safe ones' means set_approval_policy. Risky approvals are never auto-approved. For merge, deploy and destructive actions, and cancelling running work, call once to get a confirmToken, ask 'Are you sure?', and call again with userConfirmed true only after they say yes. Never reuse or invent tokens.",
   "Start by briefly stating what changed from the opening context, if anything, offering the next step on anything that finished. Say nothing about what the user already heard.",
@@ -201,6 +207,14 @@ export interface ToolResult {
   openPicker?: boolean;
 }
 
+const RANK = { needs_you: 2, working: 1, idle: 0 } as const;
+
+/** The project whose directory holds `cwd`, longest path winning so a worktree beats its repository. */
+function projectForPath(cwd: string, projects: readonly VoiceProject[]): VoiceProject | undefined {
+  const inside = (root: string) => cwd === root || cwd.startsWith(root.endsWith("/") ? root : `${root}/`);
+  return projects.filter((p) => inside(p.path)).sort((a, b) => b.path.length - a.path.length)[0];
+}
+
 export interface ToolDeps {
   store: VoiceStore;
   orchestrator: Orchestrator;
@@ -210,6 +224,8 @@ export interface ToolDeps {
   usableProviders: () => string[];
   lastUsedProvider?: () => string | undefined;
   rememberAlias: (path: string, alias: string) => Promise<void>;
+  /** Conversations open in the daemon, whoever started them; absent in older hosts and tests. */
+  runningSessions?: () => RunningSession[];
   confirm?: ConfirmationTokens;
   policy?: SafetyPolicy;
   /** Per-voice-session approval policy; the executor owns one when not given. */
@@ -495,6 +511,34 @@ export class ToolExecutor {
           else return good({ needsClarification: true, active: active.slice(0, 8).map((x) => taskView(store, x)) });
         }
         return typeof t === "string" ? fail(t) : good({ task: taskView(store, t) });
+      }
+      case "whats_running": {
+        const live = this.deps.runningSessions?.() ?? [];
+        const projects = await this.deps.projects();
+        const bySession = new Map(live.map((s) => [s.sessionId, s]));
+        const active = store.tasks().filter((t) => !TERMINAL.has(t.state));
+        const owned = new Set<string>();
+        const tasks = active.map((t) => {
+          const s = t.sessionId ? bySession.get(t.sessionId) : undefined;
+          if (s) owned.add(s.sessionId);
+          return { ...taskView(store, t), ...(s ? { session: s.state } : null) };
+        });
+        // Conversations no voice task owns: started at the desk or in the app.
+        const others = live
+          .filter((s) => !owned.has(s.sessionId))
+          .map((s) => {
+            const project = projectForPath(s.cwd, projects);
+            const place = placeFields({ projectName: project?.name ?? basename(s.cwd), repo: project ? repoOf(project) : undefined });
+            return { ...place, agent: s.agentName ?? s.providerId, state: s.state, lastActive: s.idleMs < 60_000 ? "just now" : `${Math.round(s.idleMs / 60_000)} minutes ago` };
+          })
+          .sort((a, b) => RANK[b.state] - RANK[a.state]);
+        const busy = others.filter((o) => o.state !== "idle").length + tasks.length;
+        return good({
+          tasks,
+          otherSessions: others.slice(0, 8),
+          summary: busy === 0 ? "Nothing is running." : `${tasks.length} voice task(s) and ${others.filter((o) => o.state !== "idle").length} other conversation(s) active.`,
+          ...(this.deps.runningSessions ? null : { note: "This computer's daemon cannot list open conversations; only tasks are shown." }),
+        });
       }
       case "list_tasks": {
         const state = text(args, "state", 20);

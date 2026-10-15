@@ -4,11 +4,13 @@ import { Orchestrator, type VoiceHost } from "./dispatcher.js";
 import { buildRegistry } from "./registry.js";
 import { scratch } from "./scratch.js";
 import { VoiceStore } from "./store.js";
+import type { RunningSession } from "./types.js";
 import { realtimeSession, ToolExecutor, TOOL_NAMES, VOICE_INSTRUCTIONS, VOICE_TOOLS } from "./tools.js";
 
 function harness(
   store = VoiceStore.memory(),
   projects = buildRegistry(["/code/pew2", "/code/billing-api", "/code/billing-web"], {}),
+  running?: () => RunningSession[],
 ) {
   const prompts: string[] = [];
   const answered: string[] = [];
@@ -35,6 +37,7 @@ function harness(
     orchestrator,
     projects: async () => projects,
     usableProviders: () => ["echo"],
+    runningSessions: running,
     rememberAlias: async (_path, alias) => void aliases.push(alias),
   });
   let n = 0;
@@ -48,7 +51,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
 test("every tool has a definition and the session config carries them with server VAD", () => {
   expect(new Set(TOOL_NAMES).size).toBe(VOICE_TOOLS.length);
-  for (const name of ["list_projects", "resolve_project", "start_task", "follow_up", "task_status", "list_tasks", "reprioritize_task", "pause_task", "resume_task", "cancel_task", "pending_approvals", "answer_approval", "recent_events", "get_details", "remember_decision", "end_session"]) {
+  for (const name of ["list_projects", "resolve_project", "start_task", "follow_up", "task_status", "list_tasks", "whats_running", "reprioritize_task", "pause_task", "resume_task", "cancel_task", "pending_approvals", "answer_approval", "recent_events", "get_details", "remember_decision", "end_session"]) {
     expect(TOOL_NAMES).toContain(name);
   }
   const session = realtimeSession({ voice: "marin" }) as {
@@ -290,4 +293,44 @@ test("a dozen ezcoder checkouts are one repository with branches, and deleted on
   // Named up to a handful, then counted: still one short line to say.
   expect(spoken[0]?.branches).toHaveLength(6);
   expect(spoken[0]?.moreBranches).toBe(3);
+});
+
+test("whats_running lists desk-started conversations beside tasks and ranks blocked first", async () => {
+  const live: RunningSession[] = [
+    { sessionId: "d1", providerId: "claude", agentName: "Claude Code", cwd: "/code/pew2/packages/app", state: "working", idleMs: 1000 },
+    { sessionId: "d2", providerId: "codex", cwd: "/code/billing-api", state: "needs_you", idleMs: 5000 },
+    { sessionId: "d3", providerId: "codex", cwd: "/elsewhere/scratch", state: "idle", idleMs: 600_000 },
+  ];
+  const h = harness(VoiceStore.memory(), undefined, () => live);
+  const r = await h.call("whats_running");
+  const out = r.output as { tasks: unknown[]; otherSessions: { project: string; state: string; agent: string }[]; summary: string };
+  expect(out.tasks).toHaveLength(0);
+  expect(out.otherSessions.map((s) => [s.project, s.state])).toEqual([
+    ["billing-api", "needs_you"],
+    ["pew2", "working"],
+    ["scratch", "idle"],
+  ]);
+  expect(out.otherSessions[0]?.agent).toBe("codex");
+  expect(out.summary).toContain("2 other");
+  expect(JSON.stringify(out)).not.toContain("d1");
+});
+
+test("whats_running does not repeat a session a task already owns", async () => {
+  const h = harness(VoiceStore.memory(), undefined, () => [{ sessionId: "s1", providerId: "echo", cwd: "/code/pew2", state: "working", idleMs: 0 }]);
+  await h.call("start_task", { project: "pew2", instruction: "do it" });
+  await tick();
+  const out = (await h.call("whats_running")).output as { tasks: { session?: string }[]; otherSessions: unknown[] };
+  expect(out.tasks).toHaveLength(1);
+  expect(out.tasks[0]?.session).toBe("working");
+  expect(out.otherSessions).toHaveLength(0);
+});
+
+test("whats_running on a host that cannot list sessions still answers with tasks and says so", async () => {
+  const h = harness();
+  await h.call("start_task", { project: "pew2", instruction: "do it" });
+  await tick();
+  const out = (await h.call("whats_running")).output as { tasks: unknown[]; otherSessions: unknown[]; note?: string };
+  expect(out.tasks).toHaveLength(1);
+  expect(out.otherSessions).toEqual([]);
+  expect(out.note).toContain("cannot list");
 });

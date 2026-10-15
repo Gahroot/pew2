@@ -26,6 +26,7 @@ import { readKnownProjects } from "./known-projects.js";
 import { foldProjects } from "./projects.js";
 import { VoiceService } from "./voice/service.js";
 import type { VoiceHost } from "./voice/dispatcher.js";
+import type { RunningSession } from "./voice/types.js";
 import { dirname } from "node:path";
 import type { wire } from "@pew2/protocol";
 import { DaemonConnectSession } from "./daemon/connect-session.js";
@@ -559,6 +560,29 @@ export class Daemon extends DaemonConnectSession {
   }
 
   /**
+   * Every live conversation in the sidebar's own three states, for the voice
+   * model. Same rule as the app's `rowMark`: blocked on the user beats working
+   * beats at rest. Sessions still opening are skipped; nothing can be said of them.
+   */
+  runningSessions(): RunningSession[] {
+    const now = Date.now();
+    const out: RunningSession[] = [];
+    for (const [sessionId, session] of this.sessions) {
+      if (!session.agentSessionId) continue;
+      const blocked = (session.permissions?.size ?? 0) > 0 || (session.working === true && (session.asks?.size ?? 0) > 0);
+      out.push({
+        sessionId,
+        providerId: session.providerId,
+        agentName: this.providers.find((p) => p.manifest.id === session.providerId)?.manifest.name,
+        cwd: session.cwd,
+        state: blocked ? "needs_you" : session.working ? "working" : "idle",
+        idleMs: Math.max(0, now - session.lastUsedAt),
+      });
+    }
+    return out;
+  }
+
+  /**
    * Where this session's agent is running, for resolving the relative paths it
    * uses to name files. Undefined once the session is gone, in which case the
    * caller falls back to the daemon's own workspace.
@@ -701,6 +725,7 @@ export class Daemon extends DaemonConnectSession {
         this.providers
           .filter((p) => this.isEnabled(p.manifest.id) && isAvailable(p))
           .map((p) => p.manifest.id),
+      runningSessions: () => this.runningSessions(),
       push: (event) => pushVoiceEvent(this.pushTargets, event),
     }).then((service) => (this.voiceReady = service));
     return this.voiceStarting;

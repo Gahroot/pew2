@@ -2,6 +2,7 @@
  * Project dashboard view-model, folded from the voice store (tasks + recent events).
  * Pure; no clocks.
  */
+import { sessionMark } from "../sessionMark";
 import type { VoiceEvent, VoiceTask } from "./types";
 import type { VoiceStore } from "./voiceStore";
 
@@ -21,6 +22,17 @@ export interface ProjectRow {
   /** Pending approval summary, if any. */
   approval?: string;
   updatedAt: number;
+  /** Conversations open in the app or at the desk that are working or blocked, beside the tasks. */
+  liveSessions: number;
+}
+
+/** An open conversation as the dashboard needs it: what the sidebar already knows. */
+export interface SessionRef {
+  /** The project it belongs to, as a person names it (repository, not checkout). */
+  project: string;
+  busy?: boolean;
+  unread?: boolean;
+  permission?: unknown;
 }
 
 export const STATE_LABEL: Record<AgentState, string> = {
@@ -44,7 +56,7 @@ export function rowKeyOf(task: Pick<VoiceTask, "projectId" | "repo"> | Pick<Voic
   return task.repo.projectId ?? `repo:${task.repo.name}`;
 }
 
-export function buildDashboard(store: VoiceStore): ProjectRow[] {
+export function buildDashboard(store: VoiceStore, sessions: readonly SessionRef[] = []): ProjectRow[] {
   const byProject = new Map<string, { name: string; tasks: VoiceTask[] }>();
   // Events name the directory a task ran in; this maps it to the task's row.
   const rowOfProject = new Map<string, string>();
@@ -67,8 +79,44 @@ export function buildDashboard(store: VoiceStore): ProjectRow[] {
     const events = store.recent.filter((e) => eventKey(e) === projectId);
     rows.push(rowFor(projectId, name, tasks, events));
   }
+  foldSessions(rows, sessions);
   const rank: Record<AgentState, number> = { waiting: 0, blocked: 1, working: 2, done: 3, idle: 4 };
   return rows.sort((a, b) => rank[a.state] - rank[b.state] || b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+}
+
+/**
+ * Lay open conversations over the task rows. A conversation nobody dispatched
+ * from voice still makes its project busy: the sidebar animates it, so the
+ * dashboard must not say "Idle" beside a spinning row. Tasks keep precedence
+ * for their own text; this only raises idle/done rows and adds missing ones.
+ */
+function foldSessions(rows: ProjectRow[], sessions: readonly SessionRef[]): void {
+  const live = new Map<string, { working: number; asking: number }>();
+  for (const s of sessions) {
+    const mark = sessionMark(s);
+    if (mark !== "live" && mark !== "attention") continue;
+    const entry = live.get(s.project) ?? { working: 0, asking: 0 };
+    if (mark === "attention") entry.asking += 1;
+    else entry.working += 1;
+    live.set(s.project, entry);
+  }
+  for (const [name, n] of [...live].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const total = n.working + n.asking;
+    const target: AgentState = n.asking > 0 ? "waiting" : "working";
+    let row = rows.find((r) => r.name === name);
+    if (!row) {
+      row = { projectId: `session:${name}`, name, state: "idle", stateLabel: STATE_LABEL.idle, queued: [], running: [], updatedAt: 0, liveSessions: 0 };
+      rows.push(row);
+    }
+    row.liveSessions = total;
+    // Only ever raise: a task's own "blocked" or "waiting" is already louder.
+    const rank: Record<AgentState, number> = { waiting: 0, blocked: 1, working: 2, done: 3, idle: 4 };
+    if (rank[target] < rank[row.state]) {
+      row.state = target;
+      row.stateLabel = STATE_LABEL[target];
+    }
+    if (row.state === "waiting" && !row.approval && n.asking > 0) row.approval = "An agent is waiting on you";
+  }
 }
 
 function newest<T extends { updatedAt: number; taskId: string }>(items: T[]): T | undefined {
@@ -106,5 +154,6 @@ function rowFor(projectId: string, name: string, tasks: VoiceTask[], events: Voi
     lastResult,
     approval: newest(waiting)?.approval?.summary,
     updatedAt,
+    liveSessions: 0,
   };
 }

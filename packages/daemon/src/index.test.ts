@@ -983,3 +983,19 @@ test("an empty daemon is quiet", () => {
 
   expect(daemon.busyReason()).toBeUndefined();
 });
+
+test("runningSessions reports the sidebar's three states, and skips sessions still opening", () => {
+  const { daemon } = daemonWithCollector();
+  const plant = (id: string, extra: Record<string, unknown>) =>
+    Object.assign(plantSession(daemon, id), { cwd: `/code/${id}`, lastUsedAt: Date.now() - 5000, agentSessionId: `agent-${id}` }, extra);
+  plant("idle", {});
+  plant("working", { working: true });
+  plant("blocked", { working: true, permissions: new Map([["r1", {}]]) });
+  plant("asking", { working: true, asks: new Map([["a1", []]]) });
+  plant("opening", { agentSessionId: undefined });
+
+  const list = daemon.runningSessions();
+  const states = Object.fromEntries(list.map((s) => [s.sessionId, s.state]));
+  expect(states).toEqual({ idle: "idle", working: "working", blocked: "needs_you", asking: "needs_you" });
+  expect(list.find((s) => s.sessionId === "idle")?.idleMs).toBeGreaterThanOrEqual(5000);
+});
