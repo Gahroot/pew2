@@ -80,6 +80,7 @@
         }
       ],
       "./plugins/withPodsDeploymentTarget",
+      "./plugins/withSceneLifecycle",
       [
         "./plugins/withVoiceIntent",
         {
