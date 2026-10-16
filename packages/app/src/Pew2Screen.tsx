@@ -26,6 +26,7 @@ import { dockHeightFor, recordDockHeight, type DockHeights } from "./dockHeight"
 import { ensureNotificationPermission, setOpenConversation } from "./ui/notifier";
 import { useTurnBanners } from "./ui/useTurnBanners";
 import { pushAddress } from "./ui/push";
+import { callKitAvailable } from "./ui/callkit";
 import { ComposerDock, type ComposerDockHandle } from "./ui/ComposerDock";
 import { ChatThread, type ChatThreadRef } from "./ui/ChatThread";
 import { ImageResolverProvider } from "./ui/ChatImage";
@@ -49,7 +50,7 @@ import { workspaceTitle } from "./contextDetails";
 import { VoiceSheet } from "./ui/VoiceSheet";
 import { ProjectDashboard } from "./ui/ProjectDashboard";
 import { useVoice } from "./ui/useVoice";
-import { clearVoiceCursor, loadVoiceCall, saveVoiceCall } from "./preferences";
+import { clearVoiceCursor, loadNativeCall, loadVoiceCall, saveNativeCall, saveVoiceCall } from "./preferences";
 import { greetingFor, hashSeed } from "./greeting";
 import { sounds } from "./ui/sounds";
 import { AgentCarousel } from "./ui/AgentCarousel";
@@ -101,7 +102,12 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     },
   });
 
-  const voice = useVoice({ send: daemon.send as (m: Record<string, unknown>) => boolean, online: daemon.status === "online" });
+  // "Native call screen" (off by default). Declared before useVoice, which it drives.
+  const [nativeCall, setNativeCall] = useState(false);
+  useEffect(() => {
+    void loadNativeCall().then(setNativeCall);
+  }, []);
+  const voice = useVoice({ send: daemon.send as (m: Record<string, unknown>) => boolean, online: daemon.status === "online", nativeCall });
   const { handleMessage: handleVoiceMessage } = voice;
   useEffect(() => {
     voiceInbox.current = handleVoiceMessage;
@@ -192,6 +198,19 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     (on: boolean) => {
       setVoiceCall(on);
       void saveVoiceCall(on)
+        .then(() => pushAddress())
+        .then((address) => {
+          if (address) sendPush({ t: "app.push", ...address });
+        });
+    },
+    [sendPush],
+  );
+  // Same order as above: persist, then re-register, so the daemon starts or
+  // stops ringing (and gains or drops the VoIP address) at once.
+  const changeNativeCall = useCallback(
+    (on: boolean) => {
+      setNativeCall(on);
+      void saveNativeCall(on)
         .then(() => pushAddress())
         .then((address) => {
           if (address) sendPush({ t: "app.push", ...address });
@@ -1048,7 +1067,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
       {/* Outside the lifted pane: a sheet belongs to the screen's bottom edge,
           not to the composer, so it must not ride up with the keyboard. */}
       <ContextDetailsSheet visible={contextOpen} workspace={daemon.workspace} usage={daemon.usage} inConversation={daemon.sessionId !== undefined} onClose={closeContext} />
-      <ConnectionSheet visible={connectionOpen} machineLabel={daemon.machineName ?? "Your computer"} machineRemote={pairing.remote} status={daemon.status} update={daemon.update} voiceCall={voiceCall} onVoiceCall={changeVoiceCall} onClose={closeConnection} onUnpair={() => {
+      <ConnectionSheet visible={connectionOpen} machineLabel={daemon.machineName ?? "Your computer"} machineRemote={pairing.remote} status={daemon.status} update={daemon.update} voiceCall={voiceCall} onVoiceCall={changeVoiceCall} nativeCall={callKitAvailable() ? nativeCall : undefined} onNativeCall={callKitAvailable() ? changeNativeCall : undefined} onClose={closeConnection} onUnpair={() => {
         voice.clear();
         void clearVoiceCursor();
         onUnpair();

@@ -29,7 +29,9 @@ import {
   type NoticeOrigin,
   type wire,
 } from "@pew2/protocol";
+import { randomUUID } from "node:crypto";
 import { placeTitle } from "./voice/place.js";
+import type { VoipSender, VoipTarget } from "./voip.js";
 
 type VoiceEvent = wire.VoiceEvent;
 type VoiceCallbackPush = wire.VoiceCallbackPush;
@@ -48,6 +50,15 @@ interface Target {
   channelId?: string;
   /** This phone turned "voice call" on in its settings. Absent means off. */
   voiceCall?: boolean;
+  /** This phone turned "Native call screen" on: ring with CallKit / Telecom. Absent means off. */
+  nativeCall?: boolean;
+  /** iOS PushKit address, held only while `nativeCall` is on. */
+  voip?: VoipTarget;
+}
+
+/** The "Native call screen" half of a registration. Absent means the setting is off. */
+export interface NativeCallRegistration {
+  voip?: VoipTarget;
 }
 
 export interface FinishedTurnPush extends NoticeOrigin {
@@ -84,15 +95,33 @@ export class PushRegistry {
    *
    * @returns whether the token was accepted, so a caller can log the refusal.
    */
-  register(deviceId: string, token: string, platform: "ios" | "android", voiceCall = false): boolean {
+  register(
+    deviceId: string,
+    token: string,
+    platform: "ios" | "android",
+    voiceCall = false,
+    nativeCall?: NativeCallRegistration,
+  ): boolean {
     if (!TOKEN_SHAPE.test(token)) return false;
+    // Replaced whole, never merged: a registration without `nativeCall` is the
+    // phone saying the setting is off, and a VoIP push to a phone that no
+    // longer reports calls gets the app killed by iOS.
     this.targets.set(deviceId, {
       token,
       platform,
       ...(platform === "android" ? { channelId: ANDROID_CHANNEL } : null),
       ...(voiceCall ? { voiceCall: true } : null),
+      ...(nativeCall ? { nativeCall: true } : null),
+      ...(nativeCall?.voip && platform === "ios" ? { voip: nativeCall.voip } : null),
     });
     return true;
+  }
+
+  /** Apple said this VoIP token is dead: stop ringing it, keep the banner. */
+  forgetVoip(voipToken: string): void {
+    for (const target of this.targets.values()) {
+      if (target.voip?.token.toLowerCase() === voipToken.toLowerCase()) delete target.voip;
+    }
   }
 
   /**
@@ -171,7 +200,7 @@ export function pushMessages(registry: PushRegistry, turn: FinishedTurnPush): Ex
  */
 export function applyTickets(
   registry: PushRegistry,
-  messages: ExpoMessage[],
+  messages: readonly { to: string }[],
   tickets: unknown,
 ): void {
   if (!Array.isArray(tickets)) return;
@@ -226,9 +255,10 @@ export async function pushFinishedTurn(
 /**
  * "Voice call" is a per-phone setting (off by default), sent with `app.push`.
  *
- * This is deliberately *not* a CallKit call: that needs a VoIP push, which only
- * APNs can carry and Expo's push service cannot, plus an APNs key this daemon
- * must never hold. It is the same push, worded as Pew calling. It is sent at
+ * This is *not* a CallKit call: that is the separate "Native call screen"
+ * setting (`pushVoiceEvent` below), which needs a VoIP push only APNs can carry
+ * and the user's own APNs key (`pew2 voice apns`). This is the same push,
+ * worded as Pew calling. It is sent at
  * iOS's ordinary level on purpose, so Do Not Disturb, Sleep and every other
  * Focus hold it back exactly as they would a call from nobody in your
  * favourites. Tapping it opens voice, so "answering" is a tap.
@@ -238,6 +268,10 @@ const RINGS = new Set<string>(["completed", "blocked", "approval"]);
 
 /** One voice callback in Expo's shape. `data` is exactly `VoiceCallbackPush`. */
 export function voiceMessages(registry: PushRegistry, event: VoiceEvent): ExpoMessage[] {
+  return bannerMessages(registry.list(), event);
+}
+
+function bannerMessages(targets: Target[], event: VoiceEvent): ExpoMessage[] {
   const data: VoiceCallbackPush = {
     type: "voice.callback",
     eventId: event.eventId,
@@ -256,7 +290,7 @@ export function voiceMessages(registry: PushRegistry, event: VoiceEvent): ExpoMe
         : event.class === "completed"
           ? `${place}: finished`
           : place;
-  return registry.list().map((target) => ({
+  return targets.map((target) => ({
     to: target.token,
     title: target.voiceCall === true && RINGS.has(event.class) ? `Pew is calling: ${title}` : title,
     // Already short and secret-scrubbed by the voice layer; capped again because
@@ -271,18 +305,91 @@ export function voiceMessages(registry: PushRegistry, event: VoiceEvent): ExpoMe
   }));
 }
 
+/** The Android channel the app creates for rings (`ui/androidRing.ts`). Restated for the same reason as `ANDROID_CHANNEL`. */
+export const CALL_CHANNEL = "incoming-call";
+
+/** What the system call screen shows as the caller. Short, because Apple and Google can read it. */
+export function callerFor(event: VoiceEvent): string {
+  const place = placeTitle(event);
+  const what = event.class === "approval" ? "needs approval" : event.class === "blocked" ? "needs you" : "finished";
+  const caller = `${place}: ${what}`;
+  return caller.length > 80 ? `${caller.slice(0, 79)}…` : caller;
+}
+
+export function callPush(event: VoiceEvent, callId: string): wire.VoiceCallPush {
+  return {
+    type: "voice.call",
+    callId,
+    caller: callerFor(event),
+    eventId: event.eventId,
+    taskId: event.taskId,
+    projectId: event.projectId,
+    class: event.class,
+  };
+}
+
+/**
+ * Android ringing: a high-priority, data-only push. With no title or body the
+ * OS draws nothing; the app's background task wakes (even when swiped away)
+ * and shows the Telecom incoming-call screen, or a loud banner if the user has
+ * not enabled pew2 as a calling account.
+ */
+interface ExpoCallMessage {
+  to: string;
+  data: wire.VoiceCallPush & { pew2Call: "1" };
+  priority: "high";
+  channelId: string;
+  /** Seconds. A ring that arrives late is worse than none. */
+  ttl: number;
+}
+
+export function androidCallMessage(target: Target, payload: wire.VoiceCallPush): ExpoCallMessage {
+  return { to: target.token, data: { ...payload, pew2Call: "1" }, priority: "high", channelId: CALL_CHANNEL, ttl: 30 };
+}
+
+export interface RingOptions {
+  /** Present only when this daemon can send VoIP pushes at all. */
+  voip?: Pick<VoipSender, "send">;
+  newCallId?: () => string;
+}
+
 /**
  * Push one voice event (approval, blocked, completed). Same contract as
  * `pushFinishedTurn`: never throws, never retried. Which events deserve a push,
  * and when, is decided upstream by the batcher; this only delivers.
+ *
+ * A phone with "Native call screen" on is rung instead of bannered, for the
+ * same events "voice call" words as a call. iOS rings through APNs (VoIP), so
+ * an iPhone is rung only when `pew2 voice apns` is configured and the phone
+ * sent its PushKit token; any ring that does not go out becomes the ordinary
+ * banner, so turning the setting on can never cost a notification.
  */
 export async function pushVoiceEvent(
   registry: PushRegistry,
   event: VoiceEvent,
   send: typeof fetch = fetch,
+  ring: RingOptions = {},
 ): Promise<void> {
   if (registry.size === 0) return;
-  const messages = voiceMessages(registry, event);
+  const rings = RINGS.has(event.class);
+  type Delivery = { kind: "banner"; target: Target } | { kind: "call"; message: ExpoCallMessage } | { kind: "rung" };
+  // Resolved in registry order, so the batch sent to Expo is deterministic.
+  const deliveries = await Promise.all(
+    registry.list().map(async (target): Promise<Delivery> => {
+      if (!rings || target.nativeCall !== true) return { kind: "banner", target };
+      const payload = callPush(event, (ring.newCallId ?? randomUUID)());
+      if (target.platform === "android") return { kind: "call", message: androidCallMessage(target, payload) };
+      if (!target.voip || !ring.voip) return { kind: "banner", target };
+      const outcome = await ring.voip.send(target.voip, payload);
+      if (outcome === "sent") return { kind: "rung" };
+      if (outcome === "gone") registry.forgetVoip(target.voip.token);
+      return { kind: "banner", target };
+    }),
+  );
+  const bannered = deliveries.flatMap((d) => (d.kind === "banner" ? [d.target] : []));
+  const calls = deliveries.flatMap((d) => (d.kind === "call" ? [d.message] : []));
+  const messages: (ExpoMessage | ExpoCallMessage)[] = [...bannerMessages(bannered, event), ...calls];
+  if (messages.length === 0) return;
   try {
     const response = await send(PUSH_URL, {
       method: "POST",

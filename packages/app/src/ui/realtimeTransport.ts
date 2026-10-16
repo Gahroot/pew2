@@ -24,6 +24,8 @@ export interface TransportCallbacks {
 
 export interface RealtimeTransport extends RealtimeChannel {
   close(): void;
+  /** Stop or resume sending the microphone (the system call screen's mute). */
+  setMuted(muted: boolean): void;
 }
 
 /** Connects; resolves once the offer/answer exchange is done. Rejects on failure. */
@@ -67,6 +69,9 @@ export async function connectRealtime(
       if (channel.readyState !== "open") return false;
       channel.send(JSON.stringify(message));
       return true;
+    },
+    setMuted(muted) {
+      for (const track of stream.getAudioTracks()) track.enabled = !muted;
     },
     close() {
       closed = true;

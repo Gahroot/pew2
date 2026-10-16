@@ -39,6 +39,11 @@ export const HELP_GROUPS: Group[] = [
       { command: "pew2 service install|restart", note: "Keep the daemon running across reboots" },
       { command: "pew2 serve", note: "Run the daemon in this terminal" },
       { command: "pew2 doctor [--json]", note: "What is wrong, and the command that fixes it" },
+      {
+        command: "pew2 voice apns [off]",
+        note: "Ring iPhones with the native call screen",
+        flags: [["--key --key-id --team-id", "Your APNs .p8 key and its Apple IDs"]],
+      },
     ],
   },
   {

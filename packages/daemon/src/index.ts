@@ -22,6 +22,7 @@ import { folderName } from "./workspace.js";
 import { writeConfigPref } from "./config-prefs.js";
 import { writeSessionPrefs } from "./session-prefs.js";
 import { pushVoiceEvent } from "./push.js";
+import { VoipSender } from "./voip.js";
 import { readKnownProjects } from "./known-projects.js";
 import { foldProjects } from "./projects.js";
 import { VoiceService } from "./voice/service.js";
@@ -706,6 +707,14 @@ export class Daemon extends DaemonConnectSession {
 
   // ---- voice orchestration -------------------------------------------------
 
+  private voipSender?: VoipSender;
+
+  /** Sends iPhone rings when `pew2 voice apns` is configured; reads that config per ring, so setup needs no restart. */
+  private get voip(): VoipSender {
+    this.voipSender ??= new VoipSender({ dataDir: dirname(userProvidersDir(this.env)) });
+    return this.voipSender;
+  }
+
   private voiceReady?: VoiceService;
   private voiceStarting?: Promise<VoiceService>;
 
@@ -726,7 +735,7 @@ export class Daemon extends DaemonConnectSession {
           .filter((p) => this.isEnabled(p.manifest.id) && isAvailable(p))
           .map((p) => p.manifest.id),
       runningSessions: () => this.runningSessions(),
-      push: (event) => pushVoiceEvent(this.pushTargets, event),
+      push: (event) => pushVoiceEvent(this.pushTargets, event, fetch, { voip: this.voip }),
     }).then((service) => (this.voiceReady = service));
     return this.voiceStarting;
   }

@@ -156,3 +156,103 @@ describe("voice call setting", () => {
     expect(sent).toBe(0);
   });
 });
+
+describe("native call screen", () => {
+  const ev = (cls: VoiceEvent["class"]): VoiceEvent => ({
+    eventId: 3, taskId: "t1", projectId: "p1", projectName: "pew2", kind: "task.completed", class: cls, text: "Done.", at: 1,
+  });
+  const CALL_ID = "6f9619ff-8b86-4d11-b42d-00c04fc964ff";
+  const VOIP = { token: "ab".repeat(32), environment: "production" as const, bundleId: "io.github.kenkaiii.pew2" };
+  /** Captures what reached Expo, one array of messages per request. */
+  const expo = () => {
+    const batches: Record<string, unknown>[][] = [];
+    const send = (async (_url: unknown, init?: RequestInit) => {
+      batches.push(JSON.parse(init?.body as string) as Record<string, unknown>[]);
+      return new Response(JSON.stringify({ data: [] }));
+    }) as unknown as typeof fetch;
+    return { batches, send };
+  };
+  const voip = (outcome: "sent" | "gone" | "unconfigured" | "failed") => {
+    const calls: unknown[] = [];
+    return { calls, sender: { send: async (_t: unknown, payload: unknown) => (calls.push(payload), outcome) } };
+  };
+
+  it("is off unless the phone said so: a ringing event stays a banner and APNs is never called", async () => {
+    const registry = new PushRegistry();
+    registry.register("d", TOKEN, "ios", false);
+    const { batches, send } = expo();
+    const apns = voip("sent");
+    await pushVoiceEvent(registry, ev("completed"), send, { voip: apns.sender });
+    expect(apns.calls).toHaveLength(0);
+    expect(batches[0]?.[0]?.title).toBe("pew2: finished");
+  });
+
+  it("rings an iPhone through APNs instead of a banner, with the focus a banner tap would give", async () => {
+    const registry = new PushRegistry();
+    registry.register("d", TOKEN, "ios", false, { voip: VOIP });
+    const { batches, send } = expo();
+    const apns = voip("sent");
+    await pushVoiceEvent(registry, ev("approval"), send, { voip: apns.sender, newCallId: () => CALL_ID });
+    expect(apns.calls).toEqual([
+      { type: "voice.call", callId: CALL_ID, caller: "pew2: needs approval", eventId: 3, taskId: "t1", projectId: "p1", class: "approval" },
+    ]);
+    expect(batches).toHaveLength(0);
+  });
+
+  it("falls back to the banner whenever a ring cannot go out, and forgets a dead VoIP token", async () => {
+    for (const outcome of ["unconfigured", "failed", "gone"] as const) {
+      const registry = new PushRegistry();
+      registry.register("d", TOKEN, "ios", false, { voip: VOIP });
+      const { batches, send } = expo();
+      await pushVoiceEvent(registry, ev("completed"), send, { voip: voip(outcome).sender });
+      expect(batches[0]?.[0]?.title).toBe("pew2: finished");
+      expect(registry.list()[0]?.voip === undefined).toBe(outcome === "gone");
+    }
+    // Setting on but no PushKit token (simulator, older build): banner, no APNs.
+    const registry = new PushRegistry();
+    registry.register("d", TOKEN, "ios", false, {});
+    const { batches, send } = expo();
+    const apns = voip("sent");
+    await pushVoiceEvent(registry, ev("blocked"), send, { voip: apns.sender });
+    expect(apns.calls).toHaveLength(0);
+    expect(batches[0]).toHaveLength(1);
+  });
+
+  it("rings Android with a data-only push on the call channel: nothing for the OS to draw", async () => {
+    const registry = new PushRegistry();
+    registry.register("d", TOKEN, "android", false, {});
+    const { batches, send } = expo();
+    await pushVoiceEvent(registry, ev("completed"), send, { newCallId: () => CALL_ID });
+    const [message] = batches[0] ?? [];
+    expect(message).toEqual({
+      to: TOKEN,
+      data: { type: "voice.call", callId: CALL_ID, caller: "pew2: finished", eventId: 3, taskId: "t1", projectId: "p1", class: "completed", pew2Call: "1" },
+      priority: "high",
+      channelId: "incoming-call",
+      ttl: 30,
+    });
+    expect(message).not.toHaveProperty("title");
+  });
+
+  it("never rings for chatter, and a later registration without the setting turns it off", async () => {
+    const registry = new PushRegistry();
+    registry.register("d", TOKEN, "ios", false, { voip: VOIP });
+    const apns = voip("sent");
+    const { batches, send } = expo();
+    await pushVoiceEvent(registry, ev("informational"), send, { voip: apns.sender });
+    expect(apns.calls).toHaveLength(0);
+    expect(batches).toHaveLength(1);
+
+    registry.register("d", TOKEN, "ios", false);
+    expect(registry.list()[0]).toEqual({ token: TOKEN, platform: "ios" });
+  });
+
+  it("keeps the caller short: Apple and Google can read it", async () => {
+    const registry = new PushRegistry();
+    registry.register("d", TOKEN, "android", false, {});
+    const { batches, send } = expo();
+    await pushVoiceEvent(registry, { ...ev("completed"), projectName: "x".repeat(200) }, send);
+    const data = (batches[0]?.[0] as { data: { caller: string } }).data;
+    expect(data.caller.length).toBeLessThanOrEqual(80);
+  });
+});

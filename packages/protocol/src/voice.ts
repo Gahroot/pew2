@@ -383,3 +383,24 @@ export const VoiceCallbackPush = z.object({
   class: EventClass,
 });
 export type VoiceCallbackPush = z.output<typeof VoiceCallbackPush>;
+
+/**
+ * Payload of the push that rings the phone's native call screen (CallKit on
+ * iOS via a VoIP push, Telecom on Android via a data-only push). Carries the
+ * same focus fields as `VoiceCallbackPush`, so answering opens voice exactly
+ * where tapping the banner would.
+ *
+ * `callId` is a UUID because CallKit and Telecom key every call by one.
+ * `caller` is what the system call screen shows: like every push string it is
+ * readable by Apple/Google, so it is the short place title, never agent text.
+ */
+export const VoiceCallPush = z.object({
+  type: z.literal("voice.call"),
+  callId: z.string().uuid(),
+  caller: z.string().min(1).max(80),
+  eventId: z.number().int().nonnegative(),
+  taskId: z.string(),
+  projectId: z.string(),
+  class: EventClass,
+});
+export type VoiceCallPush = z.output<typeof VoiceCallPush>;

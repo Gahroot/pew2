@@ -77,6 +77,8 @@ export function createVoiceController(deps: VoiceDeps) {
   let generation = 0;
   let holding = false;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The system call screen's mute, re-applied to each new Realtime leg. */
+  let muted = false;
   /** Live news for this Realtime leg: what the opening snapshot covered, and what was since told. */
   let announceSince = 0;
   let announced = new Set<number>();
@@ -201,6 +203,7 @@ export function createVoiceController(deps: VoiceDeps) {
         return;
       }
       transport = rt;
+      if (muted) rt.setMuted(true);
     } catch {
       if (alive() && machine.phase === "connecting") dispatch({ type: "transportDown" });
     }
@@ -302,10 +305,16 @@ export function createVoiceController(deps: VoiceDeps) {
 
     start(focus: Focus): void {
       transcript = [];
+      muted = false;
       dispatch({ type: "activate", voiceSessionId: newId(), focus });
     },
     end(): void {
       dispatch({ type: "userEnd" });
+    },
+    /** Mute from the native call screen. Kept across reconnects; a new conversation starts unmuted. */
+    setMuted(next: boolean): void {
+      muted = next;
+      transport?.setMuted(next);
     },
     reset(): void {
       dispatch({ type: "reset" });

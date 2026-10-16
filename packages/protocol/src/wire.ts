@@ -716,6 +716,25 @@ export const PushRegister = z.object({
    * it, reads as off; an older daemon strips it and simply never rings.
    */
   voiceCall: z.boolean().optional(),
+  /**
+   * The phone's "Native call screen" setting: ring with the system call UI
+   * (CallKit / Telecom) instead of a banner. Absent (an older app) means off,
+   * and an older daemon strips it, so nothing rings that did not before.
+   */
+  nativeCall: z.boolean().optional(),
+  /**
+   * iOS only: this phone's PushKit (VoIP) address, sent only while
+   * `nativeCall` is on. iOS kills an app that gets a VoIP push without
+   * reporting a call, so a phone that turned the setting off stops sending
+   * this, and the daemon forgets it on the next registration.
+   */
+  voip: z
+    .object({
+      token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
+      environment: z.enum(["production", "sandbox"]),
+      bundleId: z.string().regex(/^[A-Za-z0-9.-]{1,155}$/),
+    })
+    .optional(),
 });
 
 /**

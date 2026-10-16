@@ -274,6 +274,14 @@ test("a push registration is a client message, and needs a real platform", () =>
   expect(ClientMessage.safeParse({ ...base, voiceCall: true }).success).toBe(true);
   expect(ClientMessage.safeParse({ ...base, voiceCall: "yes" }).success).toBe(false);
 
+  // The native call screen is optional too, and its VoIP address must look
+  // like one: the token goes into an APNs URL path and the bundle id into a header.
+  const voip = { token: "ab".repeat(32), environment: "production", bundleId: "io.github.kenkaiii.pew2" };
+  expect(ClientMessage.safeParse({ ...base, nativeCall: true, voip }).success).toBe(true);
+  expect(ClientMessage.safeParse({ ...base, nativeCall: true, voip: { ...voip, token: "../x" } }).success).toBe(false);
+  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, bundleId: "a\r\nb" } }).success).toBe(false);
+  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, environment: "dev" } }).success).toBe(false);
+
   // The daemon branches on this to decide whether to name an Android channel,
   // and naming one the device never created means nothing is shown at all.
   expect(

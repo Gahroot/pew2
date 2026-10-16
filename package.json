@@ -35,6 +35,10 @@
     "typescript": "~5.9.2",
     "typescript-eslint": "^8"
   },
+  "//patchedDependencies": "callkeep exports two Android methods under one name (displayIncomingCall, startCall). The new architecture refuses such a module and the app died on launch reading NativeModules.RNCallKeep; the patch un-exports the 3-argument overloads, which index.js never calls.",
+  "patchedDependencies": {
+    "react-native-callkeep@4.3.16": "patches/react-native-callkeep@4.3.16.patch"
+  },
   "//trustedDependencies": "Skia 2.3+ ships its native libraries (libskia xcframeworks, Android .a) as GitHub release assets fetched by a checksum-verified postinstall, not inside the npm package. Bun skips untrusted postinstalls, which leaves the pod/gradle build with no libskia at all.",
   "trustedDependencies": [
     "@shopify/react-native-skia"

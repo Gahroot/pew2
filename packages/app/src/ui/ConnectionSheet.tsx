@@ -26,6 +26,9 @@ interface Props {
   /** "Voice call" setting. Omitted hides the row. */
   voiceCall?: boolean;
   onVoiceCall?: (on: boolean) => void;
+  /** "Native call screen" setting. Omitted (a build without CallKit/Telecom) hides the row. */
+  nativeCall?: boolean;
+  onNativeCall?: (on: boolean) => void;
 }
 
 const PHASE = { online: "paired", connecting: "pairing", offline: "waiting" } satisfies Record<Status, HandshakePhase>;
@@ -41,7 +44,7 @@ function Row({ label, index, children }: { label: string; index: number; childre
   );
 }
 
-export function ConnectionSheet({ visible, machineLabel, machineRemote, status, update, onClose, onUnpair, voiceCall, onVoiceCall }: Props) {
+export function ConnectionSheet({ visible, machineLabel, machineRemote, status, update, onClose, onUnpair, voiceCall, onVoiceCall, nativeCall, onNativeCall }: Props) {
   const { height: screenHeight } = useWindowDimensions();
   const title = status === "online" ? "Connected" : status === "connecting" ? "Connecting…" : "Offline";
   return <Sheet visible={visible} label="Connection" labelTone={status === "connecting" ? "attention" : "agent"} pewMood={status === "online" ? "happy" : status === "connecting" ? "thinking" : "sleepy"} title={title} onClose={onClose} dismissLabel="Close connection details">
@@ -66,6 +69,12 @@ export function ConnectionSheet({ visible, machineLabel, machineRemote, status, 
         <View style={styles.switchRow}>
           <Text numberOfLines={2} style={[styles.value, styles.switchText]}>Pew calls when a task finishes or needs you. Silenced by Do Not Disturb and Sleep.</Text>
           <Switch accessibilityLabel="Voice call" value={voiceCall === true} onValueChange={(on) => { haptics.tap(); onVoiceCall(on); }} />
+        </View>
+      </Row>}
+      {onNativeCall && <Row label="Call screen" index={4}>
+        <View style={styles.switchRow}>
+          <Text numberOfLines={3} style={[styles.value, styles.switchText]}>Ring with the phone's own call screen, and talk to Pew as a call.</Text>
+          <Switch accessibilityLabel="Native call screen" value={nativeCall === true} onValueChange={(on) => { haptics.tap(); onNativeCall(on); }} />
         </View>
       </Row>}
       <DashedRule />

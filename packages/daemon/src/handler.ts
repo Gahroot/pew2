@@ -261,7 +261,8 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
           reply(errorMessage("push_unidentified", "Say hello before registering for push."));
           break;
         }
-        if (!daemon.pushTargets.register(deviceId, message.token, message.platform, message.voiceCall === true)) {
+        const nativeCall = message.nativeCall === true ? { ...(message.voip ? { voip: message.voip } : null) } : undefined;
+        if (!daemon.pushTargets.register(deviceId, message.token, message.platform, message.voiceCall === true, nativeCall)) {
           // Said out loud rather than ignored: a silently rejected token looks
           // exactly like a working one until someone waits for a notification
           // that never comes.

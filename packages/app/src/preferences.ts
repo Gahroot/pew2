@@ -16,6 +16,7 @@ const LAST_PROVIDER_KEY = "pew2.lastProviderId";
 const VOICE_CURSOR_KEY = "pew2.voiceCursor";
 const QUIET_HOURS_KEY = "pew2.voice.quietHours";
 const VOICE_CALL_KEY = "pew2.voiceCall";
+const NATIVE_CALL_KEY = "pew2.nativeCall";
 const PROVIDERS_KEY = "pew2.providers";
 
 /** The agent last targeted on this device, or null if never chosen. */
@@ -143,6 +144,29 @@ export async function saveVoiceCall(on: boolean): Promise<void> {
   try {
     if (on) await SecureStore.setItemAsync(VOICE_CALL_KEY, "1");
     else await SecureStore.deleteItemAsync(VOICE_CALL_KEY);
+  } catch {
+    // The setting reverts to off; nothing is lost beyond a preference.
+  }
+}
+
+/**
+ * "Native call screen": ring with CallKit / Telecom, and run voice
+ * conversations as system calls. Off unless the user turned it on; anything
+ * unreadable also means off, because a phone that rings by surprise is worse
+ * than one that shows a banner.
+ */
+export async function loadNativeCall(): Promise<boolean> {
+  try {
+    return (await SecureStore.getItemAsync(NATIVE_CALL_KEY)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export async function saveNativeCall(on: boolean): Promise<void> {
+  try {
+    if (on) await SecureStore.setItemAsync(NATIVE_CALL_KEY, "1");
+    else await SecureStore.deleteItemAsync(NATIVE_CALL_KEY);
   } catch {
     // The setting reverts to off; nothing is lost beyond a preference.
   }

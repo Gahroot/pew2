@@ -17,7 +17,13 @@ LogBox.ignoreLogs(['expo-notifications: obtaining a push token may not work on i
 import * as SplashScreen from 'expo-splash-screen';
 
 import { installCrashHandler } from './src/crashLog';
+import { defineCallTask } from './src/ui/androidRing';
 import App from './App';
+
+// Android rings the native call screen from a background push task, which
+// loads this bundle without mounting the app, so it is defined at module
+// scope. It does nothing unless "Native call screen" is on.
+defineCallTask();
 
 // Hold the native splash until the app has something real to show.
 //

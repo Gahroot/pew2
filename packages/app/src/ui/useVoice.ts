@@ -5,6 +5,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Linking } from "react-native";
+import { randomUUID } from "expo-crypto";
+import { RTCAudioSession } from "react-native-webrtc";
 import { isRepeatLink, parseVoiceLink, type VoiceActivation } from "../voice/deepLink";
 import { isOpen } from "../voice/voiceMachine";
 import { loadVoiceCursor, saveVoiceCursor } from "../preferences";
@@ -16,13 +18,18 @@ import { emptyStore } from "../voice/voiceStore";
 import { initialState } from "../voice/voiceMachine";
 import { pickPhotos } from "./attachmentPicker";
 import type { ScreenshotCard } from "../voice/screenshots";
+import { activationFor, OUTGOING_CALLER } from "../voice/callPush";
+import { disableNativeCalls, enableNativeCalls, endNativeCall, startOutgoingCall } from "./callkit";
+import { listenForegroundRings } from "./androidRing";
 
 interface Options {
   send: (message: Record<string, unknown>) => boolean;
   online: boolean;
+  /** The "Native call screen" setting: CallKit / Telecom carry the conversation. */
+  nativeCall: boolean;
 }
 
-export function useVoice({ send, online }: Options) {
+export function useVoice({ send, online, nativeCall }: Options) {
   const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore, transcript: [], screenshots: [], pickerRequests: 0 });
   const [sheetOpen, setSheetOpen] = useState(false);
   // Bumped on every activation: with the sheet already open, setSheetOpen(true) changes nothing, so the queued request would never run.
@@ -33,6 +40,8 @@ export function useVoice({ send, online }: Options) {
   const pending = useRef<VoiceActivation | undefined>(undefined);
   const lastLink = useRef<{ url: string; at: number } | undefined>(undefined);
   const endedAt = useRef<number | undefined>(undefined);
+  /** The system call (CallKit / Telecom) carrying the current conversation, if any. */
+  const nativeCallId = useRef<string | undefined>(undefined);
 
   const get = (): VoiceController => {
     controller.current ??= createVoiceController({
@@ -135,10 +144,62 @@ export function useVoice({ send, online }: Options) {
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s) => {
-      if (s !== "active") get().background();
+      // A system call keeps the app running in the background, so a
+      // conversation it carries is not at risk mid-connect.
+      if (s !== "active" && !nativeCallId.current) get().background();
     });
     return () => sub.remove();
   }, []);
+
+  // Native call screen: answering a ring opens voice, hanging up from the
+  // system UI ends it, and its mute button mutes the mic. Off means CallKit
+  // and Telecom are never touched (see `callkit.ts`).
+  useEffect(() => {
+    if (!nativeCall) {
+      disableNativeCalls();
+      if (nativeCallId.current) endNativeCall(nativeCallId.current);
+      nativeCallId.current = undefined;
+      return;
+    }
+    enableNativeCalls({
+      onAnswer: (callId, call) => {
+        nativeCallId.current = callId;
+        activate(call ? activationFor(call) : { source: "notification" });
+      },
+      onEnd: (callId) => {
+        if (nativeCallId.current !== callId) return;
+        nativeCallId.current = undefined;
+        get().end();
+      },
+      // CallKit owns the audio session during a system call; WebRTC must be told
+      // when it is live, or the microphone records silence.
+      onAudioSession: (active) => {
+        if (active) RTCAudioSession.audioSessionDidActivate();
+        else RTCAudioSession.audioSessionDidDeactivate();
+      },
+      onMute: (callId, muted) => {
+        if (nativeCallId.current === callId) get().setMuted(muted);
+      },
+    });
+    return listenForegroundRings();
+  }, [nativeCall, activate]);
+
+  // A conversation started in the app becomes a system call too (iOS), and the
+  // system call ends when the conversation does. Only an open -> closed edge
+  // ends it: an answered call exists before voice has opened.
+  const live = isOpen(view.machine.phase);
+  const wasLive = useRef(false);
+  useEffect(() => {
+    if (live && nativeCall && !nativeCallId.current) {
+      const callId = randomUUID().toLowerCase();
+      if (startOutgoingCall(callId, OUTGOING_CALLER)) nativeCallId.current = callId;
+    }
+    if (!live && wasLive.current && nativeCallId.current) {
+      endNativeCall(nativeCallId.current);
+      nativeCallId.current = undefined;
+    }
+    wasLive.current = live;
+  }, [live, nativeCall]);
 
   // Tells the notification handler what the user is hearing or seeing.
   useEffect(() => {
