@@ -160,9 +160,26 @@ export const VOICE_INSTRUCTIONS = [
 export interface SessionConfigOptions {
   instructions?: string;
   voice?: string;
+  /**
+   * The app announced `clientVad` on `voice.open`: it interrupts and answers
+   * itself from the transcript. Leave unset for an older app, which would
+   * otherwise never get a reply.
+   */
+  clientVad?: boolean;
 }
 
-/** Realtime session config: audio in/out, server VAD with interruption, tools. */
+/**
+ * Realtime session config: audio in/out, server VAD, tools.
+ *
+ * Every client gets near-field noise reduction, a stricter VAD threshold and a
+ * longer silence window. Energy-based VAD still fires on a door or a scratching
+ * dog, so what happens next depends on who is asking:
+ *  - `clientVad` (new app): the server only *detects*. It neither interrupts nor
+ *    answers; the app (`realtime.ts`) does both once the transcript has real
+ *    words, hence transcription is on.
+ *  - otherwise (older app, which never creates a response itself): the server
+ *    keeps answering and interrupting, as before.
+ */
 export function realtimeSession(options: SessionConfigOptions = {}): Record<string, unknown> {
   return {
     type: "realtime",
@@ -171,13 +188,15 @@ export function realtimeSession(options: SessionConfigOptions = {}): Record<stri
     audio: {
       input: {
         format: { type: "audio/pcm", rate: 24000 },
+        noise_reduction: { type: "near_field" },
+        ...(options.clientVad ? { transcription: { model: "gpt-4o-mini-transcribe" } } : null),
         turn_detection: {
           type: "server_vad",
-          threshold: 0.5,
+          threshold: 0.7,
           prefix_padding_ms: 300,
-          silence_duration_ms: 500,
-          create_response: true,
-          interrupt_response: true,
+          silence_duration_ms: 600,
+          create_response: !options.clientVad,
+          interrupt_response: !options.clientVad,
         },
       },
       output: {

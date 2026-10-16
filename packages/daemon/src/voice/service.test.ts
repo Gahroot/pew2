@@ -224,3 +224,15 @@ test("a push about a branch is titled by its repository", () => {
   });
   expect(message?.title).toBe("billing · fix/login: finished");
 });
+
+test("voice.open: clientVad selects the manual-turn config; no marker keeps the server answering", async () => {
+  const { svc } = await service();
+  const turn = (r: Record<string, unknown>) =>
+    (r as { realtime: { session: { audio: { input: { turn_detection: Record<string, unknown> } } } } }).realtime.session.audio.input.turn_detection;
+  const old = await svc.open({ voiceSessionId: "old", source: "in_app" });
+  const next = await svc.open({ voiceSessionId: "new", source: "in_app", clientVad: true });
+  expect(old.t).toBe("voice.ready");
+  expect(turn(old)).toMatchObject({ create_response: true, interrupt_response: true });
+  expect(turn(next)).toMatchObject({ create_response: false, interrupt_response: false });
+  svc.dispose();
+});

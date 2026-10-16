@@ -3,6 +3,8 @@ import {
   createRealtimeSession,
   outputText,
   parseArguments,
+  isRealSpeech,
+  voiceOpenMessage,
   type RealtimeHandlers,
   type ToolCall,
 } from "./realtime";
@@ -59,13 +61,70 @@ describe("session", () => {
   });
 });
 
+describe("voice.open", () => {
+  test("announces clientVad, so the daemon may hand turn-taking to this app", () => {
+    expect(voiceOpenMessage("v1", { source: "in_app" })).toEqual({
+      t: "voice.open",
+      voiceSessionId: "v1",
+      source: "in_app",
+      clientVad: true,
+    });
+    expect(voiceOpenMessage("v2", { source: "notification", focusEventId: 0, focusTaskId: "t" })).toMatchObject({
+      focusEventId: 0,
+      focusTaskId: "t",
+      clientVad: true,
+    });
+  });
+});
+
 describe("turns", () => {
   test("reports speech boundaries", () => {
     const { receive, log } = setup();
-    receive({ type: "input_audio_buffer.speech_started" });
+    receive({ type: "input_audio_buffer.speech_started", item_id: "a" });
+    receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "a", transcript: "stop" });
     receive({ type: "output_audio_buffer.started" });
     receive({ type: "output_audio_buffer.stopped" });
     expect(log).toEqual(["user", "speaking", "done"]);
+  });
+  test("a bump during the reply neither interrupts nor answers, and is deleted", () => {
+    const { receive, log, sent } = setup();
+    receive({ type: "response.created" });
+    receive({ type: "output_audio_buffer.started" });
+    receive({ type: "input_audio_buffer.speech_started", item_id: "n" });
+    receive({ type: "input_audio_buffer.speech_stopped", item_id: "n" });
+    receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "n", transcript: "" });
+    expect(log).toEqual(["speaking"]);
+    expect(sent).toEqual([{ type: "conversation.item.delete", item_id: "n" }]);
+  });
+  test("real words interrupt the reply once, then the model answers", () => {
+    const { receive, log, sent } = setup();
+    receive({ type: "response.created" });
+    receive({ type: "output_audio_buffer.started" });
+    receive({ type: "input_audio_buffer.speech_started", item_id: "s" });
+    receive({ type: "conversation.item.input_audio_transcription.delta", item_id: "s", delta: "wait " });
+    receive({ type: "conversation.item.input_audio_transcription.delta", item_id: "s", delta: "a second" });
+    expect(types(sent)).toEqual(["response.cancel", "output_audio_buffer.clear"]);
+    expect(log.filter((l) => l === "user")).toEqual(["user"]);
+    receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "s", transcript: "wait a second" });
+    expect(types(sent).filter((t) => t === "response.create")).toEqual([]);
+    receive({ type: "response.done", response: { status: "cancelled", output: [] } });
+    expect(types(sent).at(-1)).toBe("response.create");
+  });
+  test("a filler or a failed transcript: filler ignored, failure answered", () => {
+    const a = setup();
+    a.receive({ type: "input_audio_buffer.speech_started", item_id: "f" });
+    a.receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "f", transcript: "Hmm." });
+    expect(a.log).toEqual([]);
+    const b = setup();
+    b.receive({ type: "input_audio_buffer.speech_started", item_id: "g" });
+    b.receive({ type: "conversation.item.input_audio_transcription.failed", item_id: "g" });
+    expect(types(b.sent)).toEqual(["response.create"]);
+  });
+  test("isRealSpeech", () => {
+    for (const t of ["yes", "stop it", "Wait, what?", "42"]) expect(isRealSpeech(t)).toBe(true);
+    for (const t of ["", "  ", "Hmm.", "uh... um", "[door closing]", "(scratching)", "*bump*", "..."]) {
+      expect(isRealSpeech(t)).toBe(false);
+    }
   });
   test("a response with audio is done when playback stops, not when generation does", () => {
     const { receive, log } = setup();
@@ -192,10 +251,9 @@ describe("live notes", () => {
     rt.notify("news");
     receive({ type: "input_audio_buffer.speech_stopped" });
     expect(sent).toEqual([]);
-    receive({ type: "response.created" });
-    receive({ type: "response.done", response: { output: [] } });
+    receive({ type: "conversation.item.input_audio_transcription.completed", transcript: "hello there" });
+    expect(types(sent)).toEqual(["conversation.item.create", "response.create"]);
     expect(sent.filter(system).length).toBe(1);
-    expect(types(sent).at(-1)).toBe("response.create");
   });
   test("waits for the model's audio to stop, and that turn is not reported done", () => {
     const { rt, sent, receive, log } = live();

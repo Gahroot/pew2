@@ -6,7 +6,7 @@
  * All decisions are in `../voice/*`; this file only wires them. UNTESTED ON DEVICE.
  */
 import { appendLine, type TranscriptLine } from "../voice/transcript";
-import { createRealtimeSession, type RealtimeSession } from "../voice/realtime";
+import { createRealtimeSession, voiceOpenMessage, type RealtimeSession } from "../voice/realtime";
 import {
   initialState,
   step,
@@ -129,13 +129,7 @@ export function createVoiceController(deps: VoiceDeps) {
   function run(effect: Effect): void {
     switch (effect.type) {
       case "sendOpen": {
-        const ok = deps.send({
-          t: "voice.open",
-          voiceSessionId: effect.voiceSessionId,
-          source: effect.focus.source,
-          ...(effect.focus.focusEventId !== undefined ? { focusEventId: effect.focus.focusEventId } : {}),
-          ...(effect.focus.focusTaskId ? { focusTaskId: effect.focus.focusTaskId } : {}),
-        });
+        const ok = deps.send(voiceOpenMessage(effect.voiceSessionId, effect.focus));
         if (!ok) queueMicrotask(() => dispatch({ type: "offline" }));
         return;
       }

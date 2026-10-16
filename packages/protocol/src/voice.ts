@@ -230,6 +230,13 @@ export const VoiceOpen = z.object({
   /** Notification tap: the event / task that caused it. */
   focusEventId: z.number().int().nonnegative().optional(),
   focusTaskId: z.string().optional(),
+  /**
+   * Capability marker: this app decides barge-in itself (`app/src/voice/realtime.ts`:
+   * it answers only once a transcript holds real words). Only then may the daemon turn
+   * the server's own interrupt/auto-response off. Absent means an older app, which
+   * relies on the server answering and interrupting, so it gets the old behaviour.
+   */
+  clientVad: z.boolean().optional(),
 });
 
 /**

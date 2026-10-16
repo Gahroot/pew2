@@ -59,7 +59,8 @@ test("every tool has a definition and the session config carries them with serve
     audio: { input: { turn_detection: { type: string; interrupt_response: boolean } } };
   };
   expect(session.tools).toHaveLength(VOICE_TOOLS.length);
-  expect(session.audio.input.turn_detection).toMatchObject({ type: "server_vad", interrupt_response: true });
+  // No marker: an older app never answers itself, so the server must.
+  expect(session.audio.input.turn_detection).toMatchObject({ type: "server_vad", interrupt_response: true, create_response: true });
   expect(VOICE_INSTRUCTIONS).toContain("Never say work is done");
 });
 
@@ -333,4 +334,25 @@ test("whats_running on a host that cannot list sessions still answers with tasks
   expect(out.tasks).toHaveLength(1);
   expect(out.otherSessions).toEqual([]);
   expect(out.note).toContain("cannot list");
+});
+
+test("session config: clientVad hands turn-taking to the app, its absence keeps the server answering", () => {
+  type Input = {
+    noise_reduction: unknown;
+    transcription?: unknown;
+    turn_detection: { threshold: number; silence_duration_ms: number; create_response: boolean; interrupt_response: boolean };
+  };
+  const input = (s: Record<string, unknown>) => (s.audio as { input: Input }).input;
+  const old = input(realtimeSession());
+  const next = input(realtimeSession({ clientVad: true }));
+  expect(old.turn_detection).toMatchObject({ create_response: true, interrupt_response: true });
+  expect(old.transcription).toBeUndefined();
+  expect(next.turn_detection).toMatchObject({ create_response: false, interrupt_response: false });
+  expect(next.transcription).toEqual({ model: "gpt-4o-mini-transcribe" });
+  // Noise hardening is shared by both.
+  for (const i of [old, next]) {
+    expect(i.noise_reduction).toEqual({ type: "near_field" });
+    expect(i.turn_detection.threshold).toBe(0.7);
+    expect(i.turn_detection.silence_duration_ms).toBe(600);
+  }
 });

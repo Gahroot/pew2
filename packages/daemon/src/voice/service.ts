@@ -62,6 +62,8 @@ export interface OpenRequest {
   source: string;
   focusEventId?: number;
   focusTaskId?: string;
+  /** Optional on arrival: absent means an app that predates client-side barge-in. */
+  clientVad?: boolean;
 }
 
 const PROJECT_TTL_MS = 30_000;
@@ -220,6 +222,7 @@ export class VoiceService {
     const voice = prefs.voice ?? DEFAULT_VOICE;
     const session = realtimeSession({
       voice,
+      clientVad: request.clientVad === true,
       instructions: `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}`,
     });
     // Subscription login first, API key as the fallback.

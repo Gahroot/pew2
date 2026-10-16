@@ -15,6 +15,13 @@
  * response made several calls, the model is asked to continue once all of them
  * have been answered and the current response has finished.
  *
+ * Barge-in is decided here, not by the server. The session turns off the
+ * server's own `interrupt_response` and `create_response`, because server VAD
+ * is energy-based and a door closing or a dog scratching "starts speech". A
+ * turn only counts once its transcript holds real words (`isRealSpeech`): then
+ * the model's reply is cut off and a new one requested. Noise is ignored and
+ * its empty audio item is deleted from the conversation.
+ *
  * Live news (`notify`) is a system message plus a response, held until nobody
  * is talking: not while the user speaks, not while the model's audio plays,
  * not while a response or a tool call is in flight. Several notes that pile up
@@ -84,6 +91,40 @@ function isRecord(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * The `voice.open` frame. `clientVad: true` tells the daemon this app interrupts
+ * and answers from transcripts itself (below), so it may switch the server's own
+ * interrupt/auto-response off. An app without this marker gets the old config.
+ */
+export function voiceOpenMessage(
+  voiceSessionId: string,
+  focus: { source: string; focusEventId?: number; focusTaskId?: string },
+): Record<string, unknown> {
+  return {
+    t: "voice.open",
+    voiceSessionId,
+    source: focus.source,
+    ...(focus.focusEventId !== undefined ? { focusEventId: focus.focusEventId } : {}),
+    ...(focus.focusTaskId ? { focusTaskId: focus.focusTaskId } : {}),
+    clientVad: true,
+  };
+}
+
+/** Sounds a transcriber writes down for a cough, breath or a bump. */
+const NON_WORDS = new Set(["uh", "um", "umm", "uhh", "er", "erm", "ah", "oh", "hm", "hmm", "mm", "mhm", "huh", "you"]);
+
+/**
+ * Does a transcript hold actual speech? Letters (or digits) are required, a
+ * bracketed tag like "[noise]" is not speech, and a lone filler is not either.
+ * Short real answers ("yes", "stop") pass.
+ */
+export function isRealSpeech(text: string): boolean {
+  const stripped = text.replace(/[[(*][^\])*]*[\])*]/gu, " ");
+  const words = stripped.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (words.length === 0) return false;
+  return words.some((word) => !NON_WORDS.has(word));
+}
+
 /** Realtime sends function arguments as a JSON string. */
 export function parseArguments(raw: unknown): { args: Json; valid: boolean } {
   if (isRecord(raw)) return { args: raw, valid: true };
@@ -120,11 +161,37 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
   const notes: string[] = [];
   let userSpeaking = false;
   let audioPlaying = false;
+  /** Detected turns whose transcript has not yet said whether it was speech. */
+  const judging = new Set<string>();
+  const heard = new Map<string, string>();
+  const confirmed = new Set<string>();
+
+  const itemKey = (message: Json): string => (typeof message.item_id === "string" ? message.item_id : "?");
+
+  /** Cut the model off: stop generating and drop audio already queued. */
+  const bargeIn = () => {
+    if (responseActive) channel.send({ type: "response.cancel" });
+    if (responseActive || audioPlaying) channel.send({ type: "output_audio_buffer.clear" });
+  };
+
+  /** Real speech was heard in this turn: interrupt once, tell the machine. */
+  const confirm = (key: string) => {
+    if (confirmed.has(key)) return;
+    confirmed.add(key);
+    handlers.onUserSpeech();
+    bargeIn();
+  };
+
+  const settle = (key: string) => {
+    judging.delete(key);
+    heard.delete(key);
+    confirmed.delete(key);
+  };
 
   /** Asks for the next response if one is owed. Returns true when it sent one. */
   const continueIfIdle = (): boolean => {
     if (responseActive || pending.size > 0) return false;
-    const notesReady = notes.length > 0 && ready && !userSpeaking && !audioPlaying && !endRequested;
+    const notesReady = notes.length > 0 && ready && !userSpeaking && judging.size === 0 && !audioPlaying && !endRequested;
     if (!wantResponse && !notesReady) return false;
     if (notesReady) {
       for (const text of notes.splice(0)) {
@@ -213,16 +280,45 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
         }
         return;
       case "input_audio_buffer.speech_started":
+        // Not yet speech: server VAD fires on any loud bump. Wait for words.
         userSpeaking = true;
-        handlers.onUserSpeech();
+        judging.add(itemKey(message));
         return;
       case "input_audio_buffer.speech_stopped":
-        // Server VAD answers this turn itself; notes wait for that response to end.
         userSpeaking = false;
         return;
-      case "conversation.item.input_audio_transcription.completed":
-        if (typeof message.transcript === "string") handlers.onTranscript?.("user", message.transcript);
+      case "conversation.item.input_audio_transcription.delta": {
+        // Words arriving while the model talks are enough to interrupt early.
+        const key = itemKey(message);
+        const text = (heard.get(key) ?? "") + (typeof message.delta === "string" ? message.delta : "");
+        heard.set(key, text);
+        if (isRealSpeech(text)) confirm(key);
         return;
+      }
+      case "conversation.item.input_audio_transcription.completed": {
+        const key = itemKey(message);
+        const text = typeof message.transcript === "string" ? message.transcript : "";
+        if (isRealSpeech(text)) {
+          confirm(key);
+          handlers.onTranscript?.("user", text);
+          wantResponse = true;
+        } else if (key !== "?") {
+          // A bump or a breath: leave no trace in the conversation.
+          channel.send({ type: "conversation.item.delete", item_id: key });
+        }
+        settle(key);
+        continueIfIdle();
+        return;
+      }
+      case "conversation.item.input_audio_transcription.failed": {
+        // Cannot tell noise from speech: answer rather than ignore the user.
+        const key = itemKey(message);
+        confirm(key);
+        wantResponse = true;
+        settle(key);
+        continueIfIdle();
+        return;
+      }
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
         if (typeof message.transcript === "string") handlers.onTranscript?.("assistant", message.transcript);
