@@ -269,6 +269,11 @@ test("a push registration is a client message, and needs a real platform", () =>
     }).success,
   ).toBe(true);
 
+  // The voice-call setting is optional (absent = an older app = off) and boolean.
+  const base = { t: "app.push", token: "ExponentPushToken[abc]", platform: "ios" };
+  expect(ClientMessage.safeParse({ ...base, voiceCall: true }).success).toBe(true);
+  expect(ClientMessage.safeParse({ ...base, voiceCall: "yes" }).success).toBe(false);
+
   // The daemon branches on this to decide whether to name an Android channel,
   // and naming one the device never created means nothing is shown at all.
   expect(

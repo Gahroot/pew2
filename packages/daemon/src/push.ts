@@ -46,6 +46,8 @@ interface Target {
   platform: "ios" | "android";
   /** Android needs the channel named on the message, not just on the device. */
   channelId?: string;
+  /** This phone turned "voice call" on in its settings. Absent means off. */
+  voiceCall?: boolean;
 }
 
 export interface FinishedTurnPush extends NoticeOrigin {
@@ -82,12 +84,13 @@ export class PushRegistry {
    *
    * @returns whether the token was accepted, so a caller can log the refusal.
    */
-  register(deviceId: string, token: string, platform: "ios" | "android"): boolean {
+  register(deviceId: string, token: string, platform: "ios" | "android", voiceCall = false): boolean {
     if (!TOKEN_SHAPE.test(token)) return false;
     this.targets.set(deviceId, {
       token,
       platform,
       ...(platform === "android" ? { channelId: ANDROID_CHANNEL } : null),
+      ...(voiceCall ? { voiceCall: true } : null),
     });
     return true;
   }
@@ -123,15 +126,6 @@ interface ExpoMessage {
   sound: "default";
   categoryId?: string;
   channelId?: string;
-  /**
-   * iOS delivery level. Expo's *push API* spells it `time-sensitive` (the
-   * client-side `expo-notifications` type says `timeSensitive`; they differ, and
-   * the wrong one is silently ignored). `time-sensitive` breaks through Focus and the scheduled
-   * summary. Without the Time Sensitive entitlement iOS treats it as `active`,
-   * so setting it can only ever help; a build lacking the entitlement degrades
-   * to an ordinary banner.
-   */
-  interruptionLevel?: "active" | "passive" | "time-sensitive";
   /**
    * High, which is what makes this instant on Android.
    *
@@ -230,27 +224,20 @@ export async function pushFinishedTurn(
 }
 
 /**
- * Call-style callbacks, behind `PEW2_VOICE_CALL=1`. Off unless set exactly so.
+ * "Voice call" is a per-phone setting (off by default), sent with `app.push`.
  *
  * This is deliberately *not* a CallKit call: that needs a VoIP push, which only
  * APNs can carry and Expo's push service cannot, plus an APNs key this daemon
- * must never hold. It is the closest thing the existing rail can do: the same
- * push, worded as Pew ringing, delivered time-sensitive. Tapping it already
- * opens voice, so "answering" is a tap and Pew speaks the result.
+ * must never hold. It is the same push, worded as Pew calling. It is sent at
+ * iOS's ordinary level on purpose, so Do Not Disturb, Sleep and every other
+ * Focus hold it back exactly as they would a call from nobody in your
+ * favourites. Tapping it opens voice, so "answering" is a tap.
  */
-export function callStyleEnabled(env: Record<string, string | undefined>): boolean {
-  return env.PEW2_VOICE_CALL === "1";
-}
-
 /** Only news worth interrupting someone for rings; chatter stays an ordinary push. */
 const RINGS = new Set<string>(["completed", "blocked", "approval"]);
 
-export interface VoicePushOptions {
-  callStyle?: boolean;
-}
-
 /** One voice callback in Expo's shape. `data` is exactly `VoiceCallbackPush`. */
-export function voiceMessages(registry: PushRegistry, event: VoiceEvent, options: VoicePushOptions = {}): ExpoMessage[] {
+export function voiceMessages(registry: PushRegistry, event: VoiceEvent): ExpoMessage[] {
   const data: VoiceCallbackPush = {
     type: "voice.callback",
     eventId: event.eventId,
@@ -269,10 +256,9 @@ export function voiceMessages(registry: PushRegistry, event: VoiceEvent, options
         : event.class === "completed"
           ? `${place}: finished`
           : place;
-  const ring = options.callStyle === true && RINGS.has(event.class);
   return registry.list().map((target) => ({
     to: target.token,
-    title: ring ? `Pew is calling: ${title}` : title,
+    title: target.voiceCall === true && RINGS.has(event.class) ? `Pew is calling: ${title}` : title,
     // Already short and secret-scrubbed by the voice layer; capped again because
     // this string is readable by Expo, Apple and Google.
     body: event.text.slice(0, 140),
@@ -281,7 +267,6 @@ export function voiceMessages(registry: PushRegistry, event: VoiceEvent, options
     // No `categoryId`: the agent-turn category carries an inline reply box
     // addressed to a session, and a voice callback has none.
     ...(target.channelId ? { channelId: target.channelId } : null),
-    ...(ring ? { interruptionLevel: "time-sensitive" as const } : null),
     priority: "high",
   }));
 }
@@ -295,10 +280,9 @@ export async function pushVoiceEvent(
   registry: PushRegistry,
   event: VoiceEvent,
   send: typeof fetch = fetch,
-  options: VoicePushOptions = {},
 ): Promise<void> {
   if (registry.size === 0) return;
-  const messages = voiceMessages(registry, event, options);
+  const messages = voiceMessages(registry, event);
   try {
     const response = await send(PUSH_URL, {
       method: "POST",

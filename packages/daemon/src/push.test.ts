@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { PushRegistry, applyTickets, callStyleEnabled, pushMessages, pushVoiceEvent, voiceMessages } from "./push.js";
+import { PushRegistry, applyTickets, pushMessages, pushVoiceEvent, voiceMessages } from "./push.js";
 import type { VoiceEvent } from "./voice/types.js";
 
 const TOKEN = "ExponentPushToken[abcdef123456]";
@@ -100,47 +100,59 @@ describe("applyTickets", () => {
   });
 });
 
-describe("call-style voice callbacks", () => {
+describe("voice call setting", () => {
   const ev = (cls: VoiceEvent["class"]): VoiceEvent => ({
     eventId: 3, taskId: "t1", projectId: "p1", projectName: "pew2", kind: "task.completed", class: cls, text: "Done.", at: 1,
   });
-  const reg = () => {
+  const reg = (voiceCall?: boolean) => {
     const r = new PushRegistry();
-    r.register("d", "ExponentPushToken[abc]", "ios");
+    r.register("d", "ExponentPushToken[abc]", "ios", voiceCall);
     return r;
   };
 
-  it("is off unless the flag is exactly 1", () => {
-    expect(callStyleEnabled({})).toBe(false);
-    expect(callStyleEnabled({ PEW2_VOICE_CALL: "true" })).toBe(false);
-    expect(callStyleEnabled({ PEW2_VOICE_CALL: "1" })).toBe(true);
-  });
-
-  it("changes nothing by default: same title, no interruption level", () => {
+  it("is off by default: a phone that never said so gets the ordinary title", () => {
     const [m] = voiceMessages(reg(), ev("completed"));
     expect(m?.title).toBe("pew2: finished");
-    expect(m).not.toHaveProperty("interruptionLevel");
+    expect(voiceMessages(reg(false), ev("completed"))[0]?.title).toBe("pew2: finished");
   });
 
-  it("rings for finished, blocked and approval, time-sensitive, with the same data an old app reads", () => {
+  it("rings for finished, blocked and approval on a phone that turned it on, with the same data", () => {
     for (const cls of ["completed", "blocked", "approval"] as const) {
-      const [m] = voiceMessages(reg(), ev(cls), { callStyle: true });
+      const [m] = voiceMessages(reg(true), ev(cls));
       expect(m?.title.startsWith("Pew is calling: ")).toBe(true);
-      expect(m?.interruptionLevel).toBe("time-sensitive");
       expect(m?.data).toEqual({ type: "voice.callback", eventId: 3, taskId: "t1", projectId: "p1", class: cls });
     }
   });
 
-  it("never rings for chatter", () => {
-    const [m] = voiceMessages(reg(), ev("informational"), { callStyle: true });
-    expect(m?.title.startsWith("Pew is calling")).toBe(false);
-    expect(m).not.toHaveProperty("interruptionLevel");
+  it("never sets an interruption level, so Do Not Disturb and Sleep Focus still hold it back", () => {
+    for (const cls of ["completed", "blocked", "approval", "informational"] as const) {
+      expect(voiceMessages(reg(true), ev(cls))[0]).not.toHaveProperty("interruptionLevel");
+    }
   });
 
-  it("falls back silently: a failed send throws nothing and a push with no phone sends nothing", async () => {
-    await pushVoiceEvent(reg(), ev("completed"), (async () => { throw new Error("offline"); }) as unknown as typeof fetch, { callStyle: true });
+  it("never rings for chatter", () => {
+    const [m] = voiceMessages(reg(true), ev("informational"));
+    expect(m?.title.startsWith("Pew is calling")).toBe(false);
+  });
+
+  it("is per phone: one on, one off", () => {
+    const r = new PushRegistry();
+    r.register("a", "ExponentPushToken[a]", "ios", true);
+    r.register("b", "ExponentPushToken[b]", "ios");
+    const titles = voiceMessages(r, ev("completed")).map((m) => m.title.startsWith("Pew is calling"));
+    expect(titles).toEqual([true, false]);
+  });
+
+  it("turning it off re-registers without the flag", () => {
+    const r = reg(true);
+    r.register("d", "ExponentPushToken[abc]", "ios", false);
+    expect(voiceMessages(r, ev("completed"))[0]?.title).toBe("pew2: finished");
+  });
+
+  it("falls back silently: a failed send throws nothing and no phone sends nothing", async () => {
+    await pushVoiceEvent(reg(true), ev("completed"), (async () => { throw new Error("offline"); }) as unknown as typeof fetch);
     let sent = 0;
-    await pushVoiceEvent(new PushRegistry(), ev("completed"), (async () => { sent++; return new Response("{}"); }) as unknown as typeof fetch, { callStyle: true });
+    await pushVoiceEvent(new PushRegistry(), ev("completed"), (async () => { sent++; return new Response("{}"); }) as unknown as typeof fetch);
     expect(sent).toBe(0);
   });
 });

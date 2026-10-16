@@ -19,11 +19,14 @@ import { Platform } from "react-native";
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { ensureNotificationPermission } from "./notifier";
+import { loadVoiceCall } from "../preferences";
 
 /** What the daemon needs to reach this phone. */
 export interface PushAddress {
   token: string;
   platform: "ios" | "android";
+  /** The "voice call" setting. Sent with every registration so a toggle re-sends it. */
+  voiceCall?: boolean;
 }
 
 /**
@@ -64,7 +67,7 @@ export async function pushAddress(): Promise<PushAddress | undefined> {
   if (!(await ensureNotificationPermission())) return undefined;
   try {
     const { data } = await Notifications.getExpoPushTokenAsync({ projectId: id });
-    return data ? { token: data, platform: Platform.OS } : undefined;
+    return data ? { token: data, platform: Platform.OS, voiceCall: await loadVoiceCall() } : undefined;
   } catch {
     // Simulator, no network, or a build without push entitlements. The app
     // works; it just falls back to announcing turns it is awake for.

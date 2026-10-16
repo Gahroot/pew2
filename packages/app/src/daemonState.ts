@@ -305,6 +305,7 @@ export const NOTICE_BUFFER = 2000;
 export interface PushAddress {
   token: string;
   platform: "ios" | "android";
+  voiceCall?: boolean;
 }
 
 export interface DaemonOptions {

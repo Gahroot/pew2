@@ -49,7 +49,7 @@ import { workspaceTitle } from "./contextDetails";
 import { VoiceSheet } from "./ui/VoiceSheet";
 import { ProjectDashboard } from "./ui/ProjectDashboard";
 import { useVoice } from "./ui/useVoice";
-import { clearVoiceCursor } from "./preferences";
+import { clearVoiceCursor, loadVoiceCall, saveVoiceCall } from "./preferences";
 import { greetingFor, hashSeed } from "./greeting";
 import { sounds } from "./ui/sounds";
 import { AgentCarousel } from "./ui/AgentCarousel";
@@ -181,6 +181,24 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   // `EXPO_PUBLIC_DEV_OPEN_DRAWER=1` (development only) starts with the drawer
   // open, so a simulator check can see it without a tap.
   const [menuOpen, setMenuOpen] = useState(() => __DEV__ && process.env.EXPO_PUBLIC_DEV_OPEN_DRAWER === "1");
+  const [voiceCall, setVoiceCall] = useState(false);
+  useEffect(() => {
+    void loadVoiceCall().then(setVoiceCall);
+  }, []);
+  const sendPush = daemon.send as (m: Record<string, unknown>) => boolean;
+  // Persist first: `pushAddress` reads the saved value, so the daemon hears the
+  // new setting right away instead of at the next reconnect.
+  const changeVoiceCall = useCallback(
+    (on: boolean) => {
+      setVoiceCall(on);
+      void saveVoiceCall(on)
+        .then(() => pushAddress())
+        .then((address) => {
+          if (address) sendPush({ t: "app.push", ...address });
+        });
+    },
+    [sendPush],
+  );
   const [connectionOpen, setConnectionOpen] = useState(() => devSheet === "connection");
   const [contextOpen, setContextOpen] = useState(() => devSheet === "context");
   const openContext = useCallback(() => { Keyboard.dismiss(); setContextOpen(true); }, []);
@@ -1030,7 +1048,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
       {/* Outside the lifted pane: a sheet belongs to the screen's bottom edge,
           not to the composer, so it must not ride up with the keyboard. */}
       <ContextDetailsSheet visible={contextOpen} workspace={daemon.workspace} usage={daemon.usage} inConversation={daemon.sessionId !== undefined} onClose={closeContext} />
-      <ConnectionSheet visible={connectionOpen} machineLabel={daemon.machineName ?? "Your computer"} machineRemote={pairing.remote} status={daemon.status} update={daemon.update} onClose={closeConnection} onUnpair={() => {
+      <ConnectionSheet visible={connectionOpen} machineLabel={daemon.machineName ?? "Your computer"} machineRemote={pairing.remote} status={daemon.status} update={daemon.update} voiceCall={voiceCall} onVoiceCall={changeVoiceCall} onClose={closeConnection} onUnpair={() => {
         voice.clear();
         void clearVoiceCursor();
         onUnpair();

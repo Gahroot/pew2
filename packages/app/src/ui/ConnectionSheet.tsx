@@ -1,4 +1,4 @@
-import { Alert, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Alert, Pressable, StyleSheet, Switch, Text, View, useWindowDimensions } from "react-native";
 import { StageScroll } from "./stage/StageScroll";
 import { Sheet } from "./Sheet";
 import { PrivacyLink } from "./PrivacyLink";
@@ -23,6 +23,9 @@ interface Props {
   update?: { latest: string; automatic: boolean };
   onClose: () => void;
   onUnpair: () => void;
+  /** "Voice call" setting. Omitted hides the row. */
+  voiceCall?: boolean;
+  onVoiceCall?: (on: boolean) => void;
 }
 
 const PHASE = { online: "paired", connecting: "pairing", offline: "waiting" } satisfies Record<Status, HandshakePhase>;
@@ -38,7 +41,7 @@ function Row({ label, index, children }: { label: string; index: number; childre
   );
 }
 
-export function ConnectionSheet({ visible, machineLabel, machineRemote, status, update, onClose, onUnpair }: Props) {
+export function ConnectionSheet({ visible, machineLabel, machineRemote, status, update, onClose, onUnpair, voiceCall, onVoiceCall }: Props) {
   const { height: screenHeight } = useWindowDimensions();
   const title = status === "online" ? "Connected" : status === "connecting" ? "Connecting…" : "Offline";
   return <Sheet visible={visible} label="Connection" labelTone={status === "connecting" ? "attention" : "agent"} pewMood={status === "online" ? "happy" : status === "connecting" ? "thinking" : "sleepy"} title={title} onClose={onClose} dismissLabel="Close connection details">
@@ -58,6 +61,12 @@ export function ConnectionSheet({ visible, machineLabel, machineRemote, status, 
             haptics.tap();
             Alert.alert(`pew2 ${update.latest} is available`, `This computer can't update itself, so run this on ${machineLabel}:\n\n${INSTALL_COMMAND}`, [{ text: "OK" }]);
           }}><Text numberOfLines={1} style={[styles.value, styles.link]}>{update.latest} available · How</Text></Pressable>}
+      </Row>}
+      {onVoiceCall && <Row label="Voice call" index={3}>
+        <View style={styles.switchRow}>
+          <Text numberOfLines={2} style={[styles.value, styles.switchText]}>Pew calls when a task finishes or needs you. Silenced by Do Not Disturb and Sleep.</Text>
+          <Switch accessibilityLabel="Voice call" value={voiceCall === true} onValueChange={(on) => { haptics.tap(); onVoiceCall(on); }} />
+        </View>
       </Row>}
       <DashedRule />
       <PrivacyLink />
@@ -79,6 +88,8 @@ const styles = StyleSheet.create({
   rowLabel: { width: LABEL_WIDTH },
   rowValue: { flex: 1, alignItems: "flex-end" },
   value: { color: theme.color.text, fontSize: theme.font.body, lineHeight: theme.line.body, textAlign: "right" },
+  switchRow: { flexDirection: "row", alignItems: "center", gap: theme.space(3) },
+  switchText: { flex: 1, fontSize: theme.font.small },
   link: { color: theme.color.accent },
   action: { minHeight: theme.size.touch, justifyContent: "center" },
   destructive: { color: theme.color.danger, fontSize: theme.font.body, lineHeight: 20 },

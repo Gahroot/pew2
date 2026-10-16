@@ -21,7 +21,7 @@ import { discardAttachments } from "./attachments.js";
 import { folderName } from "./workspace.js";
 import { writeConfigPref } from "./config-prefs.js";
 import { writeSessionPrefs } from "./session-prefs.js";
-import { callStyleEnabled, pushVoiceEvent } from "./push.js";
+import { pushVoiceEvent } from "./push.js";
 import { readKnownProjects } from "./known-projects.js";
 import { foldProjects } from "./projects.js";
 import { VoiceService } from "./voice/service.js";
@@ -726,7 +726,7 @@ export class Daemon extends DaemonConnectSession {
           .filter((p) => this.isEnabled(p.manifest.id) && isAvailable(p))
           .map((p) => p.manifest.id),
       runningSessions: () => this.runningSessions(),
-      push: (event) => pushVoiceEvent(this.pushTargets, event, fetch, { callStyle: callStyleEnabled(this.env) }),
+      push: (event) => pushVoiceEvent(this.pushTargets, event),
     }).then((service) => (this.voiceReady = service));
     return this.voiceStarting;
   }

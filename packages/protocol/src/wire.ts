@@ -710,6 +710,12 @@ export const PushRegister = z.object({
    */
   token: z.string().min(1),
   platform: z.enum(["ios", "android"]),
+  /**
+   * The phone's "voice call" setting: ring (word the push as a call) for
+   * finished / blocked / approval. Optional so an older app, which never sends
+   * it, reads as off; an older daemon strips it and simply never rings.
+   */
+  voiceCall: z.boolean().optional(),
 });
 
 /**
