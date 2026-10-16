@@ -7,6 +7,7 @@
  * against the registry.
  */
 import { coalesce } from "./classify.js";
+import { DAVE_TOOL_NAMES, DAVE_TOOLS, runDaveTool, type DaveClient } from "./dave.js";
 import { placeFields, placeSpoken } from "./place.js";
 import type { Orchestrator } from "./dispatcher.js";
 import { chooseProvider, groupByRepo, repoOf, resolveProject, worktreesOf } from "./registry.js";
@@ -154,6 +155,7 @@ export const VOICE_INSTRUCTIONS = [
   "Call task_status before acting on a task you have not checked this session; state changes while you talk.",
   "Approvals: when an agent is waiting, read the 'say' sentence from pending_approvals in plain words and ask 'Approve or deny?'. Safe means read-only; risky means writes outside the project, deletes, network, installs or git push, so name the risk in a few words. Only call answer_approval after an explicit answer. 'Approve all safe ones' means approve_safe; 'stop asking about safe ones' means set_approval_policy. Risky approvals are never auto-approved. For merge, deploy and destructive actions, and cancelling running work, call once to get a confirmToken, ask 'Are you sure?', and call again with userConfirmed true only after they say yes. Never reuse or invent tokens.",
   "Start by briefly stating what changed from the opening context, if anything, offering the next step on anything that finished. Say nothing about what the user already heard.",
+  "DAVE is the user's portfolio and priorities assistant. Consult it with check_with_dave only when the user asks, in any words ('check in with Dave', 'what does Dave think I should do', 'what did I promise Acme'); never on your own, at the start of a session or to fill silence. Summarise what it says in two or three sentences, and present its ranking as DAVE's recommendation, not a fact. If DAVE isn't available, say so plainly. You may offer to hand one of its coding objectives to EZ Coder as a single yes/no question; call delegate_dave_task's second step only after an explicit yes, and never for a step DAVE marks as the user's own.",
   "When the user says they are done or to stop, call end_session, then say a very short goodbye.",
 ].join("\n");
 
@@ -166,6 +168,8 @@ export interface SessionConfigOptions {
    * otherwise never get a reply.
    */
   clientVad?: boolean;
+  /** Offer the DAVE tools; only when the host has a DAVE client. */
+  daveTools?: boolean;
 }
 
 /**
@@ -204,7 +208,7 @@ export function realtimeSession(options: SessionConfigOptions = {}): Record<stri
         ...(options.voice ? { voice: options.voice } : null),
       },
     },
-    tools: VOICE_TOOLS,
+    tools: options.daveTools ? [...VOICE_TOOLS, ...DAVE_TOOLS] : VOICE_TOOLS,
     tool_choice: "auto",
   };
 }
@@ -249,6 +253,9 @@ export interface ToolDeps {
   policy?: SafetyPolicy;
   /** Per-voice-session approval policy; the executor owns one when not given. */
   approvalPolicy?: { get: () => ApprovalPolicy; set: (p: ApprovalPolicy) => void };
+  /** DAVE, asked only when the model calls a DAVE tool; absent when turned off. */
+  dave?: DaveClient;
+  now?: () => number;
 }
 
 function text(args: Record<string, unknown>, key: string, max = 2000): string | undefined {
@@ -403,6 +410,20 @@ export class ToolExecutor {
       if (!id) return "taskId is required.";
       return store.getTask(id) ?? `No task ${id}.`;
     };
+
+    if ((DAVE_TOOL_NAMES as readonly string[]).includes(name)) {
+      const client = this.deps.dave;
+      if (!client) return fail("DAVE is turned off.");
+      return runDaveTool(name, args, {
+        client,
+        projects: this.deps.projects,
+        usableProviders: this.deps.usableProviders,
+        store,
+        orchestrator,
+        confirm: this.confirm,
+        now: this.deps.now ?? Date.now,
+      });
+    }
 
     switch (name) {
       case "list_projects": {

@@ -26,6 +26,7 @@ import { VoipSender } from "./voip.js";
 import { readKnownProjects } from "./known-projects.js";
 import { foldProjects } from "./projects.js";
 import { VoiceService } from "./voice/service.js";
+import { daveClient } from "./voice/dave.js";
 import type { VoiceHost } from "./voice/dispatcher.js";
 import type { RunningSession } from "./voice/types.js";
 import { dirname } from "node:path";
@@ -735,6 +736,7 @@ export class Daemon extends DaemonConnectSession {
           .filter((p) => this.isEnabled(p.manifest.id) && isAvailable(p))
           .map((p) => p.manifest.id),
       runningSessions: () => this.runningSessions(),
+      dave: daveClient(this.env),
       push: (event) => pushVoiceEvent(this.pushTargets, event, fetch, { voip: this.voip }),
     }).then((service) => (this.voiceReady = service));
     return this.voiceStarting;

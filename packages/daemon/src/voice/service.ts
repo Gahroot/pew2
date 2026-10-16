@@ -52,6 +52,8 @@ export interface VoiceServiceDeps {
   /** Send a push for an event that is worth one. Never awaited by the service. */
   push?: (event: VoiceEvent) => void | Promise<void>;
   fetch?: typeof fetch;
+  /** DAVE, consulted only from its tools; absent when turned off. */
+  dave?: import("./dave.js").DaveClient;
   now?: () => number;
   /** Background tick interval; 0 disables it (tests). */
   tickMs?: number;
@@ -97,6 +99,8 @@ export class VoiceService {
       usableProviders: deps.usableProviders,
       runningSessions: deps.runningSessions,
       lastUsedProvider: deps.lastUsedProvider,
+      dave: deps.dave,
+      now: this.now,
       approvalPolicy: { get: () => this.approvalPolicy, set: (p) => void (this.approvalPolicy = p) },
       rememberAlias: async (path, alias) => {
         await addAlias(deps.dataDir, path, alias);
@@ -223,6 +227,7 @@ export class VoiceService {
     const session = realtimeSession({
       voice,
       clientVad: request.clientVad === true,
+      daveTools: !!this.deps.dave,
       instructions: `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}`,
     });
     // Subscription login first, API key as the fallback.
