@@ -27,15 +27,19 @@ interface Options {
   online: boolean;
   /** The "Native call screen" setting: CallKit / Telecom carry the conversation. */
   nativeCall: boolean;
+  /** Display name for a provider id, used in desk-activity notes. */
+  agentName?: (providerId: string) => string | undefined;
 }
 
-export function useVoice({ send, online, nativeCall }: Options) {
+export function useVoice({ send, online, nativeCall, agentName }: Options) {
   const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore, transcript: [], screenshots: [], pickerRequests: 0 });
   const [sheetOpen, setSheetOpen] = useState(false);
   // Bumped on every activation: with the sheet already open, setSheetOpen(true) changes nothing, so the queued request would never run.
   const [activationTick, setActivationTick] = useState(0);
   const sendRef = useRef(send);
   sendRef.current = send;
+  const agentNameRef = useRef(agentName);
+  agentNameRef.current = agentName;
   const controller = useRef<VoiceController | null>(null);
   const pending = useRef<VoiceActivation | undefined>(undefined);
   const lastLink = useRef<{ url: string; at: number } | undefined>(undefined);
@@ -47,6 +51,7 @@ export function useVoice({ send, online, nativeCall }: Options) {
     controller.current ??= createVoiceController({
       send: (m) => sendRef.current(m),
       onChange: setView,
+      agentName: (id) => agentNameRef.current?.(id),
       onEnded: () => {
         endedAt.current = Date.now();
       },

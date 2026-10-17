@@ -6,9 +6,9 @@
  */
 export type Mark = "live" | "attention" | "unread" | undefined;
 
-export function sessionMark(row: { busy?: boolean; unread?: boolean; permission?: unknown }): Mark {
+export function sessionMark(row: { busy?: boolean; deskBusy?: boolean; unread?: boolean; permission?: unknown }): Mark {
   if (row.permission) return "attention";
-  if (row.busy) return "live";
+  if (row.busy || row.deskBusy) return "live";
   if (row.unread) return "unread";
   return undefined;
 }

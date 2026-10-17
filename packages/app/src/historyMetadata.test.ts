@@ -21,7 +21,7 @@ test("every displayed field invalidates the projection; unrelated config does no
   const before = projectDrawerRows([], [row]);
   const changes: Partial<Session>[] = [
     { id: "b" }, { providerId: "other" }, { title: "new" }, { startedAt: 2 },
-    { cwd: "/repo" }, { folder: "repo" }, { busy: true }, { unread: true },
+    { cwd: "/repo" }, { folder: "repo" }, { busy: true }, { deskBusy: true }, { unread: true },
     { permission: { requestId: "p", options: [], title: "Approve" } },
   ];
   for (const change of changes) expect(projectDrawerRows(before, [{ ...row, ...change }])[0]).not.toBe(before[0]);

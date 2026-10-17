@@ -5,6 +5,7 @@
  */
 import type { RefObject } from "react";
 import { mergeAgentSessions, replaceAgentSessionStub } from "./agentHistory";
+import { applyDesktopActivity, readDesktopActivity } from "./deskActivity";
 import { recordReceipt } from "./turnReceipts";
 import { adoptPendingSession } from "./pendingSession";
 import { foldActivity, summariseActivity, IDLE_ACTIVITY } from "./activity";
@@ -63,6 +64,15 @@ export function reduceMessage(prev: State, message: any, scope: MessageScope): S
           : prev.projects,
         loadingSessions: pendingCapabilities.current.size > 0,
       };
+    }
+
+    case "desktop.activity": {
+      // Desk-started conversations running at the computer. Probes keep
+      // existing rows untouched, so `deskBusy` survives a later merge.
+      const entries = readDesktopActivity(message);
+      if (!entries) return prev;
+      const sessions = applyDesktopActivity(prev.sessions, prev.providers, entries, now);
+      return sessions === prev.sessions ? prev : { ...prev, sessions };
     }
 
     case "provider.sessions": {

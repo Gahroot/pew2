@@ -22,4 +22,17 @@ export interface RunningSession {
   state: "working" | "needs_you" | "idle";
   /** Milliseconds since it was last used; lets the model say "just now". */
   idleMs: number;
+  /** Who holds it: the daemon ("pew2") or an agent started in a terminal on the computer ("desktop"). Absent means "pew2". */
+  origin?: "pew2" | "desktop";
+  /** The conversation's own title, when the agent recorded one. Untrusted text. */
+  title?: string;
+  /** The tool the agent is running now, in plain words, when known. */
+  tool?: string;
+}
+
+/** What one open conversation is doing right now, for `peek_session`. All untrusted text. */
+export interface SessionPeek {
+  lastPrompt?: string;
+  latest?: string;
+  tool?: string;
 }

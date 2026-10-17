@@ -107,7 +107,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   useEffect(() => {
     void loadNativeCall().then(setNativeCall);
   }, []);
-  const voice = useVoice({ send: daemon.send as (m: Record<string, unknown>) => boolean, online: daemon.status === "online", nativeCall });
+  const voice = useVoice({ send: daemon.send as (m: Record<string, unknown>) => boolean, online: daemon.status === "online", nativeCall, agentName: (id) => daemon.providers.find((p) => p.id === id)?.name });
   const { handleMessage: handleVoiceMessage } = voice;
   useEffect(() => {
     voiceInbox.current = handleVoiceMessage;
@@ -355,10 +355,10 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   const dashboardSessions = useMemo(
     () =>
       drawerProjection.rows
-        .filter((row) => row.busy || row.permission)
+        .filter((row) => row.busy || row.deskBusy || row.permission)
         .map((row) => ({
           project: projectFor(projects, row.cwd)?.name ?? row.folder ?? "Unknown project",
-          busy: row.busy,
+          busy: row.busy || row.deskBusy,
           permission: row.permission,
         })),
     [drawerProjection.rows, projects],

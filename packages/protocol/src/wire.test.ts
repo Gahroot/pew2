@@ -321,3 +321,16 @@ test("goal rows carry instructions, and workspace browsing can ask for files", a
   expect(WorkspaceEntry.parse({ path: "/a/b", name: "b", repo: false }).kind).toBeUndefined();
   expect(WorkspaceEntry.safeParse({ path: "/a/b", name: "b", repo: false, kind: "link" }).success).toBe(false);
 });
+
+test("desktop.activity is a server frame, and its state is only working or idle", () => {
+  const frame = {
+    t: "desktop.activity",
+    sessions: [
+      { providerId: "claude-code", agentSessionId: "abc", cwd: "/p", title: "Fix login", state: "working", updatedAt: 1, tool: "Bash" },
+    ],
+  };
+  expect(ServerMessage.safeParse(frame).success).toBe(true);
+  expect(ServerMessage.safeParse({ t: "desktop.activity", sessions: [] }).success).toBe(true);
+  const bad = { ...frame, sessions: [{ ...frame.sessions[0], state: "needs_you" }] };
+  expect(ServerMessage.safeParse(bad).success).toBe(false);
+});

@@ -13,7 +13,7 @@
  */
 import { test, expect } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./index.js";
@@ -998,4 +998,43 @@ test("runningSessions reports the sidebar's three states, and skips sessions sti
   const states = Object.fromEntries(list.map((s) => [s.sessionId, s.state]));
   expect(states).toEqual({ idle: "idle", working: "working", blocked: "needs_you", asking: "needs_you" });
   expect(list.find((s) => s.sessionId === "idle")?.idleMs).toBeGreaterThanOrEqual(5000);
+});
+
+test("desk sessions join runningSessions and desktop.activity, minus the ones the daemon holds", async () => {
+  const { daemon, sent } = daemonWithCollector();
+  (daemon as unknown as { providers: unknown[] }).providers = [
+    { manifest: { id: "ezcoder", name: "EZ Coder" }, commandMissing: false, missingEnv: [] },
+  ];
+  const dir = await mkdtemp(join(tmpdir(), "desk-root-"));
+  await mkdir(join(dir, "proj"), { recursive: true });
+  const row = (r: unknown) => `${JSON.stringify(r)}\n`;
+  const file = (id: string) =>
+    row({ type: "session", id, cwd: "/code/app" }) +
+    row({ type: "message", message: { role: "user", content: `prompt ${id}` } }) +
+    row({ type: "custom", kind: "run_started" });
+  await writeFile(join(dir, "proj", "a.jsonl"), file("desk-1"));
+  await writeFile(join(dir, "proj", "b.jsonl"), file("agent-held"));
+  Object.assign(plantSession(daemon, "held"), { cwd: "/code/app", lastUsedAt: Date.now(), agentSessionId: "agent-held" });
+
+  try {
+    daemon.startDesktopActivity([{ providerId: "ezcoder", format: "gg", dir }]);
+    const frame = await until(
+      () => sent.find((m): m is { t: string; sessions: { agentSessionId: string; state: string }[] } => (m as { t?: string }).t === "desktop.activity"),
+      "desktop.activity",
+    );
+    expect(frame.sessions.map((s) => [s.agentSessionId, s.state])).toEqual([["desk-1", "working"]]);
+    expect(JSON.stringify(frame)).not.toContain("lastPrompt");
+
+    const desk = daemon.runningSessions().find((s) => s.origin === "desktop");
+    expect(desk).toEqual(expect.objectContaining({ sessionId: "desk:ezcoder:desk-1", agentName: "EZ Coder", state: "working", title: "prompt desk-1" }));
+    expect(daemon.runningSessions().find((s) => s.sessionId === "held")?.origin).toBe("pew2");
+    expect(daemon.peekSession("desk:ezcoder:desk-1")?.lastPrompt).toBe("prompt desk-1");
+    expect(daemon.peekSession("desk:ezcoder:nope")).toBeUndefined();
+    expect(daemon.desktopActivity().sessions).toHaveLength(1);
+  } finally {
+    // The planted session has no real agent handle to close.
+    (daemon as unknown as { sessions: Map<string, unknown> }).sessions.clear();
+    daemon.closeAll();
+  }
+  expect(daemon.desktopActivity().sessions).toEqual([]);
 });

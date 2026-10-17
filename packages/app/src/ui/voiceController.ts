@@ -31,6 +31,8 @@ import {
   type Upload,
 } from "../voice/screenshots";
 import type { PendingAttachment } from "../attachments";
+import { readDesktopActivity, type DeskEntry } from "../deskActivity";
+import { desktopActivityNotes } from "../voice/desktopNotes";
 
 export interface VoiceView {
   machine: MachineState;
@@ -52,6 +54,8 @@ export interface VoiceDeps {
   onChange(view: VoiceView): void;
   /** Called with the highest event id after each close, for the unheard re-offer. */
   onEnded?(): void;
+  /** Display name for a provider id, for desk notes; falls back to the id. */
+  agentName?(providerId: string): string | undefined;
 }
 
 interface Ready {
@@ -101,6 +105,9 @@ export function createVoiceController(deps: VoiceDeps) {
   let pendingDismissals: DismissRequest[] = [];
   /** Sheet sends waiting on their answer: callId -> what was sent where. */
   const sheetSends = new Map<string, { attachmentId: string; taskId: string }>();
+  /** Last `desktop.activity` snapshot, and which Realtime leg it was baselined for. */
+  let lastDesk: DeskEntry[] = [];
+  let deskBaselineFor: RealtimeSession | undefined;
 
   const view = (): VoiceView => ({
     machine,
@@ -473,6 +480,17 @@ export function createVoiceController(deps: VoiceDeps) {
           if (!list) return;
           held = list;
           publish();
+          return;
+        }
+        case "desktop.activity": {
+          const next = readDesktopActivity(message);
+          if (!next) return;
+          // The first frame of a call only seeds the baseline: no burst of old news.
+          if (realtime && deskBaselineFor === realtime) {
+            for (const note of desktopActivityNotes(lastDesk, next, (id) => deps.agentName?.(id))) realtime.notify(note);
+          }
+          deskBaselineFor = realtime;
+          lastDesk = next;
           return;
         }
         case "voice.event":

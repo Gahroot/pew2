@@ -105,6 +105,11 @@ export interface Session {
    * its turns live on the agent's disk and arrive on resume.
    */
   agentSessionId?: string;
+  /**
+   * Running at the computer, reported by `desktop.activity`. Separate from
+   * `busy` on purpose so it never fights the turn machinery.
+   */
+  deskBusy?: boolean;
   /** Working directory the agent recorded, needed to reopen it there. */
   cwd?: string;
   /**
