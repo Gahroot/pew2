@@ -24,6 +24,7 @@ import { writeSessionPrefs } from "./session-prefs.js";
 import { pushVoiceEvent } from "./push.js";
 import { VoipSender } from "./voip.js";
 import { readKnownProjects } from "./known-projects.js";
+import { createWorktree } from "./worktree-create.js";
 import { foldProjects } from "./projects.js";
 import { VoiceService } from "./voice/service.js";
 import { daveClient } from "./voice/dave.js";
@@ -736,6 +737,13 @@ export class Daemon extends DaemonConnectSession {
           .filter((p) => this.isEnabled(p.manifest.id) && isAvailable(p))
           .map((p) => p.manifest.id),
       runningSessions: () => this.runningSessions(),
+      createWorktree: async (root, branch) => {
+        const made = await createWorktree({ repoRoot: root, ...(branch ? { branch } : null) });
+        // Published like a chosen project: the app may only open a session in
+        // a path this daemon announced, and voice's registry reads this file.
+        if (made.ok) await this.rememberProject(made.value.path);
+        return made;
+      },
       dave: daveClient(this.env),
       push: (event) => pushVoiceEvent(this.pushTargets, event, fetch, { voip: this.voip }),
     }).then((service) => (this.voiceReady = service));
@@ -762,7 +770,11 @@ export class Daemon extends DaemonConnectSession {
     return {
       startSession: async (providerId, cwd, tag) => {
         // Remembered so the app, which only honours directories this daemon published, can open the session.
-        await this.knownProject(providerId, cwd).catch(() => undefined);
+        // The cwd came from voice's own registry, never from a client, so a path
+        // no agent has history in yet (a worktree just made, or one only git
+        // knows of) is published here rather than left unopenable.
+        const known = await this.knownProject(providerId, cwd).catch(() => undefined);
+        if (!known) await this.rememberProject(cwd).catch(() => undefined);
         const sessionId = await this.startSession(providerId, cwd);
         this.send({
           t: "session.started",

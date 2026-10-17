@@ -18,7 +18,7 @@
  *
  * Never throws: an unreadable or half-deleted worktree is simply "not one".
  */
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -234,6 +234,51 @@ export function linkWorktreeRoots<T extends { path: string; name: string; worktr
     const root = matches?.length === 1 ? matches[0] : undefined;
     return root ? { ...project, worktree: { ...worktree, root } } : project;
   });
+}
+
+export interface RegisteredWorktree {
+  /** The linked checkout, as git recorded it. */
+  path: string;
+  branch?: string;
+  /** Git still lists it but the folder is gone (deleted by hand or by ezcoder). */
+  gone: boolean;
+}
+
+/** The most entries read from one repository's `.git/worktrees`. */
+const MAX_REGISTERED = 200;
+
+/**
+ * Every linked worktree git has on record for the main checkout at `root`,
+ * read from `<root>/.git/worktrees/<name>/{gitdir,HEAD}` — never by spawning
+ * git, for the same reason as the rest of this module.
+ *
+ * Agent history only knows the checkouts an agent was *asked about*; a copy
+ * ezcoder made for a task the phone never saw would otherwise be a stranger.
+ * Sorted by path so the answer is the same on every call. Never throws.
+ */
+export async function registeredWorktrees(root: string): Promise<RegisteredWorktree[]> {
+  const admin = join(resolve(root), ".git", "worktrees");
+  let names: string[];
+  try {
+    names = (await readdir(admin)).filter((name) => !name.startsWith(".")).sort().slice(0, MAX_REGISTERED);
+  } catch {
+    return [];
+  }
+  const found = await Promise.all(
+    names.map(async (name): Promise<RegisteredWorktree | undefined> => {
+      // `gitdir` holds the path of the checkout's own `.git` file.
+      const pointer = (await readSmall(join(admin, name, "gitdir")))?.trim();
+      if (!pointer || !isAbsolute(pointer)) return undefined;
+      const path = dirname(pointer);
+      const branch = branchFromHead(await readSmall(join(admin, name, "HEAD")));
+      const gone = !(await stat(pointer).then(
+        (info) => info.isFile(),
+        () => false,
+      ));
+      return { path, ...(branch ? { branch } : null), gone };
+    }),
+  );
+  return found.filter((entry): entry is RegisteredWorktree => entry !== undefined).sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**

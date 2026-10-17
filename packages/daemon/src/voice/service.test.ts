@@ -304,3 +304,28 @@ test("voice.dismiss persists, broadcasts, and drops the task from every later pi
   expect(state.dismissed).toEqual([a.taskId, b.taskId]);
   expect(svc.store.getTask(a.taskId)).toBeDefined(); // still on disk for the model to ask about
 });
+
+test("worktrees only git knows about are filed under their repository, deleted ones left out", async () => {
+  const svc = await VoiceService.create({
+    dataDir: scratch(),
+    env: { CODEX_HOME: "/nonexistent-codex-home" },
+    host: host(),
+    emit: () => undefined,
+    projectPaths: async () => ["/code/triten-os"],
+    usableProviders: () => ["echo"],
+    detectWorktree: async () => undefined,
+    registeredWorktrees: async (root: string) =>
+      root === "/code/triten-os"
+        ? [
+            { path: "/home/.ezcoder/worktrees/triten-os/ez-mv1", branch: "fix/boot", gone: false },
+            { path: "/home/.ezcoder/worktrees/triten-os/ez-old", gone: true },
+          ]
+        : [],
+    tickMs: 0,
+  });
+  const projects = await svc.projects();
+  const root = projects.find((p) => p.name === "triten-os");
+  expect(projects.map((p) => p.name)).toEqual(["triten-os", "triten-os (fix/boot)"]);
+  expect(projects[1]?.worktree).toEqual({ repo: "triten-os", repoId: root?.projectId, branch: "fix/boot" });
+  svc.dispose();
+});

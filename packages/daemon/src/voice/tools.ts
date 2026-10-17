@@ -10,7 +10,7 @@ import { coalesce } from "./classify.js";
 import { DAVE_TOOL_NAMES, DAVE_TOOLS, runDaveTool, type DaveClient } from "./dave.js";
 import { placeFields, placeSpoken } from "./place.js";
 import type { Orchestrator } from "./dispatcher.js";
-import { chooseProvider, groupByRepo, repoOf, resolveProject, worktreesOf } from "./registry.js";
+import { branchName, chooseProvider, groupByRepo, projectIdFor, repoOf, resolveProject, worktreesOf } from "./registry.js";
 import {
   ConfirmationTokens,
   DEFAULT_POLICY,
@@ -24,6 +24,8 @@ import {
 import { wire } from "@pew2/protocol";
 import { ACTIVE, TERMINAL, type StoredScreenshot, type StoredTask, type VoiceStore } from "./store.js";
 import { basename } from "node:path";
+import type { CreatedWorktree, Result } from "../worktree-create.js";
+import type { RegisteredWorktree } from "../worktree.js";
 import type { RunningSession, VoiceProject } from "./types.js";
 
 // ---- definitions -----------------------------------------------------------
@@ -48,9 +50,15 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
   def("resolve_project", "Match a spoken project name (partial, misheard or any case is fine). One clear match: use it, don't ask. Ambiguous: ask one short 'did you mean A or B?'.", { query: str("What the user said.") }, ["query"]),
   def(
     "start_task",
-    "Start a coding task in a project (queued if the project is busy). Use follow_up for work on an existing task.",
+    "Start a coding task in a project. Each new feature or fix is its own task: when the checkout is already busy, it gets a fresh worktree of its own instead of queuing (see worktree). Use follow_up for more work on an existing task.",
     {
       project: str("Spoken project name or projectId."),
+      worktree: {
+        type: "string",
+        enum: ["auto", "new", "current"],
+        description: "auto (default): a new worktree only if the checkout is busy. new: always a new worktree, when the user asks for a separate branch. current: run in this checkout even if it means waiting.",
+      },
+      branch: str("Optional branch name for a new worktree, a few words; defaults to the title."),
       instruction: str("What the coding agent should do, as the user said it."),
       title: str("Optional short title."),
       priority: { type: "integer", description: "Higher runs first. Default 0." },
@@ -132,6 +140,27 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
       instruction: str("What the agent should do with it, as the user said it."),
     },
   ),
+  def(
+    "create_worktree",
+    "Make a new worktree of a repository: a separate checkout on a fresh branch, so work there never touches other agents'. Only when the user asks for one on its own; start_task makes them as needed.",
+    { project: str("Spoken repository name or projectId."), branch: str("Branch name, a few words. Optional.") },
+    ["project"],
+  ),
+  def(
+    "list_worktrees",
+    "Every worktree of one repository, with what is running in each. Use for 'what branches does X have', or when list_projects says moreBranches.",
+    { project: str("Spoken repository name or projectId.") },
+    ["project"],
+  ),
+  def(
+    "commit",
+    "Commit work when the user says commit, in any words. Runs EZ Coder's /commit command (checks, review, commit, and push if the branch has an upstream) in the task's own checkout. Pass taskId, or project when no task did the work.",
+    {
+      taskId: str("Task whose changes to commit. Optional when exactly one task could mean it."),
+      project: str("Spoken project or branch, when no task is meant."),
+      note: str("Anything the user added, e.g. a message to use. Optional."),
+    },
+  ),
   def("end_session", "End the voice session when the user is done."),
 ];
 
@@ -150,6 +179,8 @@ export const VOICE_INSTRUCTIONS = [
   "Never say work is done, merged, deployed or fixed until a tool result says the agent reported it. 'Completed' means the agent says it finished, not that it is verified; say so plainly. If a result says failed or interrupted, say that.",
   "Projects: pass what the user said to start_task or resolve_project; partial names, different casing and misheard names are matched for you. If one project clearly matches, just proceed without asking. If the result is ambiguous, ask once: 'Did you mean A or B?' naming at most three candidates, then continue with the answer. Never guess between close matches. Existing work gets follow_up, not a new task.",
   "Branches: list_projects gives one entry per repository, with its worktrees as branches under it. A worktree is a separate checkout of that repository on its own branch, so its work does not touch the main checkout. The repository's plain name means the main checkout; to work on a branch, pass its projectId or say the repository and branch ('billing, fix login'). Work on a branch still counts as that repository's when the user asks what is happening there. Task and event results name the repository as `project` and add `branch` for work on one; report progress and completion that way ('billing, on the fix login branch, is done'), never as separate projects, and never say a random folder id like 'ez-mun7ig9t'.",
+  "Worktrees: each new feature or fix the user asks for is its own start_task, never a follow_up on unrelated work. start_task puts it in a fresh worktree on its own branch when the checkout is already busy, so several requests for one repository run side by side; when the result has newWorktree, say so briefly ('Started in Triton OS on a new branch, add dark mode'). Pass worktree 'new' when the user asks for a separate branch or worktree, 'current' when they want it in the same checkout. create_worktree is only for 'make a worktree of X' on its own. list_worktrees answers what branches a repository has and what is running in each. Folders named like 'ez-mun7ig9t' are EZ Coder's worktrees of a repository, never projects of their own: name the repository and the branch.",
+  "Commit: whenever the user says commit, in any words, call commit; never describe the steps in a follow_up yourself. It runs EZ Coder's /commit in the checkout where that task worked, which runs the checks, reviews, commits, and pushes if the branch has an upstream. Pass the taskId of the work they mean, or the project when no task did it; if several tasks could be meant, ask which. Report it like any task, and never say it is committed until the result says the agent finished.",
   "Screenshots: the user can share pictures, typically a partner's fix or an error, from the phone. You never see the picture; you get its attachmentId and name. When they offer one, call request_screenshot. When one arrives, say you have it in a few words, then ask which project or task it is for unless they already said. Send it with start_task or follow_up attachmentIds, or attach_screenshot for a task already running, together with what they want done ('apply this fix'). Never describe what is in it, and never claim the agent applied it until a result says so.",
   "When asked what is running or how things are going, call whats_running, not just list_tasks: it also shows conversations the user started at the desk or in the app. 'needs_you' means an agent is blocked on an approval; mention that first.",
   "Call task_status before acting on a task you have not checked this session; state changes while you talk.",
@@ -255,6 +286,10 @@ export interface ToolDeps {
   approvalPolicy?: { get: () => ApprovalPolicy; set: (p: ApprovalPolicy) => void };
   /** DAVE, asked only when the model calls a DAVE tool; absent when turned off. */
   dave?: DaveClient;
+  /** Make a new worktree of a main checkout; absent means voice cannot (older hosts, tests). */
+  createWorktree?: (root: string, branch?: string) => Promise<Result<CreatedWorktree>>;
+  /** Linked worktrees git has on record for a main checkout. */
+  registeredWorktrees?: (root: string) => Promise<RegisteredWorktree[]>;
   now?: () => number;
 }
 
@@ -339,6 +374,64 @@ export function didYouMean(names: readonly string[]): string {
   return `Did you mean ${list.slice(0, -1).join(", ")} or ${list[list.length - 1]}?`;
 }
 
+/** The agent whose `/commit` voice runs by default: EZ Coder's global command. */
+export const COMMIT_PROVIDER = "ezcoder";
+
+/**
+ * What "commit" is sent as. To EZ Coder, its own `/commit` command, verbatim at
+ * the start of the prompt: that is the only form it expands (checks, review,
+ * one-line message, push when the branch has an upstream). Any other agent gets
+ * the same procedure in words, since its slash commands are its own.
+ */
+export function commitInstruction(providerId: string, note?: string): string {
+  if (providerId === COMMIT_PROVIDER) return note ? `/commit ${note}` : "/commit";
+  return [
+    "Commit your changes: run the project's checks and fix any failure, review the diff,",
+    "stage only the files you changed on purpose (never `git add -A`), and commit with a one-line message",
+    note ? `(the user added: ${note}).` : ".",
+    "Push only if the branch has an upstream.",
+  ].join(" ").replace(" .", ".");
+}
+
+/** Told to the agent in a worktree voice just made, after the user's instruction. */
+function worktreeNote(made: CreatedWorktree): string {
+  return [
+    `(You are in a new git worktree of ${made.repo}, on branch ${made.branch}, made for this task so it does not touch other agents' work.`,
+    "Keep your changes on this branch. Dependencies may not be installed here yet: install them first if a command needs them.)",
+  ].join(" ");
+}
+
+/** The main checkout a project belongs to: itself, or its worktree's repository. */
+function mainCheckoutOf(project: VoiceProject, projects: readonly VoiceProject[]): VoiceProject | undefined {
+  if (!project.worktree) return project;
+  const id = project.worktree.repoId;
+  return id ? projects.find((p) => p.projectId === id && !p.worktree) : undefined;
+}
+
+/** A just-made worktree as a registry entry, without waiting on the next registry read. */
+function worktreeProject(made: CreatedWorktree, root: VoiceProject): VoiceProject {
+  return {
+    projectId: projectIdFor(made.path),
+    name: `${made.repo} (${made.branch})`,
+    path: made.path,
+    aliases: [],
+    ...(root.providerId ? { providerId: root.providerId } : null),
+    worktree: { repo: made.repo, repoId: root.projectId, branch: made.branch },
+  };
+}
+
+/** The project ids a repository's work is filed under: the main checkout and every worktree. */
+function familyOf(project: VoiceProject, projects: readonly VoiceProject[]): Set<string> {
+  const root = mainCheckoutOf(project, projects);
+  if (!root) return new Set([project.projectId]);
+  return new Set([root.projectId, project.projectId, ...worktreesOf(root.projectId, projects).map((p) => p.projectId)]);
+}
+
+/** Same request: the instruction itself, possibly followed by a worktree note. */
+function samePrompt(prompt: string, instruction: string): boolean {
+  return prompt === instruction || prompt.startsWith(`${instruction}\n\n`);
+}
+
 const fail = (error: string): ToolResult => ({ ok: false, output: { error }, error });
 const good = (output: unknown, extra: Partial<ToolResult> = {}): ToolResult => ({ ok: true, output, ...extra });
 
@@ -403,6 +496,71 @@ export class ToolExecutor {
     return result;
   }
 
+  /** "Did you mean A or B?" for a project that did not resolve to one. */
+  private clarify(r: ReturnType<typeof resolveProject>): ToolResult {
+    return good({
+      needsClarification: true,
+      reason: r.candidates.length ? "Several projects match." : "No project matches.",
+      ...(r.candidates.length ? { question: didYouMean(r.candidates.map((c) => c.project.name)) } : null),
+      candidates: r.candidates.map((c) => ({ projectId: c.project.projectId, name: c.project.name })),
+    });
+  }
+
+  /**
+   * Where a new task runs: the checkout named, or a new worktree of it.
+   *
+   * `auto` isolates only a main checkout that is busy (a voice task writing
+   * there, or any agent conversation mid-turn in it), because that is exactly
+   * when the task would otherwise queue behind unrelated work — three
+   * requests for one repo in a row become three branches running at once.
+   * Never for read-only work (it doesn't take the lock), a task that depends on
+   * another (it wants that one's result in the same checkout), or a branch the
+   * user named explicitly. `auto` falls back to the checkout when a worktree
+   * cannot be made; `new` fails instead, since the user asked for one.
+   */
+  private async placeTask(
+    project: VoiceProject,
+    projects: readonly VoiceProject[],
+    want: { mode: "auto" | "new" | "current"; branch: string; readOnly: boolean; dependsOn: readonly string[] },
+  ): Promise<{ target: VoiceProject; made?: CreatedWorktree } | string> {
+    if (want.mode === "current") return { target: project };
+    if (want.mode === "auto") {
+      if (project.worktree || want.readOnly || want.dependsOn.length > 0) return { target: project };
+      const busy =
+        this.deps.store.lockHolder(project.projectId) !== undefined ||
+        (this.deps.runningSessions?.() ?? []).some((s) => s.cwd === project.path && s.state !== "idle");
+      if (!busy) return { target: project };
+    }
+    const root = mainCheckoutOf(project, projects);
+    const create = this.deps.createWorktree;
+    if (!root || !create) {
+      if (want.mode === "auto") return { target: project };
+      return root ? "This computer's pew2 cannot make worktrees." : `The main checkout of ${project.name} is not known on this computer.`;
+    }
+    const made = await create(root.path, want.branch);
+    if (!made.ok) return want.mode === "auto" ? { target: project } : speakable(made.error, 160);
+    return { target: worktreeProject(made.value, root), made: made.value };
+  }
+
+  /** A commit with no task behind it: a task of its own in that checkout, queued behind any writer there. */
+  private startCommit(project: VoiceProject, note: string | undefined): ToolResult {
+    const usable = this.deps.usableProviders();
+    const providerId = usable.includes(COMMIT_PROVIDER)
+      ? COMMIT_PROVIDER
+      : chooseProvider(usable, project.providerId ?? this.deps.lastUsedProvider?.());
+    if (!providerId) return fail("No coding agent is available on the computer.");
+    const task = this.deps.orchestrator.enqueue({
+      projectId: project.projectId,
+      projectName: project.name,
+      ...((repo) => (repo ? { repo } : null))(repoOf(project)),
+      cwd: project.path,
+      providerId,
+      title: "Commit",
+      prompt: commitInstruction(providerId, note),
+    });
+    return good({ committing: true, command: providerId === COMMIT_PROVIDER ? "/commit" : "commit instructions", task: taskView(this.deps.store, task) });
+  }
+
   private async dispatch(name: string, args: Record<string, unknown>): Promise<ToolResult> {
     const { store, orchestrator } = this.deps;
     const taskOf = (): StoredTask | string => {
@@ -465,6 +623,7 @@ export class ToolExecutor {
             candidates: r.candidates.map((c) => ({ projectId: c.project.projectId, name: c.project.name })),
           });
         }
+        const projects = await this.deps.projects();
         const project = r.best;
         const dependsOn = Array.isArray(args.dependsOn)
           ? args.dependsOn.filter((d): d is string => typeof d === "string")
@@ -473,28 +632,54 @@ export class ToolExecutor {
         if (missing) return fail(`No task ${missing} to depend on.`);
         const shots = attachmentsOf(store, args);
         if (typeof shots === "string") return fail(shots);
-        // The same instruction already waiting or running is the same request.
+        // The same instruction already waiting or running is the same request,
+        // in whichever of the repository's checkouts it landed.
+        // A task records its repository, which also covers a worktree made so
+        // recently that the registry has not been re-read since.
+        const family = familyOf(project, projects);
+        const rootId = mainCheckoutOf(project, projects)?.projectId;
         const duplicate = store
           .tasks()
-          .find((t) => t.projectId === project.projectId && !TERMINAL.has(t.state) && t.prompt === instruction);
+          .find(
+            (t) =>
+              (family.has(t.projectId) || (rootId !== undefined && t.repo?.projectId === rootId)) &&
+              !TERMINAL.has(t.state) &&
+              samePrompt(t.prompt, instruction),
+          );
         if (duplicate) return good({ started: false, duplicate: true, task: taskView(store, duplicate) });
         const providerId = chooseProvider(this.deps.usableProviders(), project.providerId ?? this.deps.lastUsedProvider?.());
         if (!providerId) return fail("No coding agent is available on the computer.");
+        const title = text(args, "title", 80) ?? speakable(instruction, 60);
+        const readOnly = args.readOnly === true;
+
+        const placed = await this.placeTask(project, projects, {
+          mode: args.worktree === "new" || args.worktree === "current" ? args.worktree : "auto",
+          branch: text(args, "branch", 60) ?? title,
+          readOnly,
+          dependsOn,
+        });
+        if (typeof placed === "string") return fail(placed);
+        const { target, made } = placed;
         const priority = int(args, "priority");
         const task = orchestrator.enqueue({
-          projectId: project.projectId,
-          projectName: project.name,
-          ...((repo) => (repo ? { repo } : null))(repoOf(project)),
-          cwd: project.path,
+          projectId: target.projectId,
+          projectName: target.name,
+          ...((repo) => (repo ? { repo } : null))(repoOf(target)),
+          cwd: target.path,
           providerId,
-          title: text(args, "title", 80) ?? speakable(instruction, 60),
-          prompt: instruction,
+          title,
+          // A slash command must stay first and alone, or the agent never expands it.
+          prompt: made && !instruction.startsWith("/") ? `${instruction}\n\n${worktreeNote(made)}` : instruction,
           dependsOn,
-          readOnly: args.readOnly === true,
+          readOnly,
           ...(shots.length ? { attachmentIds: shots } : null),
           ...(priority !== undefined ? { priority } : null),
         });
-        return good({ started: true, task: taskView(store, task) });
+        return good({
+          started: true,
+          ...(made ? { newWorktree: { project: made.repo, branch: made.branch } } : null),
+          task: taskView(store, task),
+        });
       }
       case "follow_up": {
         const t = taskOf();
@@ -758,6 +943,94 @@ export class ToolExecutor {
         if (!project) return fail(`No project ${id}.`);
         await this.deps.rememberAlias(project.path, alias);
         return good({ remembered: true, project: project.name, alias });
+      }
+      case "create_worktree": {
+        const query = text(args, "project", 100);
+        if (!query) return fail("project is required.");
+        if (!this.deps.createWorktree) return fail("This computer's pew2 cannot make worktrees.");
+        const projects = await this.deps.projects();
+        const r = resolveProject(query, projects);
+        if (!r.best) return this.clarify(r);
+        const root = mainCheckoutOf(r.best, projects);
+        if (!root) return fail(`The main checkout of ${r.best.worktree?.repo ?? r.best.name} is not known on this computer.`);
+        const made = await this.deps.createWorktree(root.path, text(args, "branch", 60));
+        if (!made.ok) return fail(speakable(made.error, 160));
+        const entry = worktreeProject(made.value, root);
+        return good({
+          created: true,
+          projectId: entry.projectId,
+          project: made.value.repo,
+          branch: made.value.branch,
+          note: "Start work there with start_task, passing this projectId.",
+        });
+      }
+      case "list_worktrees": {
+        const query = text(args, "project", 100);
+        if (!query) return fail("project is required.");
+        const projects = await this.deps.projects();
+        const r = resolveProject(query, projects);
+        if (!r.best) return this.clarify(r);
+        const root = mainCheckoutOf(r.best, projects);
+        if (!root) return fail(`The main checkout of ${r.best.worktree?.repo ?? r.best.name} is not known on this computer.`);
+        const live = this.deps.runningSessions?.() ?? [];
+        const active = store.tasks().filter((t) => !TERMINAL.has(t.state));
+        const describe = (projectId: string, path: string) => {
+          const tasks = active.filter((t) => t.projectId === projectId).map((t) => ({ title: t.title, state: t.state }));
+          const sessions = live.filter((s) => s.cwd === path && s.state !== "idle").length;
+          return { ...(tasks.length ? { tasks: tasks.slice(0, 3) } : null), ...(sessions ? { otherConversationsActive: sessions } : null) };
+        };
+        const listed = await (this.deps.registeredWorktrees?.(root.path) ?? Promise.resolve([] as RegisteredWorktree[])).catch(
+          () => [] as RegisteredWorktree[],
+        );
+        const known = new Map(worktreesOf(root.projectId, projects).map((p) => [p.path, p]));
+        const branches = listed
+          .filter((w) => !w.gone)
+          .map((w) => {
+            const id = known.get(w.path)?.projectId ?? projectIdFor(w.path);
+            return { projectId: id, branch: w.branch ?? basename(w.path), ...describe(id, w.path) };
+          });
+        // Ones the agents remember but git no longer lists (not read, or moved).
+        for (const p of known.values()) {
+          if (!listed.some((w) => w.path === p.path)) branches.push({ projectId: p.projectId, branch: branchName(p), ...describe(p.projectId, p.path) });
+        }
+        return good({
+          project: root.name,
+          main: { projectId: root.projectId, ...describe(root.projectId, root.path) },
+          branches: branches.slice(0, 30),
+          ...(branches.length > 30 ? { moreBranches: branches.length - 30 } : null),
+        });
+      }
+      case "commit": {
+        const note = text(args, "note", 200);
+        let task: StoredTask | undefined;
+        if (text(args, "taskId", 40)) {
+          const t = taskOf();
+          if (typeof t === "string") return fail(t);
+          task = t;
+        } else if (text(args, "project", 100)) {
+          const projects = await this.deps.projects();
+          const r = resolveProject(text(args, "project", 100) ?? "", projects);
+          if (!r.best) return this.clarify(r);
+          const project = r.best;
+          // The task that worked in that exact checkout knows what it changed.
+          task = store.tasks().find((t) => t.projectId === project.projectId && t.state !== "cancelled");
+          if (!task) return this.startCommit(project, note);
+        } else {
+          const open = store.tasks().filter((t) => !TERMINAL.has(t.state) || t.state === "completed");
+          if (open.length !== 1 || !open[0]) {
+            return good({
+              needsClarification: true,
+              reason: open.length ? "Several tasks could be meant; ask which one to commit." : "No recent task; ask which project to commit.",
+              candidates: open.slice(0, 6).map((t) => taskView(store, t)),
+            });
+          }
+          task = open[0];
+        }
+        if (task.state === "cancelled") return fail("That task was cancelled; name its project to commit there instead.");
+        const r = orchestrator.followUp(task.taskId, commitInstruction(task.providerId, note));
+        return r.ok
+          ? good({ committing: true, command: task.providerId === COMMIT_PROVIDER ? "/commit" : "commit instructions", task: taskView(store, r.value) })
+          : fail(r.error);
       }
       case "end_session":
         return good({ ending: true }, { endSession: true });

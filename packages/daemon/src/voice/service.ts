@@ -6,7 +6,7 @@
  * the tool executor. `handler.ts` talks only to this, so both transports get
  * identical behaviour.
  */
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { EventBatcher } from "./classify.js";
 import { buildSnapshot } from "./context.js";
 import { Orchestrator, type PromptImage, type VoiceHost } from "./dispatcher.js";
@@ -23,7 +23,8 @@ import { DEFAULT_APPROVAL_POLICY, type ApprovalPolicy } from "./safety.js";
 import { toVoiceTask, VoiceStore, type StoredScreenshot, type StoredTask } from "./store.js";
 import { realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS } from "./tools.js";
 import type { VoiceAttachment, VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
-import { detectWorktree, type WorktreeInfo } from "../worktree.js";
+import { detectWorktree, privacyGuarded, registeredWorktrees, type RegisteredWorktree, type WorktreeInfo } from "../worktree.js";
+import type { CreatedWorktree, Result } from "../worktree-create.js";
 import { placeSpoken } from "./place.js";
 import {
   checkScreenshot,
@@ -45,6 +46,10 @@ export interface VoiceServiceDeps {
   providerForPath?: (path: string) => string | undefined;
   /** Which of those paths are linked git worktrees; defaults to reading `.git`. */
   detectWorktree?: (path: string) => Promise<WorktreeInfo | undefined>;
+  /** Linked worktrees git has on record for a main checkout; defaults to reading `.git/worktrees`. */
+  registeredWorktrees?: (root: string) => Promise<RegisteredWorktree[]>;
+  /** Make a new worktree of a main checkout and publish its path; absent means voice cannot. */
+  createWorktree?: (root: string, branch?: string) => Promise<Result<CreatedWorktree>>;
   usableProviders: () => string[];
   /** Conversations the daemon holds open, whoever started them. */
   runningSessions?: () => import("./types.js").RunningSession[];
@@ -102,6 +107,17 @@ export class VoiceService {
       dave: deps.dave,
       now: this.now,
       approvalPolicy: { get: () => this.approvalPolicy, set: (p) => void (this.approvalPolicy = p) },
+      registeredWorktrees: deps.registeredWorktrees ?? registeredWorktrees,
+      ...(deps.createWorktree
+        ? {
+            createWorktree: async (root: string, branch?: string) => {
+              const made = await deps.createWorktree?.(root, branch);
+              // The next list_projects must already know the branch.
+              this.projectCache = undefined;
+              return made ?? { ok: false as const, error: "Worktrees cannot be made here." };
+            },
+          }
+        : null),
       rememberAlias: async (path, alias) => {
         await addAlias(deps.dataDir, path, alias);
         this.projectCache = undefined;
@@ -176,9 +192,43 @@ export class VoiceService {
         if (info) worktrees.set(path, info);
       }),
     );
-    const list = buildRegistry(paths, aliases, this.deps.providerForPath, (path) => worktrees.get(path));
+    const all = [...paths, ...(await this.siblingWorktrees(paths, worktrees))];
+    const list = buildRegistry(all, aliases, this.deps.providerForPath, (path) => worktrees.get(path));
     this.projectCache = { at: this.now(), list };
     return list;
+  }
+
+  /**
+   * Worktrees of the known repositories that no agent history mentions yet.
+   *
+   * History only holds checkouts an agent ran in through this machine's ACP
+   * view; ezcoder makes a copy per task, often from its own CLI or app, and
+   * each one the phone has not seen would otherwise be missing from its repo
+   * (or, once seen, a stranger). Read from `.git/worktrees`, so no spawn, and
+   * `worktrees` is filled in for each, so they are filed under their repo.
+   * Deleted ones are skipped: nothing can start in them. A main checkout in a
+   * macOS-guarded folder is skipped too, as in `detectWorktree`.
+   */
+  private async siblingWorktrees(paths: readonly string[], worktrees: Map<string, WorktreeInfo>): Promise<string[]> {
+    const known = new Set(paths);
+    const roots = new Set<string>();
+    for (const path of paths) {
+      const info = worktrees.get(path);
+      const root = info ? info.root : path;
+      if (root && !privacyGuarded(root)) roots.add(root);
+    }
+    const read = this.deps.registeredWorktrees ?? registeredWorktrees;
+    const extra: string[] = [];
+    for (const root of [...roots].sort()) {
+      const listed = await read(root).catch(() => [] as RegisteredWorktree[]);
+      for (const entry of listed) {
+        if (entry.gone || known.has(entry.path)) continue;
+        known.add(entry.path);
+        extra.push(entry.path);
+        worktrees.set(entry.path, { repo: basename(root), root, ...(entry.branch ? { branch: entry.branch } : null) });
+      }
+    }
+    return extra;
   }
 
   private onEvent(event: VoiceEvent, task: StoredTask) {
