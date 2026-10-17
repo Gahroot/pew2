@@ -269,7 +269,9 @@ export async function registeredWorktrees(root: string): Promise<RegisteredWorkt
       // `gitdir` holds the path of the checkout's own `.git` file.
       const pointer = (await readSmall(join(admin, name, "gitdir")))?.trim();
       if (!pointer || !isAbsolute(pointer)) return undefined;
-      const path = dirname(pointer);
+      // Git writes `C:/…` on Windows; resolve gives the native spelling every
+      // other path here uses, or one checkout would be listed twice.
+      const path = resolve(dirname(pointer));
       const branch = branchFromHead(await readSmall(join(admin, name, "HEAD")));
       const gone = !(await stat(pointer).then(
         (info) => info.isFile(),
