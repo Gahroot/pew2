@@ -20,7 +20,7 @@
  */
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 export interface WorktreeInfo {
   /** Folder name of the repository it belongs to — what people call the project. */
@@ -61,12 +61,11 @@ export function privacyGuarded(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   if (platform !== "darwin") return false;
-  // macOS paths, so POSIX rules whatever the host: the host's resolve() would
-  // turn "/Volumes" into "C:\Volumes" on Windows and never match.
-  const target = posix.resolve(path);
-  const under = (base: string) => target === base || target.startsWith(base + posix.sep);
-  if (under("/Volumes")) return true;
-  return GUARDED_HOME_FOLDERS.some((folder) => under(posix.join(posix.resolve(home), folder)));
+  const target = resolve(path);
+  const under = (base: string) => target === base || target.startsWith(base + sep);
+  // Resolved like the target, so both sides are spelled the same way on any host.
+  if (under(resolve("/Volumes"))) return true;
+  return GUARDED_HOME_FOLDERS.some((folder) => under(join(resolve(home), folder)));
 }
 
 async function readSmall(path: string): Promise<string | undefined> {

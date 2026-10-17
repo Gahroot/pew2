@@ -302,9 +302,9 @@ test("default roots honour each agent's own override", () => {
     "/h",
   );
   expect(roots.map((r) => [r.providerId, r.dir])).toEqual([
-    ["claude-code", "/c/projects"],
-    ["ggcoder", "/g/sessions"],
-    ["ezcoder", "/h/.ezcoder/sessions"],
-    ["codex", "/x/sessions"],
+    ["claude-code", join("/c", "projects")],
+    ["ggcoder", join("/g", "sessions")],
+    ["ezcoder", join("/h", ".ezcoder", "sessions")],
+    ["codex", join("/x", "sessions")],
   ]);
 });
