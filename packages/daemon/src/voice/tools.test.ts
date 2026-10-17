@@ -381,44 +381,56 @@ function fakeWorktrees() {
   return { made, createWorktree };
 }
 
-test("three requests for one busy repo become three worktrees running at once, not a queue", async () => {
+test("like EZ Coder, every task gets its own worktree: three requests run at once, none in the main checkout", async () => {
   const wt = fakeWorktrees();
   const h = harness(VoiceStore.memory(), buildRegistry(["/code/triten-os"], {}), undefined, { createWorktree: wt.createWorktree });
   const first = await h.call("start_task", { project: "triton os", instruction: "add dark mode", title: "dark mode" });
   const second = await h.call("start_task", { project: "triton os", instruction: "fix the login bug", title: "login bug" });
   const third = await h.call("start_task", { project: "triton os", instruction: "speed up boot", title: "boot" });
-  // The first takes the idle main checkout; each later one gets its own branch.
-  expect(first.output).not.toHaveProperty("newWorktree");
-  expect(second.output).toMatchObject({ newWorktree: { project: "triten-os", branch: "login-bug" } });
-  expect(third.output).toMatchObject({ newWorktree: { project: "triten-os" } });
-  expect(wt.made.map((m) => m.root)).toEqual(["/code/triten-os", "/code/triten-os"]);
+  // Even the first, into an idle checkout, gets a branch of its own.
+  expect(first.output).toMatchObject({ newWorktree: { project: "triten-os", branch: "dark-mode" } });
+  expect(second.output).toMatchObject({ newWorktree: { project: "triten-os", branch: "login-bug-2" } });
+  expect(third.output).toMatchObject({ newWorktree: { project: "triten-os", branch: "boot-3" } });
+  expect(wt.made).toEqual([
+    { root: "/code/triten-os", branch: "dark mode" },
+    { root: "/code/triten-os", branch: "login bug" },
+    { root: "/code/triten-os", branch: "boot" },
+  ]);
   const states = h.store.tasks().map((t) => [t.cwd, t.state]);
   expect(states).toEqual([
-    ["/home/.ezcoder/worktrees/triten-os/boot-2", "running"],
-    ["/home/.ezcoder/worktrees/triten-os/login-bug", "running"],
-    ["/code/triten-os", "running"],
+    ["/home/.ezcoder/worktrees/triten-os/boot-3", "running"],
+    ["/home/.ezcoder/worktrees/triten-os/login-bug-2", "running"],
+    ["/home/.ezcoder/worktrees/triten-os/dark-mode", "running"],
   ]);
   // Filed under the repository, and told where it is.
-  expect((second.output as { task: { project: string; branch: string } }).task).toMatchObject({ project: "triten-os", branch: "login-bug" });
-  expect(h.prompts[1]).toStartWith("fix the login bug\n\n(You are in a new git worktree of triten-os, on branch login-bug");
-  // The same request again is recognised across the repo's checkouts.
+  expect((second.output as { task: { project: string; branch: string } }).task).toMatchObject({ project: "triten-os", branch: "login-bug-2" });
+  expect(h.prompts[1]).toStartWith("fix the login bug\n\n(You are in a new git worktree of triten-os, on branch login-bug-2");
+  // The same request again is recognised across the repo's checkouts, and makes no new worktree.
   const again = await h.call("start_task", { project: "triton os", instruction: "fix the login bug" });
   expect(again.output).toMatchObject({ started: false, duplicate: true });
-  expect(wt.made).toHaveLength(2);
+  expect(wt.made).toHaveLength(3);
 });
 
-test("a desk conversation mid-turn in the checkout also sends new work to a worktree; 'current' waits instead", async () => {
+test("what stays put: a named branch, read-only work, 'current', and a dependent task joins its dependency's worktree", async () => {
   const wt = fakeWorktrees();
-  const running = (): RunningSession[] => [{ sessionId: "desk", providerId: "claude", cwd: "/code/triten-os", state: "working", idleMs: 0 }];
-  const h = harness(VoiceStore.memory(), buildRegistry(["/code/triten-os"], {}), running, { createWorktree: wt.createWorktree });
-  const isolated = await h.call("start_task", { project: "triten-os", instruction: "add tests" });
-  expect(isolated.output).toHaveProperty("newWorktree");
-  const inPlace = await h.call("start_task", { project: "triten-os", instruction: "rename x", worktree: "current" });
-  expect(inPlace.output).not.toHaveProperty("newWorktree");
-  expect(h.store.tasks()[0]?.cwd).toBe("/code/triten-os");
-  // Read-only work and dependent work stay put.
+  const projects = buildRegistry(["/code/triten-os", "/w/triten-os/ez-abc"], {}, undefined, (path) =>
+    path.includes("ez-abc") ? { repo: "triten-os", root: "/code/triten-os", branch: "fix/old" } : undefined,
+  );
+  const h = harness(VoiceStore.memory(), projects, undefined, { createWorktree: wt.createWorktree });
+  const onBranch = await h.call("start_task", { project: "triten-os fix old", instruction: "finish it" });
+  expect(onBranch.output).not.toHaveProperty("newWorktree");
   await h.call("start_task", { project: "triten-os", instruction: "explain the boot code", readOnly: true });
+  await h.call("start_task", { project: "triten-os", instruction: "rename x", worktree: "current" });
+  expect(wt.made).toHaveLength(0);
+  expect(h.store.tasks().map((t) => t.cwd)).toEqual(["/code/triten-os", "/code/triten-os", "/w/triten-os/ez-abc"]);
+
+  // A task building on one in a just-made worktree runs there, not in a fresh copy.
+  const base = await h.call("start_task", { project: "triten-os", instruction: "add a payments page", title: "payments" });
+  const baseId = (base.output as { task: { taskId: string } }).task.taskId;
+  const dependent = await h.call("start_task", { project: "triten-os", instruction: "add tests for payments", dependsOn: [baseId] });
+  expect(dependent.output).not.toHaveProperty("newWorktree");
   expect(wt.made).toHaveLength(1);
+  expect(h.store.tasks()[0]).toMatchObject({ cwd: "/home/.ezcoder/worktrees/triten-os/payments", repo: { name: "triten-os", branch: "payments" } });
 });
 
 test("worktree 'new' always makes one, and fails out loud when it cannot", async () => {

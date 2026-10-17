@@ -50,13 +50,13 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
   def("resolve_project", "Match a spoken project name (partial, misheard or any case is fine). One clear match: use it, don't ask. Ambiguous: ask one short 'did you mean A or B?'.", { query: str("What the user said.") }, ["query"]),
   def(
     "start_task",
-    "Start a coding task in a project. Each new feature or fix is its own task: when the checkout is already busy, it gets a fresh worktree of its own instead of queuing (see worktree). Use follow_up for more work on an existing task.",
+    "Start a coding task in a project. Each new feature or fix is its own task, and like EZ Coder each one runs in a fresh worktree on its own branch, so tasks never queue behind or touch each other (see worktree). Use follow_up for more work on an existing task.",
     {
       project: str("Spoken project name or projectId."),
       worktree: {
         type: "string",
         enum: ["auto", "new", "current"],
-        description: "auto (default): a new worktree only if the checkout is busy. new: always a new worktree, when the user asks for a separate branch. current: run in this checkout even if it means waiting.",
+        description: "auto (default): a new worktree for every task that edits, except read-only work (stays in the main checkout), a named branch (runs there) and a task that depends on another (runs in that one's worktree). new: a new worktree even for those. current: run in the checkout named, even if it means waiting.",
       },
       branch: str("Optional branch name for a new worktree, a few words; defaults to the title."),
       instruction: str("What the coding agent should do, as the user said it."),
@@ -179,7 +179,7 @@ export const VOICE_INSTRUCTIONS = [
   "Never say work is done, merged, deployed or fixed until a tool result says the agent reported it. 'Completed' means the agent says it finished, not that it is verified; say so plainly. If a result says failed or interrupted, say that.",
   "Projects: pass what the user said to start_task or resolve_project; partial names, different casing and misheard names are matched for you. If one project clearly matches, just proceed without asking. If the result is ambiguous, ask once: 'Did you mean A or B?' naming at most three candidates, then continue with the answer. Never guess between close matches. Existing work gets follow_up, not a new task.",
   "Branches: list_projects gives one entry per repository, with its worktrees as branches under it. A worktree is a separate checkout of that repository on its own branch, so its work does not touch the main checkout. The repository's plain name means the main checkout; to work on a branch, pass its projectId or say the repository and branch ('billing, fix login'). Work on a branch still counts as that repository's when the user asks what is happening there. Task and event results name the repository as `project` and add `branch` for work on one; report progress and completion that way ('billing, on the fix login branch, is done'), never as separate projects, and never say a random folder id like 'ez-mun7ig9t'.",
-  "Worktrees: each new feature or fix the user asks for is its own start_task, never a follow_up on unrelated work. start_task puts it in a fresh worktree on its own branch when the checkout is already busy, so several requests for one repository run side by side; when the result has newWorktree, say so briefly ('Started in Triton OS on a new branch, add dark mode'). Pass worktree 'new' when the user asks for a separate branch or worktree, 'current' when they want it in the same checkout. create_worktree is only for 'make a worktree of X' on its own. list_worktrees answers what branches a repository has and what is running in each. Folders named like 'ez-mun7ig9t' are EZ Coder's worktrees of a repository, never projects of their own: name the repository and the branch.",
+  "Worktrees: each new feature or fix the user asks for is its own start_task, never a follow_up on unrelated work. Like EZ Coder, start_task runs each one in a fresh worktree on its own branch, so several requests for one repository run side by side; when the result has newWorktree, say so briefly ('Started in Triton OS on a new branch, add dark mode'). Pass worktree 'current' only when the user wants it in the main checkout itself, and dependsOn when it should build on another task's unfinished work (it then runs in that task's worktree). create_worktree is only for 'make a worktree of X' on its own. list_worktrees answers what branches a repository has and what is running in each. Folders named like 'ez-mun7ig9t' are EZ Coder's worktrees of a repository, never projects of their own: name the repository and the branch.",
   "Commit: whenever the user says commit, in any words, call commit; never describe the steps in a follow_up yourself. It runs EZ Coder's /commit in the checkout where that task worked, which runs the checks, reviews, commits, and pushes if the branch has an upstream. Pass the taskId of the work they mean, or the project when no task did it; if several tasks could be meant, ask which. Report it like any task, and never say it is committed until the result says the agent finished.",
   "Screenshots: the user can share pictures, typically a partner's fix or an error, from the phone. You never see the picture; you get its attachmentId and name. When they offer one, call request_screenshot. When one arrives, say you have it in a few words, then ask which project or task it is for unless they already said. Send it with start_task or follow_up attachmentIds, or attach_screenshot for a task already running, together with what they want done ('apply this fix'). Never describe what is in it, and never claim the agent applied it until a result says so.",
   "When asked what is running or how things are going, call whats_running, not just list_tasks: it also shows conversations the user started at the desk or in the app. 'needs_you' means an agent is blocked on an approval; mention that first.",
@@ -509,14 +509,18 @@ export class ToolExecutor {
   /**
    * Where a new task runs: the checkout named, or a new worktree of it.
    *
-   * `auto` isolates only a main checkout that is busy (a voice task writing
-   * there, or any agent conversation mid-turn in it), because that is exactly
-   * when the task would otherwise queue behind unrelated work — three
-   * requests for one repo in a row become three branches running at once.
-   * Never for read-only work (it doesn't take the lock), a task that depends on
-   * another (it wants that one's result in the same checkout), or a branch the
-   * user named explicitly. `auto` falls back to the checkout when a worktree
-   * cannot be made; `new` fails instead, since the user asked for one.
+   * `auto` is EZ Coder's rule: every task that edits a main checkout gets its
+   * own worktree, so three requests for one repo in a row are three branches
+   * running at once, and none of them lands on top of another agent's (or the
+   * user's) uncommitted work. Exceptions, each because a new copy would be
+   * wrong rather than merely unneeded:
+   *  - a branch the user named: they chose where it runs;
+   *  - read-only work: it changes nothing, so it reads the real checkout;
+   *  - a task depending on another in the same repository: it runs in that
+   *    task's worktree, because a fresh copy from the last commit would not
+   *    contain the work it is meant to build on.
+   * `auto` falls back to the checkout when a worktree cannot be made (an
+   * older host, git refusing); `new` fails instead, since the user asked.
    */
   private async placeTask(
     project: VoiceProject,
@@ -525,11 +529,9 @@ export class ToolExecutor {
   ): Promise<{ target: VoiceProject; made?: CreatedWorktree } | string> {
     if (want.mode === "current") return { target: project };
     if (want.mode === "auto") {
-      if (project.worktree || want.readOnly || want.dependsOn.length > 0) return { target: project };
-      const busy =
-        this.deps.store.lockHolder(project.projectId) !== undefined ||
-        (this.deps.runningSessions?.() ?? []).some((s) => s.cwd === project.path && s.state !== "idle");
-      if (!busy) return { target: project };
+      if (project.worktree || want.readOnly) return { target: project };
+      const builtOn = this.dependencyCheckout(project, projects, want.dependsOn);
+      if (builtOn) return { target: builtOn };
     }
     const root = mainCheckoutOf(project, projects);
     const create = this.deps.createWorktree;
@@ -540,6 +542,31 @@ export class ToolExecutor {
     const made = await create(root.path, want.branch);
     if (!made.ok) return want.mode === "auto" ? { target: project } : speakable(made.error, 160);
     return { target: worktreeProject(made.value, root), made: made.value };
+  }
+
+  /**
+   * The checkout of the first dependency in the same repository, as a registry
+   * entry. Built from the task itself when the registry has not been re-read
+   * since that task's worktree was made.
+   */
+  private dependencyCheckout(project: VoiceProject, projects: readonly VoiceProject[], dependsOn: readonly string[]): VoiceProject | undefined {
+    const family = familyOf(project, projects);
+    for (const id of dependsOn) {
+      const dep = this.deps.store.getTask(id);
+      if (!dep || !(family.has(dep.projectId) || (dep.repo?.projectId !== undefined && family.has(dep.repo.projectId)))) continue;
+      const known = projects.find((p) => p.projectId === dep.projectId);
+      if (known) return known;
+      return {
+        projectId: dep.projectId,
+        name: dep.projectName,
+        path: dep.cwd,
+        aliases: [],
+        ...(dep.repo
+          ? { worktree: { repo: dep.repo.name, ...(dep.repo.projectId ? { repoId: dep.repo.projectId } : null), ...(dep.repo.branch ? { branch: dep.repo.branch } : null) } }
+          : null),
+      };
+    }
+    return undefined;
   }
 
   /** A commit with no task behind it: a task of its own in that checkout, queued behind any writer there. */
