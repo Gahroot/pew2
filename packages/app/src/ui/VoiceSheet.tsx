@@ -12,7 +12,7 @@
  * Grouping, wording and ages are pure and live in voice/taskBoard.ts.
  */
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { Image } from "expo-image";
 import Animated, { cancelAnimation, Easing, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from "react-native-reanimated";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -32,6 +32,7 @@ import type { TranscriptLine } from "../voice/transcript";
 import { sendTarget, type ScreenshotCard } from "../voice/screenshots";
 import type { VoiceStore } from "../voice/voiceStore";
 import type { VoiceTask } from "../voice/types";
+import type { DismissRequest } from "./voiceController";
 
 interface Props {
   visible: boolean;
@@ -49,6 +50,8 @@ interface Props {
   onPickScreenshot?: () => void;
   onRemoveScreenshot?: (card: ScreenshotCard) => void;
   onSendScreenshot?: (attachmentId: string, taskId: string) => void;
+  /** Clears finished tasks. Absent when the computer's pew2 is too old to remember it. */
+  onDismiss?: (request: DismissRequest) => void;
 }
 
 const TONE: Record<Tone, string> = {
@@ -178,6 +181,7 @@ function TaskCard({
   expanded,
   onToggle,
   onAnswer,
+  onDismiss,
 }: {
   task: VoiceTask;
   store: VoiceStore;
@@ -186,6 +190,8 @@ function TaskCard({
   expanded: boolean;
   onToggle: () => void;
   onAnswer: Props["onAnswer"];
+  /** Only for a finished task. */
+  onDismiss?: () => void;
 }) {
   const status = taskStatus(task, now);
   const color = TONE[status.tone];
@@ -245,6 +251,21 @@ function TaskCard({
           </View>
         ) : null}
       </View>
+      {onDismiss ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Dismiss ${task.title}`}
+          accessibilityHint="Clears this finished task from Voice and Projects"
+          hitSlop={8}
+          style={({ pressed }) => [styles.dismiss, pressed && styles.pressed]}
+          onPress={() => {
+            haptics.tap();
+            onDismiss();
+          }}
+        >
+          <Ionicons name="close" size={18} color={theme.color.textDim} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -378,6 +399,7 @@ export function VoiceSheet({
   onPickScreenshot,
   onRemoveScreenshot,
   onSendScreenshot,
+  onDismiss,
 }: Props) {
   const live = isActive(machine.phase);
   const now = useNow(visible);
@@ -443,7 +465,26 @@ export function VoiceSheet({
             const shown = hidden > 0 ? group.tasks.slice(0, FINISHED_PREVIEW) : group.tasks;
             return (
               <View key={group.key} style={styles.stack}>
-                <Text style={styles.sectionTitle}>{`${group.title} · ${group.tasks.length}`}</Text>
+                <View style={styles.cardTop}>
+                  <Text style={styles.sectionTitle}>{`${group.title} · ${group.tasks.length}`}</Text>
+                  {group.key === "finished" && onDismiss ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Clear all finished tasks"
+                      hitSlop={8}
+                      style={({ pressed }) => [styles.clear, pressed && styles.pressed]}
+                      onPress={() => {
+                        haptics.tap();
+                        Alert.alert("Clear finished tasks?", "They leave Voice and Projects on every device. The agents' work is not undone.", [
+                          { text: "Cancel", style: "cancel" },
+                          { text: "Clear", style: "destructive", onPress: () => onDismiss({ taskIds: group.tasks.map((t) => t.taskId), allFinished: true }) },
+                        ]);
+                      }}
+                    >
+                      <Text style={styles.clearText}>Clear all</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
                 {shown.map((t) => (
                   <TaskCard
                     key={t.taskId}
@@ -456,6 +497,7 @@ export function VoiceSheet({
                       setToggled((prev) => ({ ...prev, [t.taskId]: !(prev[t.taskId] ?? isOpenByDefault(group.key)) }))
                     }
                     onAnswer={onAnswer}
+                    onDismiss={group.key === "finished" && onDismiss ? () => onDismiss({ taskIds: [t.taskId] }) : undefined}
                   />
                 ))}
                 {hidden > 0 ? (
@@ -570,6 +612,9 @@ const styles = StyleSheet.create({
     maxWidth: "100%",
   },
   sendText: { color: "#fff", fontSize: theme.font.small, fontWeight: "700", flexShrink: 1 },
+  dismiss: { width: theme.size.touch, alignItems: "center", paddingTop: theme.space(2) },
+  clear: { minHeight: theme.size.touch, justifyContent: "center", paddingHorizontal: theme.space(1) },
+  clearText: { color: theme.color.accent, fontSize: theme.font.small, fontWeight: "600" },
   remove: { width: theme.size.touch, height: theme.size.touch, alignItems: "center", justifyContent: "center", marginTop: -theme.space(2), marginRight: -theme.space(2) },
   btn: {
     flex: 1,

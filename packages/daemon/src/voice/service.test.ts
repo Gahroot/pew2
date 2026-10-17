@@ -278,3 +278,29 @@ test("voice.open: clientVad selects the manual-turn config; no marker keeps the 
   expect(turn(next)).toMatchObject({ create_response: false, interrupt_response: false });
   svc.dispose();
 });
+
+test("voice.dismiss persists, broadcasts, and drops the task from every later picture", async () => {
+  const { svc, emitted } = await service();
+  const a = svc.store.createTask({ projectId: "p1", projectName: "pew2", cwd: "/code/pew2", providerId: "echo", title: "a", prompt: "a" });
+  svc.store.transition(a.taskId, "completed", "task.completed", "done");
+  const b = svc.store.createTask({ projectId: "p2", projectName: "other", cwd: "/code/other", providerId: "echo", title: "b", prompt: "b", repo: { projectId: "p3", name: "repo" } });
+  svc.store.transition(b.taskId, "failed", "task.failed", "broke");
+  const live = svc.store.createTask({ projectId: "p1", projectName: "pew2", cwd: "/code/pew2", providerId: "echo", title: "live", prompt: "live" });
+  emitted.length = 0;
+
+  // Through the handler, as either transport delivers it; a live task id is ignored.
+  await handleMessage(JSON.stringify({ t: "voice.dismiss", taskIds: [a.taskId, live.taskId] }), {
+    daemon: { voice: async () => svc } as unknown as Daemon,
+    reply: () => {},
+    broadcast: () => {},
+  });
+  expect(emitted).toEqual([{ t: "voice.dismissed", taskIds: [a.taskId] }]);
+  // A repository's row dismisses its worktree tasks too.
+  expect(await svc.dismiss({ taskIds: [], projectIds: ["p3"] })).toEqual([b.taskId]);
+
+  const state = await svc.state(0);
+  expect(state.snapshot.tasks.map((t) => t.taskId)).toEqual([live.taskId]);
+  expect(state.events.every((e) => e.taskId === live.taskId)).toBe(true);
+  expect(state.dismissed).toEqual([a.taskId, b.taskId]);
+  expect(svc.store.getTask(a.taskId)).toBeDefined(); // still on disk for the model to ask about
+});

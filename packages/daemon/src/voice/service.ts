@@ -203,10 +203,12 @@ export class VoiceService {
       request?.focusEventId !== undefined
         ? this.store.eventsSince(request.focusEventId - 1, 1).find((e) => e.eventId === request.focusEventId)
         : undefined;
+    // What the user cleared stays on disk but out of every opening picture.
+    const shown = (e: VoiceEvent) => this.store.getTask(e.taskId)?.dismissedAt === undefined;
     return buildSnapshot({
       projects: await this.projects(),
-      tasks: this.store.tasks(),
-      events: this.store.eventsSince(this.store.heardEventId, 200),
+      tasks: this.store.tasks().filter((t) => t.dismissedAt === undefined),
+      events: this.store.eventsSince(this.store.heardEventId, 200).filter(shown),
       lastEventId: this.store.lastEventId,
       heardEventId: this.store.heardEventId,
       source: request?.source,
@@ -328,6 +330,30 @@ export class VoiceService {
     );
   }
 
+  // ---- dismissal -----------------------------------------------------------
+
+  /**
+   * Clear finished tasks off every screen. Persisted before it is announced,
+   * so a client that reconnects after the broadcast is told the same thing by
+   * `state()`. Live tasks are never touched (see `VoiceStore.dismiss`).
+   */
+  async dismiss(message: { taskIds: readonly string[]; projectIds?: readonly string[]; allFinished?: boolean }): Promise<string[]> {
+    const ids = new Set(message.taskIds);
+    const projects = new Set(message.projectIds ?? []);
+    const dismissed = this.store.dismiss(
+      (t) =>
+        message.allFinished === true ||
+        ids.has(t.taskId) ||
+        projects.has(t.projectId) ||
+        (t.repo?.projectId !== undefined && projects.has(t.repo.projectId)),
+    );
+    if (dismissed.length === 0) return [];
+    await this.store.flush();
+    const taskIds = dismissed.map((t) => t.taskId);
+    this.deps.emit({ t: "voice.dismissed", taskIds });
+    return taskIds;
+  }
+
   close(message: { voiceSessionId: string; heardEventId?: number }) {
     this.open_.delete(message.voiceSessionId);
     if (message.heardEventId !== undefined) this.store.markHeard(message.heardEventId);
@@ -338,8 +364,9 @@ export class VoiceService {
     return {
       t: "voice.state",
       snapshot: await this.snapshot(),
-      events: this.store.eventsSince(since, 200),
+      events: this.store.eventsSince(since, 200).filter((e) => this.store.getTask(e.taskId)?.dismissedAt === undefined),
       attachments: this.screenshots(),
+      dismissed: this.store.dismissedWithEvents(),
     };
   }
 }

@@ -127,3 +127,22 @@ describe("views and persistence", () => {
     expect(decodeCursor('{"cursor":-2,"heardEventId":1.5}')).toEqual({ cursor: 0, heardEventId: 0 });
   });
 });
+
+describe("dismissed", () => {
+  test("drops finished tasks and their events, never a live one", () => {
+    let s = reduce(emptyStore, { type: "event", event: event(1, { taskId: "t1" }), task: task("t1", { state: "completed" }) });
+    s = reduce(s, { type: "event", event: event(2, { taskId: "t2" }), task: task("t2") });
+    s = reduce(s, { type: "dismissed", taskIds: ["t1", "t2"] });
+    expect(Object.keys(s.tasks)).toEqual(["t2"]);
+    expect(s.recent.map((e) => e.taskId)).toEqual(["t2"]);
+  });
+  test("a state names what was dismissed while away, and says the daemon can dismiss", () => {
+    let s = reduce(emptyStore, { type: "event", event: event(1, { taskId: "t1" }), task: task("t1", { state: "completed" }) });
+    s = reduce(s, { type: "state", snapshot: snapshot(1), events: [] });
+    expect(s.canDismiss).toBe(false); // an older daemon says nothing
+    expect(s.recent).toHaveLength(1);
+    s = reduce(s, { type: "state", snapshot: snapshot(1), events: [], dismissed: ["t1"] });
+    expect(s.canDismiss).toBe(true);
+    expect(s.recent).toEqual([]);
+  });
+});

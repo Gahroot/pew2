@@ -11,7 +11,7 @@ import { isRepeatLink, parseVoiceLink, type VoiceActivation } from "../voice/dee
 import { isOpen } from "../voice/voiceMachine";
 import { loadVoiceCursor, saveVoiceCursor } from "../preferences";
 import { listenToAudioSession } from "./audioSession";
-import { createVoiceController, type VoiceController, type VoiceView } from "./voiceController";
+import { createVoiceController, type DismissRequest, type VoiceController, type VoiceView } from "./voiceController";
 import { onVoiceNotificationChoice } from "./voiceNotifier";
 import { setVoicePresence } from "./notifier";
 import { emptyStore } from "../voice/voiceStore";
@@ -264,6 +264,8 @@ export function useVoice({ send, online, nativeCall }: Options) {
     pickScreenshot: () => void pickScreenshot(),
     removeScreenshot: (card: ScreenshotCard) => get().removeScreenshot(card),
     sendScreenshot: (attachmentId: string, taskId: string) => get().sendScreenshot(attachmentId, taskId),
+    /** Clears finished tasks here and on every other screen; see `voiceController.dismiss`. */
+    dismiss: (request: DismissRequest) => get().dismiss(request),
     /** On unpair: forget everything tied to that machine. */
     clear: () => get().clear(),
   };

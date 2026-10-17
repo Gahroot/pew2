@@ -55,6 +55,12 @@ export interface StoredTask {
   pendingAttachmentIds?: string[];
   /** Screenshots already handed to this task's agent, oldest first. */
   attachmentIds?: string[];
+  /**
+   * Set when the user cleared this finished task off their screens. It stays
+   * on disk (the model can still be asked about it) but leaves snapshots, and
+   * any later event for it clears this so news is never hidden.
+   */
+  dismissedAt?: number;
   attempts: number;
   maxAttempts: number;
   history: HistoryEntry[];
@@ -301,6 +307,8 @@ export class VoiceStore {
     if (!task) return undefined;
     const now = this.now();
     Object.assign(task, patch);
+    // Something new happened to it: it is worth showing again.
+    delete task.dismissedAt;
     if (task.state !== state) {
       task.state = state;
       task.history.push({ at: now, state, note: text.slice(0, 160) });
@@ -329,6 +337,31 @@ export class VoiceStore {
     }
     if (filled > 0) this.persist();
     return filled;
+  }
+
+  // ---- dismissal -----------------------------------------------------------
+
+  /**
+   * Mark finished tasks as cleared by the user and return the ones that
+   * changed. A task still live is never dismissed, whatever was asked, so a
+   * tap on a stale screen cannot hide work in progress. Silent: no event, as
+   * dismissing is a view choice, not something that happened to the task.
+   */
+  dismiss(match: (task: StoredTask) => boolean): StoredTask[] {
+    const now = this.now();
+    const dismissed = Object.values(this.doc.tasks)
+      .filter((t) => TERMINAL.has(t.state) && t.dismissedAt === undefined && match(t))
+      .sort((a, b) => a.taskId.localeCompare(b.taskId, "en", { numeric: true }));
+    for (const task of dismissed) task.dismissedAt = now;
+    if (dismissed.length > 0) this.persist();
+    return dismissed;
+  }
+
+  /** Dismissed tasks that still have events in the log, id order. */
+  dismissedWithEvents(): string[] {
+    const ids = new Set<string>();
+    for (const e of this.doc.events) if (this.doc.tasks[e.taskId]?.dismissedAt !== undefined) ids.add(e.taskId);
+    return [...ids].sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
   }
 
   // ---- screenshots ---------------------------------------------------------

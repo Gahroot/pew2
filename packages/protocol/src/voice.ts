@@ -263,6 +263,24 @@ export const VoiceDetach = z.object({
   attachmentId: z.string().min(1).max(40),
 });
 
+/**
+ * App -> daemon. Clear finished tasks off every screen once they have been read.
+ *
+ * Only finished tasks (completed, verified, failed, cancelled) are dismissed;
+ * anything still live is ignored, so a stale tap can never hide work in
+ * progress. A dismissed task is still on the computer (the model can be asked
+ * about it), it is just left out of snapshots, and any new event for it brings
+ * it back. Answered by a `voice.dismissed` broadcast.
+ */
+export const VoiceDismiss = z.object({
+  t: z.literal("voice.dismiss"),
+  taskIds: z.array(z.string().min(1).max(40)).max(200).default([]),
+  /** Every finished task in these projects, worktrees of them included. */
+  projectIds: z.array(z.string().min(1).max(80)).max(50).optional(),
+  /** Every finished task. */
+  allFinished: z.boolean().optional(),
+});
+
 export const VoiceToolCall = z.object({
   t: z.literal("voice.tool"),
   voiceSessionId: z.string().min(1),
@@ -343,6 +361,12 @@ export const VoiceAttachments = z.object({
   attachments: z.array(VoiceAttachment),
 });
 
+/** Broadcast: the tasks a `voice.dismiss` cleared, so every client drops them. */
+export const VoiceDismissed = z.object({
+  t: z.literal("voice.dismissed"),
+  taskIds: z.array(z.string()),
+});
+
 /** Broadcast: one orchestration event. Same stream drives UI, voice and push. */
 export const VoiceEventMessage = z.object({
   t: z.literal("voice.event"),
@@ -358,9 +382,16 @@ export const VoiceState = z.object({
   events: z.array(VoiceEvent).default([]),
   /** Screenshots held for voice. Absent from older daemons, so absent is not "none". */
   attachments: z.array(VoiceAttachment).optional(),
+  /**
+   * Dismissed tasks that still have events in the daemon's log, so a client
+   * that missed the `voice.dismissed` broadcast drops what it kept of them.
+   * Present (even empty) only from a daemon that understands `voice.dismiss`:
+   * absent means an older one, and the app then offers no dismiss button.
+   */
+  dismissed: z.array(z.string()).optional(),
 });
 
-export const VoiceClientMessages = [VoiceOpen, VoiceToolCall, VoiceClose, VoiceSync, VoiceAttach, VoiceDetach] as const;
+export const VoiceClientMessages = [VoiceOpen, VoiceToolCall, VoiceClose, VoiceSync, VoiceAttach, VoiceDetach, VoiceDismiss] as const;
 export const VoiceServerMessages = [
   VoiceReady,
   VoiceUnavailable,
@@ -369,6 +400,7 @@ export const VoiceServerMessages = [
   VoiceState,
   VoiceAttached,
   VoiceAttachments,
+  VoiceDismissed,
 ] as const;
 
 /**

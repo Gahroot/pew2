@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildDashboard } from "./dashboard";
+import { buildDashboard, rowDismissal } from "./dashboard";
 import { sessionMark } from "../sessionMark";
 import { appendLine, TRANSCRIPT_LIMIT } from "./transcript";
 import { voiceMood, voiceStatus } from "./presentation";
@@ -177,5 +177,18 @@ describe("running conversations beside tasks", () => {
     expect(sessionMark({ busy: true })).toBe("live");
     expect(sessionMark({ unread: true })).toBe("unread");
     expect(sessionMark({})).toBeUndefined();
+  });
+});
+
+describe("rowDismissal", () => {
+  test("a finished project clears its tasks and any result known only by event", () => {
+    const [row] = buildDashboard(
+      store([task({ taskId: "t1", state: "completed" })], [ev({ eventId: 1, taskId: "t0", kind: "task.failed", text: "broke" })]),
+    );
+    expect(row && rowDismissal(row)).toEqual({ taskIds: ["t0", "t1"], projectIds: ["p1"] });
+  });
+  test("nothing to dismiss while the project still has work going", () => {
+    const [row] = buildDashboard(store([task({ taskId: "t1", state: "completed" }), task({ taskId: "t2", state: "running" })]));
+    expect(row && rowDismissal(row)).toBeUndefined();
   });
 });

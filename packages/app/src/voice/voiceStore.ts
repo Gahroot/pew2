@@ -26,6 +26,12 @@ export interface VoiceStore {
   needsSync: boolean;
   /** Highest eventId the user was shown or told about while a sheet/session was open. */
   heardEventId: number;
+  /**
+   * The daemon understands `voice.dismiss`: its `voice.state` said which tasks
+   * are dismissed (even none). False for an older daemon, which would answer
+   * `unknown_message`, so no dismiss button is offered.
+   */
+  canDismiss: boolean;
 }
 
 export const emptyStore: VoiceStore = {
@@ -34,11 +40,14 @@ export const emptyStore: VoiceStore = {
   recent: [],
   needsSync: false,
   heardEventId: 0,
+  canDismiss: false,
 };
 
 export type StoreAction =
   | { type: "event"; event: VoiceEvent; task?: VoiceTask }
-  | { type: "state"; snapshot: VoiceSnapshot; events: VoiceEvent[] }
+  | { type: "state"; snapshot: VoiceSnapshot; events: VoiceEvent[]; dismissed?: readonly string[] }
+  /** Finished tasks cleared by the user, here or on another device. */
+  | { type: "dismissed"; taskIds: readonly string[] }
   | { type: "toolResult"; output: unknown }
   | { type: "heard"; eventId: number }
   | { type: "restore"; cursor: number; heardEventId?: number }
@@ -94,15 +103,31 @@ export function reduce(store: VoiceStore, action: StoreAction): VoiceStore {
       let recent = store.recent;
       for (const event of [...snapshot.unheard, ...events]) recent = pushRecent(recent, event);
       const top = Math.max(snapshot.eventId, ...events.map((e) => e.eventId));
+      if (top < store.cursor) recent = recent.filter((e) => e.eventId <= top);
+      // Events kept from before, for tasks dismissed while this phone was away.
+      if (action.dismissed?.length) {
+        const gone = new Set(action.dismissed);
+        recent = recent.filter((e) => !gone.has(e.taskId) || tasks[e.taskId] !== undefined);
+      }
       return {
         ...store,
         // Follows the daemon down as well as up (a reset history).
         cursor: top,
         tasks,
-        recent: top < store.cursor ? recent.filter((e) => e.eventId <= top) : recent,
+        recent,
         needsSync: false,
         heardEventId: Math.min(store.heardEventId, top),
+        // Absent (an older daemon, or `voice.ready`'s bare snapshot) says nothing.
+        canDismiss: store.canDismiss || action.dismissed !== undefined,
       };
+    }
+    case "dismissed": {
+      // Only finished tasks: a live one may have moved on since the tap.
+      const gone = new Set(action.taskIds.filter((id) => !OPEN_STATES.has(store.tasks[id]?.state ?? "")));
+      if (gone.size === 0) return store;
+      const tasks: Record<string, VoiceTask> = {};
+      for (const [id, task] of Object.entries(store.tasks)) if (!gone.has(id)) tasks[id] = task;
+      return { ...store, tasks, recent: store.recent.filter((e) => !gone.has(e.taskId)) };
     }
     case "toolResult": {
       let tasks = store.tasks;
@@ -137,6 +162,17 @@ export function orderedTasks(store: VoiceStore): VoiceTask[] {
 
 export function openTaskCount(store: VoiceStore): number {
   return Object.values(store.tasks).filter((t) => OPEN_STATES.has(t.state)).length;
+}
+
+/**
+ * Every finished task the screen knows of: finished tasks held, and tasks seen
+ * only through events (they have left the snapshot, which keeps every live one).
+ */
+export function finishedTaskIds(store: VoiceStore): string[] {
+  const ids = new Set<string>();
+  for (const task of Object.values(store.tasks)) if (!OPEN_STATES.has(task.state)) ids.add(task.taskId);
+  for (const e of store.recent) if (!store.tasks[e.taskId]) ids.add(e.taskId);
+  return [...ids].sort();
 }
 
 export function pendingApprovals(store: VoiceStore): VoiceTask[] {

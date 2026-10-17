@@ -1132,11 +1132,18 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
         onPickScreenshot={voice.pickScreenshot}
         onRemoveScreenshot={voice.removeScreenshot}
         onSendScreenshot={voice.sendScreenshot}
+        onDismiss={voice.view.store.canDismiss ? voice.dismiss : undefined}
       />
 
       {/* After the voice sheet, not before: it opens from that sheet's Projects
           button, and a sheet earlier in the tree paints underneath it. */}
-      <ProjectDashboard visible={dashboardOpen} store={voice.view.store} sessions={dashboardSessions} onClose={() => setDashboardOpen(false)} />
+      <ProjectDashboard
+        visible={dashboardOpen}
+        store={voice.view.store}
+        sessions={dashboardSessions}
+        onClose={() => setDashboardOpen(false)}
+        onDismiss={voice.view.store.canDismiss ? voice.dismiss : undefined}
+      />
 
       <GoalSheets
         daemon={daemon}

@@ -24,6 +24,27 @@ export interface ProjectRow {
   updatedAt: number;
   /** Conversations open in the app or at the desk that are working or blocked, beside the tasks. */
   liveSessions: number;
+  /** Finished tasks behind this row's result, the ones dismissing it clears. */
+  finishedTaskIds: string[];
+}
+
+/** What a `voice.dismiss` for a whole project row asks for. */
+export interface RowDismissal {
+  taskIds: string[];
+  /** Absent for a row keyed by something other than a real projectId. */
+  projectIds?: string[];
+}
+
+/**
+ * How to clear a finished project row, or undefined when there is nothing
+ * finished to clear or the row still has work going: an update is dismissed
+ * once it is over, never while it is the news.
+ */
+export function rowDismissal(row: ProjectRow): RowDismissal | undefined {
+  if (row.state !== "done" && row.state !== "idle") return undefined;
+  if (row.liveSessions > 0 || row.queued.length > 0 || row.finishedTaskIds.length === 0) return undefined;
+  const real = !row.projectId.startsWith("session:") && !row.projectId.startsWith("repo:");
+  return { taskIds: row.finishedTaskIds, ...(real ? { projectIds: [row.projectId] } : null) };
 }
 
 /** An open conversation as the dashboard needs it: what the sidebar already knows. */
@@ -105,7 +126,7 @@ function foldSessions(rows: ProjectRow[], sessions: readonly SessionRef[]): void
     const target: AgentState = n.asking > 0 ? "waiting" : "working";
     let row = rows.find((r) => r.name === name);
     if (!row) {
-      row = { projectId: `session:${name}`, name, state: "idle", stateLabel: STATE_LABEL.idle, queued: [], running: [], updatedAt: 0, liveSessions: 0 };
+      row = { projectId: `session:${name}`, name, state: "idle", stateLabel: STATE_LABEL.idle, queued: [], running: [], updatedAt: 0, liveSessions: 0, finishedTaskIds: [] };
       rows.push(row);
     }
     row.liveSessions = total;
@@ -143,6 +164,15 @@ function rowFor(projectId: string, name: string, tasks: VoiceTask[], events: Voi
     state === "working" ? (runningTask?.activity ?? (liveEvent && liveEvent.taskId === runningTask?.taskId ? liveEvent.text : undefined)) : undefined;
   const lastResult = lastResultEvent?.text ?? (finished ? `${finished.title} (${finished.state})` : undefined);
   const updatedAt = Math.max(0, ...tasks.map((t) => t.updatedAt), ...events.map((e) => e.at));
+  // Finished tasks here, plus any a result event names whose task has left the
+  // snapshot: both are what "Last result" is made of.
+  const live = new Set(tasks.filter((t) => !FINISHED.has(t.state)).map((t) => t.taskId));
+  const finishedTaskIds = [
+    ...new Set([
+      ...tasks.filter((t) => FINISHED.has(t.state)).map((t) => t.taskId),
+      ...events.filter((e) => RESULT_KINDS.has(e.kind) && !live.has(e.taskId)).map((e) => e.taskId),
+    ]),
+  ].sort();
   return {
     projectId,
     name,
@@ -155,5 +185,6 @@ function rowFor(projectId: string, name: string, tasks: VoiceTask[], events: Voi
     approval: newest(waiting)?.approval?.summary,
     updatedAt,
     liveSessions: 0,
+    finishedTaskIds,
   };
 }

@@ -15,7 +15,7 @@ import {
   type MachineEvent,
   type MachineState,
 } from "../voice/voiceMachine";
-import { emptyStore, reduce, type StoreAction, type VoiceStore } from "../voice/voiceStore";
+import { emptyStore, finishedTaskIds, reduce, type StoreAction, type VoiceStore } from "../voice/voiceStore";
 import { activateAudioSession, deactivateAudioSession } from "./audioSession";
 import { LOST_CONNECTION_LINE, onNetworkLost, onNetworkRestored } from "../voice/connectivity";
 import { offerLiveEvent } from "./voiceAlerts";
@@ -63,6 +63,16 @@ interface Ready {
 
 type Message = Record<string, any>;
 
+/** A `voice.dismiss`, as the sheet or the dashboard asks for it. */
+export interface DismissRequest {
+  taskIds: string[];
+  projectIds?: string[];
+  allFinished?: boolean;
+}
+
+const stringList = (value: unknown): string[] | undefined =>
+  Array.isArray(value) && value.every((v) => typeof v === "string") ? value : undefined;
+
 export function createVoiceController(deps: VoiceDeps) {
   let machine: MachineState = initialState;
   let store: VoiceStore = emptyStore;
@@ -87,6 +97,8 @@ export function createVoiceController(deps: VoiceDeps) {
   let held: HeldScreenshot[] = [];
   let localUris: Record<string, { localUri?: string; key: string }> = {};
   let pickerRequests = 0;
+  /** Dismissals made while the computer was unreachable, sent once it answers again. */
+  let pendingDismissals: DismissRequest[] = [];
   /** Sheet sends waiting on their answer: callId -> what was sent where. */
   const sheetSends = new Map<string, { attachmentId: string; taskId: string }>();
 
@@ -303,6 +315,21 @@ export function createVoiceController(deps: VoiceDeps) {
       sheetSends.set(callId, { attachmentId, taskId });
     },
 
+    /**
+     * Clear finished tasks off the screen, and off every other one. Shown gone
+     * at once; the daemon persists it and tells every client. Unreachable, it
+     * waits and goes with the next catch-up, so a tap is never lost.
+     */
+    dismiss(request: DismissRequest): void {
+      if (!store.canDismiss) return;
+      const taskIds = request.allFinished ? [...new Set([...request.taskIds, ...finishedTaskIds(store)])].sort() : request.taskIds;
+      const message = { ...request, t: "voice.dismiss", taskIds };
+      // Later, only what was on screen: "all" or a whole project then could
+      // take something that finished since, which nobody has read.
+      if (!deps.send(message)) pendingDismissals = [...pendingDismissals, { taskIds }];
+      fold({ type: "dismissed", taskIds });
+    },
+
     start(focus: Focus): void {
       transcript = [];
       muted = false;
@@ -334,6 +361,7 @@ export function createVoiceController(deps: VoiceDeps) {
       uploads = [];
       held = [];
       localUris = {};
+      pendingDismissals = [];
       store = reduce(store, { type: "clear" });
       publish();
     },
@@ -459,7 +487,18 @@ export function createVoiceController(deps: VoiceDeps) {
           // Absent from an older daemon, which holds none: leave what is shown alone.
           const list = readHeld(message.attachments);
           if (list) held = list;
-          fold({ type: "state", snapshot: message.snapshot, events: message.events ?? [] });
+          fold({ type: "state", snapshot: message.snapshot, events: message.events ?? [], dismissed: stringList(message.dismissed) });
+          // Taps made offline: the snapshot just brought those tasks back.
+          if (pendingDismissals.length > 0 && store.canDismiss) {
+            const waiting = pendingDismissals;
+            pendingDismissals = waiting.filter((request) => !deps.send({ ...request, t: "voice.dismiss" }));
+            fold({ type: "dismissed", taskIds: waiting.flatMap((request) => request.taskIds) });
+          }
+          return;
+        }
+        case "voice.dismissed": {
+          const taskIds = stringList(message.taskIds);
+          if (taskIds) fold({ type: "dismissed", taskIds });
           return;
         }
         case "error":

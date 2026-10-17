@@ -4,11 +4,13 @@
  * the voice screen it opens from. UNTESTED ON DEVICE.
  */
 import { useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { theme } from "../theme";
 import { Sheet } from "./Sheet";
-import { buildDashboard, type AgentState, type ProjectRow, type SessionRef } from "../voice/dashboard";
+import { buildDashboard, rowDismissal, type AgentState, type ProjectRow, type SessionRef } from "../voice/dashboard";
+import { haptics } from "./haptics";
+import type { DismissRequest } from "./voiceController";
 import { taskStatus } from "../voice/taskBoard";
 import type { VoiceTask } from "../voice/types";
 import type { VoiceStore } from "../voice/voiceStore";
@@ -45,20 +47,38 @@ function TaskLine({ task, now }: { task: VoiceTask; now: number }) {
   );
 }
 
-function Row({ row, now }: { row: ProjectRow; now: number }) {
+function Row({ row, now, onDismiss }: { row: ProjectRow; now: number; onDismiss?: (request: DismissRequest) => void }) {
   const color = TONE[row.state];
+  const dismissal = onDismiss ? rowDismissal(row) : undefined;
   return (
-    <View style={styles.card} accessible accessibilityLabel={`${row.name}, ${row.stateLabel}`}>
+    <View style={styles.card}>
       <View style={[styles.bar, { backgroundColor: color }]} />
       <View style={styles.cardBody}>
         <View style={styles.head}>
-          <Text style={styles.name} numberOfLines={1}>
-            {row.name}
-          </Text>
-          <View style={[styles.badge, { backgroundColor: color + "26" }]}>
-            <View style={[styles.dot, { backgroundColor: color }]} />
-            <Text style={[styles.badgeText, { color }]}>{row.stateLabel}</Text>
+          <View style={styles.headLabel} accessible accessibilityLabel={`${row.name}, ${row.stateLabel}`}>
+            <Text style={styles.name} numberOfLines={1}>
+              {row.name}
+            </Text>
+            <View style={[styles.badge, { backgroundColor: color + "26" }]}>
+              <View style={[styles.dot, { backgroundColor: color }]} />
+              <Text style={[styles.badgeText, { color }]}>{row.stateLabel}</Text>
+            </View>
           </View>
+          {dismissal && onDismiss ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Dismiss ${row.name} update`}
+              accessibilityHint="Clears this project's finished tasks from Projects and Voice"
+              hitSlop={8}
+              style={({ pressed }) => [styles.dismiss, pressed && styles.pressed]}
+              onPress={() => {
+                haptics.tap();
+                onDismiss(dismissal);
+              }}
+            >
+              <Ionicons name="close" size={18} color={theme.color.textDim} />
+            </Pressable>
+          ) : null}
         </View>
 
         {row.liveSessions > 0 && row.running.length === 0 ? (
@@ -104,7 +124,20 @@ function Row({ row, now }: { row: ProjectRow; now: number }) {
   );
 }
 
-export function ProjectDashboard({ visible, store, sessions, onClose }: { visible: boolean; store: VoiceStore; sessions?: readonly SessionRef[]; onClose: () => void }) {
+export function ProjectDashboard({
+  visible,
+  store,
+  sessions,
+  onClose,
+  onDismiss,
+}: {
+  visible: boolean;
+  store: VoiceStore;
+  sessions?: readonly SessionRef[];
+  onClose: () => void;
+  /** Clears a finished project's update. Absent when the computer's pew2 is too old to remember it. */
+  onDismiss?: (request: DismissRequest) => void;
+}) {
   const rows = useMemo(() => buildDashboard(store, sessions), [store, sessions]);
   const now = useNow(visible);
   return (
@@ -117,7 +150,7 @@ export function ProjectDashboard({ visible, store, sessions, onClose }: { visibl
             <Text style={styles.dim}>Ask by voice to start work on a project and it will show up here.</Text>
           </View>
         ) : (
-          rows.map((row) => <Row key={row.projectId} row={row} now={now} />)
+          rows.map((row) => <Row key={row.projectId} row={row} now={now} onDismiss={onDismiss} />)
         )}
       </ScrollView>
     </Sheet>
@@ -133,6 +166,9 @@ const styles = StyleSheet.create({
   bar: { width: 4 },
   cardBody: { flex: 1, padding: theme.space(3), gap: theme.space(3) },
   head: { flexDirection: "row", alignItems: "center", gap: theme.space(2) },
+  headLabel: { flex: 1, flexDirection: "row", alignItems: "center", gap: theme.space(2) },
+  dismiss: { width: theme.size.touch, height: theme.size.touch, alignItems: "center", justifyContent: "center", margin: -theme.space(2), marginLeft: 0 },
+  pressed: { opacity: 0.7 },
   name: { flex: 1, color: theme.color.text, fontSize: theme.font.title, fontWeight: "700" },
   badge: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill },
   badgeText: { fontSize: theme.font.small, fontWeight: "700" },

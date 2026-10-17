@@ -453,6 +453,13 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
         break;
       }
 
+      case "voice.dismiss": {
+        // The `voice.dismissed` broadcast is the answer, to every client.
+        const voice = await daemon.voice();
+        await voice.dismiss(message);
+        break;
+      }
+
       case "session.permission": {
         daemon.answerPermission(message.sessionId, message.requestId, message.optionId);
         break;

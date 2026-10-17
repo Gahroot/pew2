@@ -89,3 +89,25 @@ test("journal: new, then done returns the stored result, and pending survives a 
   expect(reopened.journalBegin("c1", "start_task")).toEqual({ status: "done", result: { ok: true } });
   expect(reopened.journalBegin("c2", "cancel_task")).toEqual({ status: "pending" });
 });
+
+test("dismiss clears finished tasks only, survives a restart, and new news brings one back", async () => {
+  const path = join(scratch(), "state.json");
+  const store = await VoiceStore.open(path);
+  const done = store.createTask(base);
+  store.transition(done.taskId, "completed", "task.completed", "done");
+  const live = store.createTask({ ...base, title: "live" });
+  store.transition(live.taskId, "running", "task.started", "go");
+
+  const dismissed = store.dismiss(() => true);
+  expect(dismissed.map((t) => t.taskId)).toEqual([done.taskId]);
+  expect(store.getTask(live.taskId)?.dismissedAt).toBeUndefined();
+  expect(store.dismiss(() => true)).toEqual([]); // already dismissed
+  await store.flush();
+
+  const reopened = await VoiceStore.open(path);
+  expect(reopened.getTask(done.taskId)?.dismissedAt).toBeNumber();
+  expect(reopened.dismissedWithEvents()).toEqual([done.taskId]);
+
+  reopened.transition(done.taskId, "verified", "task.verified", "checked");
+  expect(reopened.getTask(done.taskId)?.dismissedAt).toBeUndefined();
+});

@@ -124,6 +124,10 @@ test("every message the app actually sends is accepted", () => {
     // removal, and a send from the sheet through the model's own tool.
     { t: "voice.attach", requestId: "shot-1", name: "fix.jpg", mimeType: "image/jpeg", data: "/9j/4A==" },
     { t: "voice.detach", attachmentId: "a_1" },
+    // Dismissing finished tasks, from a card, a project row and "Clear all".
+    { t: "voice.dismiss", taskIds: ["t_1"] },
+    { t: "voice.dismiss", taskIds: ["t_2", "t_3"], projectIds: ["p_1"] },
+    { t: "voice.dismiss", allFinished: true },
     {
       t: "voice.tool",
       voiceSessionId: "sheet",
