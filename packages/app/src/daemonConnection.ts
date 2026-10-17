@@ -256,7 +256,9 @@ export function openConnection(
         sessions: dropPendingSessions(
           s.sessions,
           queuedPendingSessions(outbox.current),
-        ).map((session) => (session.busy ? { ...session, busy: false } : session)),
+        ).map((session) =>
+          session.busy || session.deskBusy ? { ...session, busy: false, deskBusy: false } : session,
+        ),
       }));
       // Cleartext, because it is what establishes the connection — and carries
       // a sealed proof beside it, so the daemon can tell a paired phone from

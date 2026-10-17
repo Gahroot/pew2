@@ -1,10 +1,10 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { Orchestrator, type VoiceHost } from "./dispatcher.js";
 import { buildRegistry } from "./registry.js";
 import { scratch } from "./scratch.js";
 import { VoiceStore } from "./store.js";
-import type { RunningSession } from "./types.js";
+import type { RunningSession, SessionPeek } from "./types.js";
 import { commitInstruction, realtimeSession, ToolExecutor, TOOL_NAMES, VOICE_INSTRUCTIONS, VOICE_TOOLS, type ToolDeps } from "./tools.js";
 import type { CreatedWorktree } from "../worktree-create.js";
 
@@ -316,7 +316,59 @@ test("whats_running lists desk-started conversations beside tasks and ranks bloc
   ]);
   expect(out.otherSessions[0]?.agent).toBe("codex");
   expect(out.summary).toContain("2 other");
-  expect(JSON.stringify(out)).not.toContain("d1");
+  expect(JSON.stringify(out)).not.toContain("/code");
+});
+
+test("whats_running labels a desk session with its ref, origin, title and tool", async () => {
+  const live: RunningSession[] = [
+    { sessionId: "desk:claude:abc", providerId: "claude", agentName: "Claude Code", cwd: "/code/pew2", state: "working", idleMs: 0, origin: "desktop", title: "Fix login", tool: "running tests" },
+    { sessionId: "s9", providerId: "codex", cwd: "/code/billing-api", state: "idle", idleMs: 0, origin: "pew2" },
+  ];
+  const out = (await harness(VoiceStore.memory(), undefined, () => live).call("whats_running")).output as { otherSessions: Record<string, unknown>[] };
+  expect(out.otherSessions[0]).toMatchObject({ sessionRef: "desk:claude:abc", startedAt: "computer", title: "Fix login", tool: "running tests", project: "pew2" });
+  expect(out.otherSessions[1]).toMatchObject({ sessionRef: "s9", startedAt: "app" });
+  expect(out.otherSessions[1]?.title).toBeUndefined();
+});
+
+describe("peek_session", () => {
+  const live: RunningSession[] = [
+    { sessionId: "desk:claude:abc", providerId: "claude", agentName: "Claude Code", cwd: "/code/pew2/packages/app", state: "working", idleMs: 0, origin: "desktop" },
+    { sessionId: "s9", providerId: "codex", cwd: "/code/billing-api", state: "idle", idleMs: 0 },
+  ];
+  const peek = (id: string): SessionPeek | undefined =>
+    id === "desk:claude:abc" ? { lastPrompt: "fix the login screen", latest: "Editing /code/pew2/app.tsx now", tool: "Edit" } : id === "s9" ? { latest: "done" } : undefined;
+
+  test("with an explicit ref, reports without a path", async () => {
+    const r = await harness(VoiceStore.memory(), undefined, () => live, { peekSession: peek }).call("peek_session", { sessionRef: "s9" });
+    expect(r.ok).toBe(true);
+    expect(r.output).toMatchObject({ project: "billing-api", agent: "codex", state: "idle", startedAt: "app", latest: "done" });
+  });
+
+  test("defaults to the one working conversation", async () => {
+    const r = await harness(VoiceStore.memory(), undefined, () => live, { peekSession: peek }).call("peek_session");
+    expect(r.output).toMatchObject({ project: "pew2", agent: "Claude Code", startedAt: "computer", lastPrompt: "fix the login screen", tool: "Edit" });
+    expect(JSON.stringify(r.output)).not.toContain("/code");
+  });
+
+  test("an unknown ref fails", async () => {
+    const r = await harness(VoiceStore.memory(), undefined, () => live, { peekSession: peek }).call("peek_session", { sessionRef: "nope" });
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r.output)).toContain("whats_running");
+  });
+
+  test("several working asks which", async () => {
+    const both = live.map((s) => ({ ...s, state: "working" as const }));
+    const r = await harness(VoiceStore.memory(), undefined, () => both, { peekSession: peek }).call("peek_session");
+    const out = r.output as { needsClarification: boolean; sessions: { sessionRef: string }[] };
+    expect(out.needsClarification).toBe(true);
+    expect(out.sessions.map((s) => s.sessionRef)).toEqual(["desk:claude:abc", "s9"]);
+    expect(JSON.stringify(out)).not.toContain("/code");
+  });
+
+  test("without the dep it fails plainly", async () => {
+    const r = await harness(VoiceStore.memory(), undefined, () => live).call("peek_session");
+    expect(r.ok).toBe(false);
+  });
 });
 
 test("whats_running does not repeat a session a task already owns", async () => {

@@ -18,11 +18,11 @@ import {
   readVoicePrefs,
   resolveApiKey,
 } from "./mint.js";
-import { addAlias, buildRegistry, readAliases, repoForPath } from "./registry.js";
-import { DEFAULT_APPROVAL_POLICY, type ApprovalPolicy } from "./safety.js";
+import { addAlias, buildRegistry, readAliases, repoForPath, repoOf } from "./registry.js";
+import { DEFAULT_APPROVAL_POLICY, speakable, type ApprovalPolicy } from "./safety.js";
 import { toVoiceTask, VoiceStore, type StoredScreenshot, type StoredTask } from "./store.js";
-import { realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS } from "./tools.js";
-import type { VoiceAttachment, VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
+import { projectForPath, realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS } from "./tools.js";
+import type { RunningSession, VoiceAttachment, VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
 import { detectWorktree, privacyGuarded, registeredWorktrees, type RegisteredWorktree, type WorktreeInfo } from "../worktree.js";
 import type { CreatedWorktree, Result } from "../worktree-create.js";
 import { placeSpoken } from "./place.js";
@@ -53,6 +53,8 @@ export interface VoiceServiceDeps {
   usableProviders: () => string[];
   /** Conversations the daemon holds open, whoever started them. */
   runningSessions?: () => import("./types.js").RunningSession[];
+  /** What one open conversation is doing now; backs `peek_session`. */
+  peekSession?: (sessionId: string) => import("./types.js").SessionPeek | undefined;
   lastUsedProvider?: () => string | undefined;
   /** Send a push for an event that is worth one. Never awaited by the service. */
   push?: (event: VoiceEvent) => void | Promise<void>;
@@ -103,6 +105,7 @@ export class VoiceService {
       projects: () => this.projects(true),
       usableProviders: deps.usableProviders,
       runningSessions: deps.runningSessions,
+      peekSession: deps.peekSession,
       lastUsedProvider: deps.lastUsedProvider,
       dave: deps.dave,
       now: this.now,
@@ -273,14 +276,15 @@ export class VoiceService {
       return { t: "voice.unavailable", voiceSessionId: request.voiceSessionId, code: "disabled", message: "Voice is turned off on this computer." };
     }
     // Fresh registry and state before the model speaks.
-    await this.projects(true);
+    const projects = await this.projects(true);
+    const desk = deskContext(this.deps.runningSessions?.() ?? [], projects);
     const snapshot = await this.snapshot(request);
     const voice = prefs.voice ?? DEFAULT_VOICE;
     const session = realtimeSession({
       voice,
       clientVad: request.clientVad === true,
       daveTools: !!this.deps.dave,
-      instructions: `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}`,
+      instructions: `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}${desk ? `\n\n${desk}` : ""}`,
     });
     // Subscription login first, API key as the fallback.
     const subscription = await subscriptionToken(this.deps.env, this.deps.fetch);
@@ -442,4 +446,24 @@ export function contextText(snapshot: VoiceSnapshot): string {
   }
   if (lines.length === (snapshot.opening ? 1 : 0)) lines.push("No tasks yet.");
   return lines.join("\n");
+}
+
+/**
+ * Conversations running at the computer (started in a terminal, not by pew2),
+ * for the model's opening instructions. Pure; "" when there are none.
+ */
+export function deskContext(sessions: readonly RunningSession[], projects: readonly VoiceProject[]): string {
+  const desk = sessions
+    .filter((s) => s.origin === "desktop")
+    .sort((a, b) => Number(b.state === "working") - Number(a.state === "working"))
+    .slice(0, 6);
+  if (!desk.length) return "";
+  const lines = desk.map((s) => {
+    const project = projectForPath(s.cwd, projects);
+    const place = placeSpoken({ projectName: project?.name ?? basename(s.cwd), repo: project ? repoOf(project) : undefined });
+    const state = s.state === "idle" ? "idle" : "working";
+    const title = s.title ? speakable(s.title, 80) : "";
+    return `- ${speakable(s.agentName ?? s.providerId, 40)} in ${speakable(place, 80)} (${state}, started at the computer)${title ? `: ${title}` : ""}`;
+  });
+  return `Running on the computer now:\n${lines.join("\n")}`;
 }

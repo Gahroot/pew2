@@ -20,7 +20,7 @@ export function formatHistoryMetadata(
 }
 
 /** Sidebar's complete data contract, deliberately excluding transcript/config. */
-export type DrawerRow = Pick<Session, "id" | "providerId" | "title" | "startedAt" | "cwd" | "folder" | "messageCount" | "busy" | "unread" | "permission">;
+export type DrawerRow = Pick<Session, "id" | "providerId" | "title" | "startedAt" | "cwd" | "folder" | "messageCount" | "busy" | "deskBusy" | "unread" | "permission">;
 
 /** Bounded by the retained session list; no second transcript cache. Pure so it
  * remains safe when React retries a render or state updater. */
@@ -31,7 +31,7 @@ export function projectDrawerRows(previous: DrawerRow[], sessions: readonly Sess
       id: session.id, providerId: session.providerId, title: session.title,
       startedAt: session.startedAt, cwd: session.cwd, folder: session.folder,
       messageCount: session.turns.length || session.messageCount,
-      busy: session.busy === true, unread: session.unread === true, permission: session.permission,
+      busy: session.busy === true, deskBusy: session.deskBusy === true, unread: session.unread === true, permission: session.permission,
     };
     const old = byId.get(row.id);
     return old && (Object.keys(row) as (keyof DrawerRow)[]).every((key) => Object.is(old[key], row[key])) ? old : row;

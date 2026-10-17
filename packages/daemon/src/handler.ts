@@ -145,6 +145,13 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
           } catch {
             // Older state on disk or a failing disk; the next voice.sync retries.
           }
+          // Conversations running at the computer, so the drawer marks them live
+          // without waiting for the next change. Best effort, like voice.
+          try {
+            reply(daemon.desktopActivity());
+          } catch {
+            // The watcher is optional; an empty drawer mark is the fallback.
+          }
         }
         break;
 

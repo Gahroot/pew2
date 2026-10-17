@@ -672,6 +672,33 @@ export const SessionIdle = z.object({
 });
 
 /**
+ * One conversation running on this computer that the daemon does not hold:
+ * started at the desk in a terminal, read from the agent's own transcript files.
+ */
+export const DesktopSession = z.object({
+  providerId: z.string(),
+  agentSessionId: z.string(),
+  cwd: z.string(),
+  title: z.string().max(200).optional(),
+  state: z.enum(["working", "idle"]),
+  /** Epoch ms of the last transcript write the daemon saw. */
+  updatedAt: z.number().int(),
+  /** Tool running now, when the transcript says. */
+  tool: z.string().max(80).optional(),
+});
+
+/**
+ * Daemon -> app. Full snapshot of conversations this daemon does NOT hold,
+ * touched recently. Broadcast on change and answered to every client `hello`.
+ * An older daemon never sends it (the app shows no desk activity); an older app
+ * ignores it.
+ */
+export const DesktopActivity = z.object({
+  t: z.literal("desktop.activity"),
+  sessions: z.array(DesktopSession).max(64),
+});
+
+/**
  * App -> daemon. Where to push when this phone is not listening.
  *
  * The local banner can only fire while the app's JavaScript is running, and iOS
@@ -1189,6 +1216,7 @@ export const ServerMessage = z.discriminatedUnion("t", [
   ProviderSessions,
   SessionEvent,
   SessionIdle,
+  DesktopActivity,
   Replay,
   ImageData,
   Workspace,
@@ -1251,6 +1279,8 @@ export type Workspace = z.output<typeof Workspace>;
 export type SessionEvent = z.output<typeof SessionEvent>;
 export type Replay = z.output<typeof Replay>;
 export type SessionIdle = z.output<typeof SessionIdle>;
+export type DesktopSession = z.output<typeof DesktopSession>;
+export type DesktopActivity = z.output<typeof DesktopActivity>;
 export type PushRegister = z.output<typeof PushRegister>;
 export type DeviceJoined = z.output<typeof DeviceJoined>;
 export type WorkspaceEntry = z.output<typeof WorkspaceEntry>;

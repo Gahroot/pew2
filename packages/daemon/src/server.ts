@@ -187,6 +187,11 @@ relay?.start();
 const { errors } = await daemon.refreshProviders();
 for (const error of errors) console.error(error.message);
 
+// Desk activity reads the agents' own transcript files under the home
+// directory. Started here, after providers load, and never from `attach()`, so
+// tests that build a Daemon never touch the real home directory.
+daemon.startDesktopActivity();
+
 /** Send one sealed message to one client. */
 function send(ws: ServerWebSocket<unknown>, message: unknown) {
   const client = clients.get(ws);

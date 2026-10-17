@@ -5,8 +5,9 @@ import { pushVoiceEvent, PushRegistry, voiceMessages } from "../push.js";
 import type { VoiceHost } from "./dispatcher.js";
 import { DaveClient } from "./dave.js";
 import { scratch } from "./scratch.js";
-import { contextText, VoiceService } from "./service.js";
-import type { VoiceEvent } from "./types.js";
+import { contextText, deskContext, VoiceService } from "./service.js";
+import type { RunningSession, VoiceEvent } from "./types.js";
+import { buildRegistry } from "./registry.js";
 
 function host(): VoiceHost & { permissionAnswers: string[] } {
   const permissionAnswers: string[] = [];
@@ -31,7 +32,7 @@ const mintFetch = (async () =>
 
 async function service(
   env: NodeJS.ProcessEnv = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" },
-  extra: { dave?: DaveClient } = {},
+  extra: { dave?: DaveClient; runningSessions?: () => RunningSession[] } = {},
 ) {
   const emitted: unknown[] = [];
   const pushed: VoiceEvent[] = [];
@@ -327,5 +328,27 @@ test("worktrees only git knows about are filed under their repository, deleted o
   const root = projects.find((p) => p.name === "triten-os");
   expect(projects.map((p) => p.name)).toEqual(["triten-os", "triten-os (fix/boot)"]);
   expect(projects[1]?.worktree).toEqual({ repo: "triten-os", repoId: root?.projectId, branch: "fix/boot" });
+  svc.dispose();
+});
+
+const deskSessions: RunningSession[] = [
+  { sessionId: "desk:codex:1", providerId: "codex", cwd: "/code/other", state: "idle", idleMs: 0, origin: "desktop" },
+  { sessionId: "desk:claude:2", providerId: "claude", agentName: "Claude Code", cwd: "/code/pew2/src", state: "working", idleMs: 0, origin: "desktop", title: "Fix login" },
+  { sessionId: "p1", providerId: "echo", cwd: "/code/pew2", state: "working", idleMs: 0, origin: "pew2" },
+];
+
+test("deskContext lists only desk sessions, working first, and is empty without any", () => {
+  const projects = buildRegistry(["/code/pew2"], {});
+  expect(deskContext(deskSessions, projects)).toBe(
+    "Running on the computer now:\n- Claude Code in pew2 (working, started at the computer): Fix login\n- codex in other (idle, started at the computer)",
+  );
+  expect(deskContext(deskSessions.slice(2), projects)).toBe("");
+  expect(deskContext([], projects)).toBe("");
+});
+
+test("open() tells the model what is running at the computer", async () => {
+  const { svc } = await service(undefined, { runningSessions: () => deskSessions });
+  const ready = (await svc.open({ voiceSessionId: "v", source: "in_app" })) as { realtime: { session: { instructions: string } } };
+  expect(ready.realtime.session.instructions).toContain("Running on the computer now:");
   svc.dispose();
 });

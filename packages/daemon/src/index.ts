@@ -29,7 +29,8 @@ import { foldProjects } from "./projects.js";
 import { VoiceService } from "./voice/service.js";
 import { daveClient } from "./voice/dave.js";
 import type { VoiceHost } from "./voice/dispatcher.js";
-import type { RunningSession } from "./voice/types.js";
+import type { RunningSession, SessionPeek } from "./voice/types.js";
+import { DesktopActivityWatcher, defaultDeskRoots, toWire } from "./desktop-activity/watcher.js";
 import { dirname } from "node:path";
 import type { wire } from "@pew2/protocol";
 import { DaemonConnectSession } from "./daemon/connect-session.js";
@@ -580,9 +581,73 @@ export class Daemon extends DaemonConnectSession {
         cwd: session.cwd,
         state: blocked ? "needs_you" : session.working ? "working" : "idle",
         idleMs: Math.max(0, now - session.lastUsedAt),
+        origin: "pew2",
+      });
+    }
+    // Conversations started at the computer, read from the agents' own files.
+    for (const desk of this.desktopSessions()) {
+      out.push({
+        sessionId: `desk:${desk.providerId}:${desk.agentSessionId}`,
+        providerId: desk.providerId,
+        agentName: this.providers.find((p) => p.manifest.id === desk.providerId)?.manifest.name,
+        cwd: desk.cwd,
+        state: desk.state,
+        idleMs: Math.max(0, now - desk.updatedAt),
+        origin: "desktop",
+        ...(desk.title ? { title: desk.title } : null),
+        ...(desk.tool ? { tool: desk.tool } : null),
       });
     }
     return out;
+  }
+
+  /**
+   * What one open conversation is doing, for voice's `peek_session`. A `desk:`
+   * id reads the transcript watcher; a held session has only its turn text.
+   */
+  peekSession(sessionId: string): SessionPeek | undefined {
+    if (sessionId.startsWith("desk:")) {
+      const rest = sessionId.slice("desk:".length);
+      const desk = this.desktopSessions().find((d) => `${d.providerId}:${d.agentSessionId}` === rest);
+      if (!desk) return undefined;
+      return {
+        ...(desk.lastPrompt ? { lastPrompt: desk.lastPrompt } : null),
+        ...(desk.lastText ? { latest: desk.lastText } : null),
+        ...(desk.tool ? { tool: desk.tool } : null),
+      };
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    return session.turnText ? { latest: session.turnText } : {};
+  }
+
+  private desk?: DesktopActivityWatcher;
+
+  /**
+   * Watch the agents' transcript files for conversations started at the desk.
+   * Called from `server.ts` only, never from `attach()`, so a Daemon built in a
+   * test never reads the real home directory. `PEW2_DESKTOP_ACTIVITY=off` disables it.
+   */
+  startDesktopActivity(roots = defaultDeskRoots(this.env)) {
+    if (this.desk || this.env.PEW2_DESKTOP_ACTIVITY === "off") return;
+    const loaded = new Set(this.providers.filter((p) => !p.commandMissing).map((p) => p.manifest.id));
+    this.desk = new DesktopActivityWatcher({
+      roots: roots.filter((r) => loaded.has(r.providerId) && this.isEnabled(r.providerId)),
+      ownedAgentSessionIds: () =>
+        new Set([...this.sessions.values()].flatMap((s) => (s.agentSessionId ? [s.agentSessionId] : []))),
+      onChange: () => this.send(this.desktopActivity()),
+    });
+    this.desk.start();
+  }
+
+  /** Desk sessions for providers still enabled; a provider switched off since boot goes quiet. */
+  private desktopSessions() {
+    return (this.desk?.snapshot() ?? []).filter((d) => this.isEnabled(d.providerId));
+  }
+
+  /** The `desktop.activity` frame: answered to every client hello and broadcast on change. */
+  desktopActivity(): wire.DesktopActivity {
+    return { t: "desktop.activity", sessions: this.desktopSessions().slice(0, 64).map(toWire) };
   }
 
   /**
@@ -744,6 +809,7 @@ export class Daemon extends DaemonConnectSession {
         if (made.ok) await this.rememberProject(made.value.path);
         return made;
       },
+      peekSession: (sessionId) => this.peekSession(sessionId),
       dave: daveClient(this.env),
       push: (event) => pushVoiceEvent(this.pushTargets, event, fetch, { voip: this.voip }),
     }).then((service) => (this.voiceReady = service));
@@ -807,6 +873,8 @@ export class Daemon extends DaemonConnectSession {
   }
 
   closeAll() {
+    this.desk?.stop();
+    this.desk = undefined;
     if (this.reaper) {
       clearInterval(this.reaper);
       this.reaper = undefined;

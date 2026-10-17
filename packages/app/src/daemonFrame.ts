@@ -117,6 +117,8 @@ export function handleSealedFrame(refs: FrameRefs, connection: FrameConnection, 
     optionsRef.current.onVoiceMessage?.(message);
     return;
   }
+  // Also folded into the session list below; voice only listens.
+  if (message.t === "desktop.activity") optionsRef.current.onVoiceMessage?.(message);
 
   // Only authenticated, visible prose may wait. Control/replay/background
   // frames flush before any notification or state transition below.
