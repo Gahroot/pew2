@@ -93,6 +93,7 @@ export type MachineEvent =
   | { type: "transportDown"; reason?: string } // data channel / peer died
   | { type: "networkLost" }
   | { type: "userSpeech" }
+  | { type: "speechDetected" } // VAD heard sound start; not yet proven speech
   | { type: "modelSpeaking" }
   | { type: "modelDone" } // model finished speaking (audio actually stopped)
   | { type: "endSession" } // a tool result said endSession
@@ -266,6 +267,12 @@ export function step(state: MachineState, event: MachineEvent): StepResult {
       // Talking over the model is a barge-in: the Realtime server truncates the
       // reply, so the phase falls back to listening.
       return { state: { ...state, phase: "listening" }, effects: [{ type: "cancelIdleTimer" }] };
+
+    case "speechDetected":
+      // The user may be talking: never close on idle mid-sentence. No phase
+      // change and no barge-in until the transcript proves it was speech.
+      if (state.phase !== "listening" && state.phase !== "speaking") return NOTHING(state);
+      return { state, effects: [{ type: "cancelIdleTimer" }] };
 
     case "modelSpeaking":
       if (state.phase !== "listening" && state.phase !== "speaking") return NOTHING(state);

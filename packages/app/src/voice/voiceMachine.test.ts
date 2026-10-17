@@ -82,6 +82,12 @@ describe("ending", () => {
     expect(a.state.phase).toBe("closing");
     expect(a.state.closeReason).toBe("idle");
   });
+  test("detected sound cancels the idle timer without changing phase", () => {
+    const listening = run([{ type: "modelSpeaking" }, { type: "modelDone" }], run(live).state).state;
+    const a = step(listening, { type: "speechDetected" });
+    expect(a).toEqual({ state: listening, effects: [{ type: "cancelIdleTimer" }] });
+    expect(step(initialState, { type: "speechDetected" }).effects).toEqual([]);
+  });
   test("idle timeout is ignored while the model is speaking", () => {
     const a = run([{ type: "modelSpeaking" }, { type: "idleTimeout" }], run(live).state);
     expect(a.state.phase).toBe("speaking");

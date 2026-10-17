@@ -231,6 +231,7 @@ export function createVoiceController(deps: VoiceDeps) {
       handlers: {
         onReady: () => dispatch({ type: "transportUp" }),
         onUserSpeech: () => dispatch({ type: "userSpeech" }),
+        onSpeechDetected: () => dispatch({ type: "speechDetected" }),
         onModelSpeaking: () => dispatch({ type: "modelSpeaking" }),
         onModelDone: () => dispatch({ type: "modelDone" }),
         onEndSession: () => dispatch({ type: "endSession" }),

@@ -52,6 +52,12 @@ export interface RealtimeHandlers {
   /** The session config was accepted: the conversation is live. */
   onReady(): void;
   onUserSpeech(): void;
+  /**
+   * Server VAD heard *something* start: not yet proof of speech, so no barge-in,
+   * but the user may be talking. Transcripts only arrive after `speech_stopped`,
+   * so without this a long sentence runs into the idle timer and is cut off.
+   */
+  onSpeechDetected?(): void;
   onModelSpeaking(): void;
   /** The model's audio has actually stopped (or it produced none). */
   onModelDone(): void;
@@ -253,7 +259,8 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
     // event, so this is the end of the model's turn. (Audio ends on
     // `output_audio_buffer.stopped`, not here: the response finishes generating
     // well before it finishes playing.)
-    const idle = !audio && calls === 0 && pending.size === 0 && !wantResponse;
+    // Never while the user is mid-sentence: `speech_stopped` reports it then.
+    const idle = !audio && calls === 0 && pending.size === 0 && !wantResponse && !userSpeaking;
     if (!continueIfIdle() && idle) handlers.onModelDone();
   };
 
@@ -283,9 +290,14 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
         // Not yet speech: server VAD fires on any loud bump. Wait for words.
         userSpeaking = true;
         judging.add(itemKey(message));
+        handlers.onSpeechDetected?.();
         return;
       case "input_audio_buffer.speech_stopped":
         userSpeaking = false;
+        // The user went quiet with the model quiet too: time silence from here.
+        // Real words cancel it again when their transcript lands; noise, or a
+        // transcript that never comes, lets the idle close happen as before.
+        if (!responseActive && !audioPlaying && pending.size === 0 && !wantResponse) handlers.onModelDone();
         return;
       case "conversation.item.input_audio_transcription.delta": {
         // Words arriving while the model talks are enough to interrupt early.
@@ -337,7 +349,7 @@ export function createRealtimeSession(options: RealtimeSessionOptions): Realtime
       case "output_audio_buffer.stopped":
       case "output_audio_buffer.cleared": {
         audioPlaying = false;
-        const idle = pending.size === 0 && !wantResponse;
+        const idle = pending.size === 0 && !wantResponse && !userSpeaking;
         if (!continueIfIdle() && idle) handlers.onModelDone();
         return;
       }

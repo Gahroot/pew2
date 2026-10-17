@@ -10,6 +10,13 @@ import {
 } from "./realtime";
 import { liveUpdateNote, shouldAnnounce } from "./liveUpdates";
 import type { VoiceEvent, VoiceTask } from "./types";
+import { IDLE_TIMEOUT_MS, initialState, step, type MachineEvent, type MachineState } from "./voiceMachine";
+
+function run(events: MachineEvent[], from: MachineState = initialState) {
+  let state = from;
+  for (const event of events) state = step(state, event).state;
+  return { state };
+}
 
 function setup(speakFirst = false) {
   const sent: Record<string, unknown>[] = [];
@@ -81,10 +88,12 @@ describe("turns", () => {
   test("reports speech boundaries", () => {
     const { receive, log } = setup();
     receive({ type: "input_audio_buffer.speech_started", item_id: "a" });
+    receive({ type: "input_audio_buffer.speech_stopped", item_id: "a" });
     receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "a", transcript: "stop" });
     receive({ type: "output_audio_buffer.started" });
     receive({ type: "output_audio_buffer.stopped" });
-    expect(log).toEqual(["user", "speaking", "done"]);
+    // Quiet once the user stops (idle clock starts); the transcript then proves speech.
+    expect(log).toEqual(["done", "user", "speaking", "done"]);
   });
   test("a bump during the reply neither interrupts nor answers, and is deleted", () => {
     const { receive, log, sent } = setup();
@@ -332,4 +341,100 @@ test("parseArguments / outputText", () => {
   expect(parseArguments("")).toEqual({ args: {}, valid: true });
   expect(parseArguments("[1]").valid).toBe(false);
   expect(outputText({ callId: "x", ok: true, output: undefined })).toBe("null");
+});
+
+/**
+ * The real session wired to the real machine with a fake clock, following
+ * Realtime's actual ordering: server VAD reports `speech_started` at once, but
+ * the transcript, the only thing that proves speech, comes after
+ * `speech_stopped`.
+ */
+describe("a long utterance against the idle timer", () => {
+  function conversation() {
+    let state: MachineState = run([
+      { type: "activate", voiceSessionId: "v1", focus: { source: "in_app" } },
+      { type: "ready" },
+      { type: "transportUp" },
+    ]).state;
+    let now = 0;
+    let idleAt: number | undefined;
+    const dispatch = (event: MachineEvent) => {
+      const out = step(state, event);
+      state = out.state;
+      for (const effect of out.effects) {
+        if (effect.type === "startIdleTimer") idleAt = now + effect.ms;
+        if (effect.type === "cancelIdleTimer" || effect.type === "teardownRealtime") idleAt = undefined;
+      }
+    };
+    const rt = createRealtimeSession({
+      channel: { send: () => true },
+      session: {},
+      speakFirst: false,
+      handlers: {
+        onReady: () => {},
+        onUserSpeech: () => dispatch({ type: "userSpeech" }),
+        onSpeechDetected: () => dispatch({ type: "speechDetected" }),
+        onModelSpeaking: () => dispatch({ type: "modelSpeaking" }),
+        onModelDone: () => dispatch({ type: "modelDone" }),
+        onToolCall: () => {},
+        onEndSession: () => dispatch({ type: "endSession" }),
+        onError: () => {},
+      },
+    });
+    const at = (ms: number, message?: Record<string, unknown>) => {
+      if (idleAt !== undefined && idleAt <= ms) {
+        now = idleAt;
+        dispatch({ type: "idleTimeout" });
+      }
+      now = ms;
+      if (message) rt.handleMessage(JSON.stringify(message));
+    };
+    // The model answers once, and its audio stops at t=0.
+    rt.handleMessage(JSON.stringify({ type: "response.created" }));
+    rt.handleMessage(JSON.stringify({ type: "output_audio_buffer.started" }));
+    rt.handleMessage(JSON.stringify({ type: "response.done", response: { output: [{ type: "message", content: [{ type: "output_audio" }] }] } }));
+    rt.handleMessage(JSON.stringify({ type: "output_audio_buffer.stopped" }));
+    return { at, phase: () => state.phase, closeReason: () => state.closeReason, idleAt: () => idleAt };
+  }
+
+  test("a 15 second prompt after a pause is not closed as idle mid-sentence", () => {
+    const c = conversation();
+    c.at(8_000, { type: "input_audio_buffer.speech_started", item_id: "long" });
+    c.at(23_000, { type: "input_audio_buffer.speech_stopped", item_id: "long" });
+    expect(c.phase()).toBe("listening");
+    c.at(24_500, { type: "conversation.item.input_audio_transcription.delta", item_id: "long", delta: "so what I want " });
+    c.at(25_000, { type: "conversation.item.input_audio_transcription.completed", item_id: "long", transcript: "so what I want is a long thing" });
+    expect(c.phase()).toBe("listening");
+    expect(c.idleAt()).toBeUndefined();
+  });
+
+  test("talking over the end of the model's audio does not start the clock mid-sentence", () => {
+    const c = conversation();
+    c.at(1_000, { type: "response.created" });
+    c.at(1_100, { type: "output_audio_buffer.started" });
+    c.at(2_000, { type: "input_audio_buffer.speech_started", item_id: "over" });
+    c.at(3_000, { type: "response.done", response: { output: [{ type: "message", content: [{ type: "output_audio" }] }] } });
+    c.at(4_000, { type: "output_audio_buffer.stopped" });
+    c.at(30_000, { type: "input_audio_buffer.speech_stopped", item_id: "over" });
+    expect(c.phase()).toBe("listening");
+  });
+
+  test("noise still lets an idle conversation end, timed from when the noise stopped", () => {
+    const c = conversation();
+    c.at(5_000, { type: "input_audio_buffer.speech_started", item_id: "door" });
+    c.at(6_000, { type: "input_audio_buffer.speech_stopped", item_id: "door" });
+    c.at(6_400, { type: "conversation.item.input_audio_transcription.completed", item_id: "door", transcript: "" });
+    c.at(6_000 + IDLE_TIMEOUT_MS - 1);
+    expect(c.phase()).toBe("listening");
+    c.at(6_000 + IDLE_TIMEOUT_MS + 1);
+    expect(c.closeReason()).toBe("idle");
+  });
+
+  test("a transcript that never arrives cannot hold the conversation open for ever", () => {
+    const c = conversation();
+    c.at(5_000, { type: "input_audio_buffer.speech_started", item_id: "lost" });
+    c.at(9_000, { type: "input_audio_buffer.speech_stopped", item_id: "lost" });
+    c.at(9_000 + IDLE_TIMEOUT_MS + 1);
+    expect(c.closeReason()).toBe("idle");
+  });
 });
