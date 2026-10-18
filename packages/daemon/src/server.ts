@@ -12,7 +12,14 @@
  * conversation at once.
  */
 import { Daemon } from "./index.js";
-import { claimPairing, loadPairing, pairingPath, pairingUrl, qrCode, tokenMatches } from "./pairing.js";
+import {
+  claimPairing,
+  loadPairing,
+  pairingPath,
+  pairingUrl,
+  qrCode,
+  tokenMatches,
+} from "./pairing.js";
 import { watchPairing } from "./pairing-watch.js";
 import { decideClaim, type ClaimDecision } from "./device-claim.js";
 import { SecureChannel, e2e, envelopeHeader, wire } from "@pew2/protocol";
@@ -170,8 +177,7 @@ const relay = pairing.relay
       // path a leaked link is actually usable from, so leaving it ungated would
       // make the gate decorative.
       admitDevice,
-      onStatus: (status, detail) =>
-        console.log(`[relay] ${status}${detail ? ` — ${detail}` : ""}`),
+      onStatus: (status, detail) => console.log(`[relay] ${status}${detail ? ` — ${detail}` : ""}`),
     })
   : null;
 
@@ -219,7 +225,9 @@ const server = Bun.serve({
     // agent on this machine, so it is checked before the upgrade rather than in
     // the first message: an unpaired socket is never established at all.
     if (!tokenMatches(currentToken, url.searchParams.get("token"))) {
-      console.error(`[pairing] rejected connection from ${server.requestIP(request)?.address ?? "unknown"}`);
+      console.error(
+        `[pairing] rejected connection from ${server.requestIP(request)?.address ?? "unknown"}`,
+      );
       return new Response("pairing token required", { status: 401 });
     }
 
@@ -375,7 +383,9 @@ if (trimmed > 0) console.log(`[logs] trimmed ${Math.round(trimmed / 1024)}KB of 
 if (qr) console.log(`${qr}\n`);
 // The URL carries the token, so it follows the QR: shown to whoever ran this,
 // withheld from the log file. `pew2 pair` is where it belongs either way.
-console.log(interactive ? `Scan this, or paste into the app:\n  ${url}\n` : `Pair with: pew2 pair\n`);
+console.log(
+  interactive ? `Scan this, or paste into the app:\n  ${url}\n` : `Pair with: pew2 pair\n`,
+);
 console.log(
   pairing.relay
     ? `Works from anywhere via ${pairing.relay}\n`
@@ -392,6 +402,7 @@ const stopWatching = watchPairing(pairingPath(), pairing, () => loadPairing(), {
     // assigning the token before that throw would leave the daemon accepting a
     // token it has no matching key for, which is worse than not rotating.
     const decoded = e2e.fromHex(next.key!);
+    daemon.invalidateVoiceAccount();
     currentToken = next.token;
     rootKey = decoded;
     // A rotation mints an unclaimed pairing, so the next device to arrive takes

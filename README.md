@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/KenKaiii/pew2/releases/latest"><img src="https://img.shields.io/github/v/release/KenKaiii/pew2?style=for-the-badge&label=CLI&color=d97757" alt="Latest release"></a>
+  <a href="https://github.com/Gahroot/pew2/releases/latest"><img src="https://img.shields.io/github/v/release/Gahroot/pew2?style=for-the-badge&label=CLI&color=d97757" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg?style=for-the-badge" alt="AGPL-3.0 License"></a>
   <a href="https://youtube.com/@kenkaidoesai"><img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
   <a href="https://skool.com/kenkai"><img src="https://img.shields.io/badge/Skool-Community-7C3AED?style=for-the-badge" alt="Skool"></a>
@@ -36,7 +36,34 @@ Two things: the app on your phone, and a small program on your computer.
 ### 1. The app
 
 Coming to TestFlight. Android APK builds are in
-[Releases](https://github.com/KenKaiii/pew2/releases/latest).
+[Releases](https://github.com/Gahroot/pew2/releases/latest).
+
+### TestFlight testers
+
+Each tester installs the standalone companion on their own computer and installs
+and signs into their own EZ Coder. No source checkout, Node, or Bun is needed.
+After installing below, run `pew2 setup`, scan that computer's pairing QR with the
+TestFlight app, then select a project/session. Keep the computer awake and online
+for remote work. Never share another person's pairing QR or credentials.
+
+Release check (18 October 2026): this fork's latest published binary is **v0.9.21**,
+with macOS arm64/x64, Linux arm64/x64, Windows x64 and corresponding SHA-256 files.
+The source daemon is v0.9.23; the existing release does **not** establish that new
+voice-account functionality is available. A new daemon release and TestFlight
+build are separate shipping steps. The installer and updater in this source tree
+now target `Gahroot/pew2`, not upstream; these changes must themselves ship before
+existing installations will use that destination.
+
+**Voice accounts in this source build:** open **Connection → Voice account →
+Connect ChatGPT** with the paired computer online. Use your own account; credentials
+stay on that computer, separately from EZ Coder/Codex. Voice does not silently
+fall back to an API key. Login and voice readiness are separate, and provider
+support for Pew2 OAuth-to-Realtime is still unresolved—not a promise that a
+ChatGPT subscription covers voice. Windows voice-account storage currently fails
+closed. Native iOS and live two-user acceptance remain unverified. See
+[voice setup](docs/VOICE.md) and [verification evidence](docs/VOICE-ACCOUNT-EVIDENCE.md).
+The commands below fetch published scripts/binaries, not these uncommitted source
+changes; no new release or TestFlight build has been published by this work.
 
 ### 2. The computer bit
 
@@ -45,13 +72,13 @@ Open Terminal (macOS) or PowerShell (Windows) and paste one line.
 **macOS and Linux**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/KenKaiii/pew2/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Gahroot/pew2/main/install.sh | sh
 ```
 
 **Windows**
 
 ```powershell
-irm https://raw.githubusercontent.com/KenKaiii/pew2/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Gahroot/pew2/main/install.ps1 | iex
 ```
 
 Then:
@@ -209,7 +236,7 @@ manifest and no code.
 Everything above is the shipped path. If you want to hack on it:
 
 ```bash
-git clone https://github.com/KenKaiii/pew2.git
+git clone https://github.com/Gahroot/pew2.git
 cd pew2
 bun install
 cd packages/daemon && bun link     # puts `pew2` on your PATH

@@ -6,9 +6,15 @@ Talk to your coding agents hands-free. **The agents (EZ Coder, or whichever ACP 
 
 ### Setup
 
-**Default: your ChatGPT/Codex subscription.** Run `codex login` on the computer where the daemon runs; the daemon reads `~/.codex/auth.json` (or `$CODEX_HOME`), refreshes the token itself, and mints Realtime secrets with it. **Fallback:** if there is no login or OpenAI refuses it, the API key is used. To use the key, set `OPENAI_API_KEY` in the environment where the daemon runs, then restart it. Alternatively put `{"openaiApiKey": "..."}` in `voice-prefs.json` (see below). The environment wins. Without a key, `pew2 doctor` shows a **warning** (`voice-no-api-key`, never an error), and the app is told `voice.unavailable` with code `no_api_key`.
+**Voice now requires an explicitly connected Pew2 voice account.** With the paired computer online, open **Connection → Voice account → Connect ChatGPT** in the app. Open the official ChatGPT page, enter the displayed code and finish sign-in. The computer polls for completion; no microphone is opened during login. Each tester signs into their own account on their own paired computer.
 
-The key never leaves the daemon. The phone receives only a short-lived client secret (`POST /v1/realtime/client_secrets`).
+**Provider support is not established.** This implementation follows the local references and the public Codex device protocol, including its client ID. That is not a registered Pew2 client or proof that OpenAI permits this Realtime use. Do not treat this source build as a supported subscription-backed voice service. Real login, a successful Realtime mint and two-user acceptance remain unverified; see `docs/VOICE-ACCOUNT-EVIDENCE.md`.
+
+Login and voice readiness are separate. After login the daemon probes `POST /v1/realtime/client_secrets`, discards the probe secret and reports readiness separately. A 401 requires reconnecting; a 403 means voice is unavailable for the account; rate limits and network failures can be retried. A successful login alone does not establish subscription coverage or Realtime entitlement.
+
+**No automatic API-key billing fallback.** Voice no longer uses Codex CLI credentials, `OPENAI_API_KEY`, or the legacy `openaiApiKey` preference to authorize requests. Existing keys are not deleted. Existing API-key voice users must connect a voice account; coding-agent authentication is unchanged. `pew2 doctor` reports the separate account requirement without initiating login or refreshing credentials.
+
+OAuth access and refresh tokens stay on the computer, not the phone or model tools. The phone receives only a user code, fixed verification URL, sanitized status, and (when voice starts) a short-lived Realtime secret. **Disconnect** removes Pew2's voice credentials and ends active voice legs without cancelling coding tasks or signing out EZ Coder/Codex.
 
 `voice-prefs.json` also accepts `model` (default `gpt-realtime-2.1`), `voice` (default `marin`) and `enabled: false`.
 
@@ -43,6 +49,18 @@ Tasks run as ordinary daemon sessions (in the project's directory, with the `ezc
 ### State files (in `~/.pew2`, or `$PEW2_HOME`)
 
 `voice-state.json` (tasks, event log, command journal, decisions, heard cursor), `voice-aliases.json`, `voice-prefs.json`. Written atomically.
+
+`voice-account/oauth.json` holds Pew2-owned access/refresh tokens and expiry. It is written atomically with owner-only POSIX permissions (directory 0700, file 0600); this is not OS-keychain storage or encryption at rest. Unsafe permissions and Windows storage fail closed. Protect the computer and its backups. Do not copy this file between testers or include it in diagnostics.
+
+### Account troubleshooting
+
+- **Account required:** connect in the app; existing API keys and Codex login are not adopted.
+- **Reconnect required (401):** start a fresh sign-in. Coding-agent login is unchanged.
+- **Not entitled (403):** OpenAI refused voice for this account. Login success does not override that refusal; there is no billing fallback.
+- **Rate limited/network failure:** retry later with the computer online. App **Retry** refreshes status; a later voice start retries minting.
+- **Storage error:** use an owner-only `voice-account` directory and credential file on macOS/Linux. Windows is not supported for this account flow yet.
+- **Update Pew2 on your computer:** the app could not get an account-status reply. Verify the connection and install a daemon build containing this feature; the currently documented published release is not proof of availability.
+- **Remove account:** disconnect while the computer is online before forgetting the phone pairing. This removes local Pew2 credentials; it does not revoke provider browser sessions or delete provider-held data.
 
 ### Restart behaviour
 

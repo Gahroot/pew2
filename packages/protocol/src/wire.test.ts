@@ -10,6 +10,35 @@ import { expect, test } from "bun:test";
 import { directionKey, isEnvelope, seal } from "./crypto.js";
 import { ClientMessage, readCursors, ServerMessage, WIRE_VERSION, wireMismatch } from "./wire.js";
 
+test("voice accounts are additive, correlated and cannot carry credentials or claimed ownership", () => {
+  expect(WIRE_VERSION).toBe(2);
+  expect(ClientMessage.safeParse({ t: "voice.sync", since: 0 }).success).toBe(true);
+  expect(ClientMessage.safeParse({ t: "voice.account.connect", requestId: "r" }).success).toBe(
+    true,
+  );
+  for (const extra of [{ deviceId: "other" }, { accessToken: "secret" }]) {
+    expect(
+      ClientMessage.safeParse({ t: "voice.account.connect", requestId: "r", ...extra }).success,
+    ).toBe(false);
+  }
+  const state = {
+    t: "voice.account.state",
+    requestId: "r",
+    supported: true,
+    state: "not-connected",
+    voiceReady: false,
+  };
+  expect(ServerMessage.safeParse(state).success).toBe(true);
+  expect(ServerMessage.safeParse({ ...state, refreshToken: "secret" }).success).toBe(false);
+  expect(
+    ClientMessage.safeParse({ t: "voice.account.status", requestId: "x".repeat(101) }).success,
+  ).toBe(false);
+  expect(
+    ClientMessage.safeParse({ t: "voice.account.cancel", requestId: "r", attemptId: "invalid" })
+      .success,
+  ).toBe(false);
+});
+
 test("an outdated hello still parses, so its sender can be told why", () => {
   // The subtle one. Pinning `wire` to a literal in the schema would make this
   // fail validation and be dropped as malformed — leaving the one client that
@@ -122,7 +151,13 @@ test("every message the app actually sends is accepted", () => {
     { t: "workspace.status", sessionId: "s1", providerId: "claude-code" },
     // Voice screenshots, as `voiceController.ts` sends them: the upload, the
     // removal, and a send from the sheet through the model's own tool.
-    { t: "voice.attach", requestId: "shot-1", name: "fix.jpg", mimeType: "image/jpeg", data: "/9j/4A==" },
+    {
+      t: "voice.attach",
+      requestId: "shot-1",
+      name: "fix.jpg",
+      mimeType: "image/jpeg",
+      data: "/9j/4A==",
+    },
     { t: "voice.detach", attachmentId: "a_1" },
     // Dismissing finished tasks, from a card, a project row and "Clear all".
     { t: "voice.dismiss", taskIds: ["t_1"] },
@@ -186,9 +221,9 @@ test("a prompt keeps its attachments and defaults them when absent", () => {
   });
 
   // Older apps send none at all, and the handler reads the field unconditionally.
-  expect(ClientMessage.parse({ t: "session.prompt", sessionId: "s1", text: "hi" })).toMatchObject(
-    { attachments: [] },
-  );
+  expect(ClientMessage.parse({ t: "session.prompt", sessionId: "s1", text: "hi" })).toMatchObject({
+    attachments: [],
+  });
 });
 
 test("a message missing what the daemon will use is refused", () => {
@@ -240,9 +275,11 @@ test("a catch-up carries the approvals the agent is still blocked on", () => {
     ServerMessage.parse({ t: "session.replay", sessionId: "s1", events: [], permissions: [] }),
   ).toMatchObject({ permissions: [] });
   expect(
-    (ServerMessage.parse({ t: "session.replay", sessionId: "s1", events: [] }) as {
-      permissions?: unknown;
-    }).permissions,
+    (
+      ServerMessage.parse({ t: "session.replay", sessionId: "s1", events: [] }) as {
+        permissions?: unknown;
+      }
+    ).permissions,
     // Undefined rather than absent-as-a-key: what the app branches on is the
     // value, and asserting the key's absence would test Zod's output style
     // rather than the distinction this carries.
@@ -280,11 +317,22 @@ test("a push registration is a client message, and needs a real platform", () =>
 
   // The native call screen is optional too, and its VoIP address must look
   // like one: the token goes into an APNs URL path and the bundle id into a header.
-  const voip = { token: "ab".repeat(32), environment: "production", bundleId: "io.github.kenkaiii.pew2" };
+  const voip = {
+    token: "ab".repeat(32),
+    environment: "production",
+    bundleId: "io.github.kenkaiii.pew2",
+  };
   expect(ClientMessage.safeParse({ ...base, nativeCall: true, voip }).success).toBe(true);
-  expect(ClientMessage.safeParse({ ...base, nativeCall: true, voip: { ...voip, token: "../x" } }).success).toBe(false);
-  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, bundleId: "a\r\nb" } }).success).toBe(false);
-  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, environment: "dev" } }).success).toBe(false);
+  expect(
+    ClientMessage.safeParse({ ...base, nativeCall: true, voip: { ...voip, token: "../x" } })
+      .success,
+  ).toBe(false);
+  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, bundleId: "a\r\nb" } }).success).toBe(
+    false,
+  );
+  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, environment: "dev" } }).success).toBe(
+    false,
+  );
 
   // The daemon branches on this to decide whether to name an Android channel,
   // and naming one the device never created means nothing is shown at all.
@@ -294,7 +342,9 @@ test("a push registration is a client message, and needs a real platform", () =>
   ).toBe(false);
 
   // An empty token would be sent to Expo on every finished turn for nothing.
-  expect(ClientMessage.safeParse({ t: "app.push", token: "", platform: "ios" }).success).toBe(false);
+  expect(ClientMessage.safeParse({ t: "app.push", token: "", platform: "ios" }).success).toBe(
+    false,
+  );
 });
 
 test("cursors off a raw hello are taken only when they are usable seq numbers", () => {
@@ -313,20 +363,43 @@ test("cursors off a raw hello are taken only when they are usable seq numbers", 
 
 test("goal rows carry instructions, and workspace browsing can ask for files", async () => {
   const { GoalSummary, WorkspaceEntry, WorkspacesRequest } = await import("./wire.js");
-  const row = { id: "g", name: "n", goal: "x", context: [], path: "/g", createdAt: "t", lastActiveMs: 1, status: "idle" };
+  const row = {
+    id: "g",
+    name: "n",
+    goal: "x",
+    context: [],
+    path: "/g",
+    createdAt: "t",
+    lastActiveMs: 1,
+    status: "idle",
+  };
   expect(GoalSummary.parse({ ...row, instructions: "be brief" }).instructions).toBe("be brief");
   expect(GoalSummary.parse(row).instructions).toBeUndefined();
-  expect(WorkspacesRequest.parse({ t: "workspaces", requestId: "r", path: "/a", files: true }).files).toBe(true);
-  expect(WorkspaceEntry.parse({ path: "/a/b", name: "b", repo: false, kind: "file" }).kind).toBe("file");
+  expect(
+    WorkspacesRequest.parse({ t: "workspaces", requestId: "r", path: "/a", files: true }).files,
+  ).toBe(true);
+  expect(WorkspaceEntry.parse({ path: "/a/b", name: "b", repo: false, kind: "file" }).kind).toBe(
+    "file",
+  );
   expect(WorkspaceEntry.parse({ path: "/a/b", name: "b", repo: false }).kind).toBeUndefined();
-  expect(WorkspaceEntry.safeParse({ path: "/a/b", name: "b", repo: false, kind: "link" }).success).toBe(false);
+  expect(
+    WorkspaceEntry.safeParse({ path: "/a/b", name: "b", repo: false, kind: "link" }).success,
+  ).toBe(false);
 });
 
 test("desktop.activity is a server frame, and its state is only working or idle", () => {
   const frame = {
     t: "desktop.activity",
     sessions: [
-      { providerId: "claude-code", agentSessionId: "abc", cwd: "/p", title: "Fix login", state: "working", updatedAt: 1, tool: "Bash" },
+      {
+        providerId: "claude-code",
+        agentSessionId: "abc",
+        cwd: "/p",
+        title: "Fix login",
+        state: "working",
+        updatedAt: 1,
+        tool: "Bash",
+      },
     ],
   };
   expect(ServerMessage.safeParse(frame).success).toBe(true);

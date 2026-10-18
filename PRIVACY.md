@@ -1,14 +1,17 @@
 # Privacy Policy
 
-Last updated: 20 September 2026
+Last updated: 18 October 2026
 
 pew2 is an app for controlling coding agents that run on your own computer. This
 policy covers the pew2 iOS app and the pew2 command line tool.
 
-The short version: pew2 has no accounts, advertising, or analytics. Conversation
-traffic between the phone and your computer is encrypted end to end. Optional
-push notifications take a separate path through Expo and Apple, which can read
-their contents. The coding agents you choose have their own data practices.
+The short version: pew2 has no developer-operated user accounts, advertising,
+or analytics. Optional voice connects your own ChatGPT account on your computer
+and sends voice data to OpenAI. Conversation traffic between the phone and your
+computer is encrypted end to end; this does not make OpenAI voice processing
+local-only. Optional push notifications take a separate path through Expo and
+Apple, which can read their contents. The coding agents you choose have their
+own data practices.
 
 ## What the developer collects
 
@@ -57,14 +60,50 @@ or conversation history. The hosted relay runs on Cloudflare; infrastructure
 metadata handling is subject to Cloudflare's policies. You can also run your own
 relay.
 
+## Optional ChatGPT voice account
+
+Voice account connection is separate from coding-agent login. The paired computer
+contacts OpenAI's authentication service to request a device sign-in code, poll
+for approval and exchange or refresh OAuth credentials. The phone displays the
+temporary code and sanitized status, not the OAuth access or refresh tokens.
+**Open ChatGPT** opens OpenAI's official sign-in page in the browser; OpenAI
+handles that sign-in under its own policies. **Copy code** puts the temporary
+code on the system clipboard, which is outside Pew2's storage.
+
+Pew2 stores voice access/refresh tokens and expiry only on the computer, in
+`voice-account/oauth.json` below the daemon data directory (`~/.pew2` by default,
+or `$PEW2_HOME`). This is an owner-only POSIX file, not OS-keychain protection or
+encryption at rest. Windows voice-account storage is not currently supported.
+Credentials remain across daemon restarts until replaced or removed; backups
+may retain copies. Protect the computer and its backups.
+
+**Disconnect** while the computer is online removes Pew2's local voice credentials
+and ends active Pew2 voice calls without signing out EZ Coder/Codex or cancelling
+coding tasks. Forgetting the pairing on the phone clears its account display,
+not credentials on the computer. Local removal does not revoke browser sessions
+or delete data already held by OpenAI. Pew2 does not silently adopt Codex CLI
+credentials or fall back to API-key billing for voice.
+
+When a voice call starts, the daemon requests a short-lived Realtime secret from
+OpenAI, and the phone uses it to connect directly to OpenAI. OpenAI receives
+microphone audio and the voice session's instructions, task summaries and tool
+results used to control coding work, and generates spoken responses. This
+processing is not covered by the phone-to-computer end-to-end encryption. Login
+also performs a short-lived-credential readiness probe without opening audio.
+OpenAI's [privacy policy](https://openai.com/policies/privacy-policy/) and applicable
+account/service terms govern its handling. Provider support for this source
+build's account-to-Realtime flow and live entitlement remain unverified.
+
 ## Permissions the app asks for
 
 - **Camera.** To scan the pairing code and take a photo to send to an agent.
 - **Photos.** To attach an image or save one an agent sends you.
 - **Microphone and speech recognition.** To dictate a message while holding the
-  microphone button. On iOS, the app requires on-device recognition rather than
-  sending audio to Apple for transcription. The resulting text is sent to your
-  chosen agent when you send the message.
+  microphone button. For dictation on iOS, the app requires on-device recognition
+  rather than sending audio to Apple for transcription. The resulting text is
+  sent to your chosen agent when you send the message. The separate live voice
+  conversation sends microphone audio to OpenAI as described above; connecting
+  a voice account alone does not open the microphone.
 - **Notifications.** To alert you about agent activity. See below for the
   separate push-delivery path.
 

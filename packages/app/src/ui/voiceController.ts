@@ -15,7 +15,13 @@ import {
   type MachineEvent,
   type MachineState,
 } from "../voice/voiceMachine";
-import { emptyStore, finishedTaskIds, reduce, type StoreAction, type VoiceStore } from "../voice/voiceStore";
+import {
+  emptyStore,
+  finishedTaskIds,
+  reduce,
+  type StoreAction,
+  type VoiceStore,
+} from "../voice/voiceStore";
 import { activateAudioSession, deactivateAudioSession } from "./audioSession";
 import { LOST_CONNECTION_LINE, onNetworkLost, onNetworkRestored } from "../voice/connectivity";
 import { offerLiveEvent } from "./voiceAlerts";
@@ -190,7 +196,10 @@ export function createVoiceController(deps: VoiceDeps) {
         return;
       case "scheduleRetry":
         clearTimeout(retryTimer);
-        retryTimer = setTimeout(() => dispatch({ type: "retryDue", voiceSessionId: newId() }), effect.ms);
+        retryTimer = setTimeout(
+          () => dispatch({ type: "retryDue", voiceSessionId: newId() }),
+          effect.ms,
+        );
         return;
       case "cancelRetry":
         clearTimeout(retryTimer);
@@ -249,7 +258,8 @@ export function createVoiceController(deps: VoiceDeps) {
         onError: (_message, fatal) => fatal && dispatch({ type: "transportDown" }),
         onToolCall: (call) => {
           const id = machine.voiceSessionId;
-          const sent = id !== undefined && deps.send({ t: "voice.tool", voiceSessionId: id, ...call });
+          const sent =
+            id !== undefined && deps.send({ t: "voice.tool", voiceSessionId: id, ...call });
           if (!sent) {
             realtime?.submitResult({
               callId: call.callId,
@@ -277,14 +287,22 @@ export function createVoiceController(deps: VoiceDeps) {
      */
     attachScreenshot(file: PendingAttachment): void {
       const requestId = `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const sent = deps.send({ t: "voice.attach", requestId, name: file.name, mimeType: file.mimeType, data: file.data });
+      const sent = deps.send({
+        t: "voice.attach",
+        requestId,
+        name: file.name,
+        mimeType: file.mimeType,
+        data: file.data,
+      });
       uploads = [
         {
           requestId,
           name: file.name,
           ...(file.localUri ? { localUri: file.localUri } : null),
           status: sent ? "uploading" : "failed",
-          ...(sent ? null : { error: "Your computer is not reachable right now. Try again when it is." }),
+          ...(sent
+            ? null
+            : { error: "Your computer is not reachable right now. Try again when it is." }),
           at: Date.now(),
         },
         ...uploads,
@@ -293,7 +311,16 @@ export function createVoiceController(deps: VoiceDeps) {
     },
     /** A picker that could not open or read the file, shown as a refused card. */
     screenshotFailed(name: string, error: string): void {
-      uploads = [{ requestId: `failed-${Date.now().toString(36)}`, name, status: "failed", error, at: Date.now() }, ...uploads];
+      uploads = [
+        {
+          requestId: `failed-${Date.now().toString(36)}`,
+          name,
+          status: "failed",
+          error,
+          at: Date.now(),
+        },
+        ...uploads,
+      ];
       publish();
     },
     /** Remove a card: a refused upload here, or a held screenshot on the computer too. */
@@ -317,7 +344,12 @@ export function createVoiceController(deps: VoiceDeps) {
         voiceSessionId: SHEET_SESSION,
         callId,
         name: "attach_screenshot",
-        args: { attachmentId, taskId, instruction: "Here is a screenshot the user forwarded, likely a fix from a partner. Look at it and apply it to this task." },
+        args: {
+          attachmentId,
+          taskId,
+          instruction:
+            "Here is a screenshot the user forwarded, likely a fix from a partner. Look at it and apply it to this task.",
+        },
       });
       if (!ok) return;
       sheetSends.set(callId, { attachmentId, taskId });
@@ -330,7 +362,9 @@ export function createVoiceController(deps: VoiceDeps) {
      */
     dismiss(request: DismissRequest): void {
       if (!store.canDismiss) return;
-      const taskIds = request.allFinished ? [...new Set([...request.taskIds, ...finishedTaskIds(store)])].sort() : request.taskIds;
+      const taskIds = request.allFinished
+        ? [...new Set([...request.taskIds, ...finishedTaskIds(store)])].sort()
+        : request.taskIds;
       const message = { ...request, t: "voice.dismiss", taskIds };
       // Later, only what was on screen: "all" or a whole project then could
       // take something that finished since, which nobody has read.
@@ -385,7 +419,10 @@ export function createVoiceController(deps: VoiceDeps) {
         if (d.kind !== "hold") return;
         holding = true;
         if (d.announce) {
-          transport?.send({ type: "response.create", response: { instructions: LOST_CONNECTION_LINE } });
+          transport?.send({
+            type: "response.create",
+            response: { instructions: LOST_CONNECTION_LINE },
+          });
         }
         clearTimeout(holdTimer);
         holdTimer = setTimeout(() => {
@@ -411,31 +448,47 @@ export function createVoiceController(deps: VoiceDeps) {
     handleMessage(message: Message): void {
       switch (message.t) {
         case "voice.ready": {
-          if (message.voiceSessionId !== machine.voiceSessionId || machine.phase !== "opening") return;
+          if (message.voiceSessionId !== machine.voiceSessionId || machine.phase !== "opening")
+            return;
           const rt = message.realtime;
           fold({ type: "state", snapshot: message.snapshot, events: [] });
-          announceSince = typeof message.snapshot?.eventId === "number" ? message.snapshot.eventId : store.cursor;
+          announceSince =
+            typeof message.snapshot?.eventId === "number" ? message.snapshot.eventId : store.cursor;
           startRealtime({
             secret: rt.secret,
             model: rt.model,
             session: rt.session,
-            speakFirst: machine.focus?.source === "notification" || (message.snapshot?.unheard?.length ?? 0) > 0,
+            speakFirst:
+              machine.focus?.source === "notification" ||
+              (message.snapshot?.unheard?.length ?? 0) > 0,
           });
           dispatch({ type: "ready" });
           return;
         }
         case "voice.unavailable":
+          if (message.voiceSessionId !== machine.voiceSessionId) return;
           dispatch({ type: "unavailable", code: message.code, message: message.message });
           return;
         case "voice.tool.result": {
-          const fromSheet = typeof message.callId === "string" ? sheetSends.get(message.callId) : undefined;
+          const fromSheet =
+            typeof message.callId === "string" ? sheetSends.get(message.callId) : undefined;
           if (message.voiceSessionId === SHEET_SESSION && fromSheet) {
             sheetSends.delete(message.callId);
             const shot = held.find((h) => h.attachmentId === fromSheet.attachmentId);
             const task = store.tasks[fromSheet.taskId];
             if (message.ok && shot && task) tellModel(sentNote(shot, task));
             if (!message.ok && shot) {
-              uploads = [{ requestId: `send-${message.callId}`, name: shot.name, status: "failed", error: typeof message.error === "string" ? message.error : "It could not be sent.", at: Date.now() }, ...uploads];
+              uploads = [
+                {
+                  requestId: `send-${message.callId}`,
+                  name: shot.name,
+                  status: "failed",
+                  error:
+                    typeof message.error === "string" ? message.error : "It could not be sent.",
+                  at: Date.now(),
+                },
+                ...uploads,
+              ];
               publish();
             }
             return;
@@ -461,14 +514,25 @@ export function createVoiceController(deps: VoiceDeps) {
           const attachment = message.attachment as HeldScreenshot | undefined;
           if (message.ok === true && attachment && typeof attachment.attachmentId === "string") {
             uploads = uploads.filter((u) => u.requestId !== message.requestId);
-            localUris = { ...localUris, [attachment.attachmentId]: { localUri: upload.localUri, key: upload.requestId } };
-            if (!held.some((h) => h.attachmentId === attachment.attachmentId)) held = [...held, ...(readHeld([attachment]) ?? [])];
+            localUris = {
+              ...localUris,
+              [attachment.attachmentId]: { localUri: upload.localUri, key: upload.requestId },
+            };
+            if (!held.some((h) => h.attachmentId === attachment.attachmentId))
+              held = [...held, ...(readHeld([attachment]) ?? [])];
             // The user is in a conversation: the model hears it arrived and asks where it goes.
             tellModel(arrivalNote(attachment));
           } else {
             uploads = uploads.map((u) =>
               u.requestId === message.requestId
-                ? { ...u, status: "failed", error: typeof message.error === "string" ? message.error : "Your computer refused that picture." }
+                ? {
+                    ...u,
+                    status: "failed",
+                    error:
+                      typeof message.error === "string"
+                        ? message.error
+                        : "Your computer refused that picture.",
+                  }
                 : u,
             );
           }
@@ -487,7 +551,8 @@ export function createVoiceController(deps: VoiceDeps) {
           if (!next) return;
           // The first frame of a call only seeds the baseline: no burst of old news.
           if (realtime && deskBaselineFor === realtime) {
-            for (const note of desktopActivityNotes(lastDesk, next, (id) => deps.agentName?.(id))) realtime.notify(note);
+            for (const note of desktopActivityNotes(lastDesk, next, (id) => deps.agentName?.(id)))
+              realtime.notify(note);
           }
           deskBaselineFor = realtime;
           lastDesk = next;
@@ -495,7 +560,11 @@ export function createVoiceController(deps: VoiceDeps) {
         }
         case "voice.event":
           // A live conversation hears it from the model; nothing else would tell it.
-          if (realtime && message.event && shouldAnnounce(message.event, { since: announceSince, sent: announced })) {
+          if (
+            realtime &&
+            message.event &&
+            shouldAnnounce(message.event, { since: announceSince, sent: announced })
+          ) {
             announced.add(message.event.eventId);
             realtime.notify(liveUpdateNote(message.event, message.task));
           }
@@ -506,11 +575,18 @@ export function createVoiceController(deps: VoiceDeps) {
           // Absent from an older daemon, which holds none: leave what is shown alone.
           const list = readHeld(message.attachments);
           if (list) held = list;
-          fold({ type: "state", snapshot: message.snapshot, events: message.events ?? [], dismissed: stringList(message.dismissed) });
+          fold({
+            type: "state",
+            snapshot: message.snapshot,
+            events: message.events ?? [],
+            dismissed: stringList(message.dismissed),
+          });
           // Taps made offline: the snapshot just brought those tasks back.
           if (pendingDismissals.length > 0 && store.canDismiss) {
             const waiting = pendingDismissals;
-            pendingDismissals = waiting.filter((request) => !deps.send({ ...request, t: "voice.dismiss" }));
+            pendingDismissals = waiting.filter(
+              (request) => !deps.send({ ...request, t: "voice.dismiss" }),
+            );
             fold({ type: "dismissed", taskIds: waiting.flatMap((request) => request.taskIds) });
           }
           return;
@@ -521,12 +597,20 @@ export function createVoiceController(deps: VoiceDeps) {
           return;
         }
         case "error":
-          if (message.code === "unknown_message" && machine.phase === "opening") dispatch({ type: "oldDaemon" });
+          if (message.code === "unknown_message" && machine.phase === "opening")
+            dispatch({ type: "oldDaemon" });
           // An older daemon has no `voice.attach`, and its refusal names no
           // request: without this every upload would spin for ever.
           if (message.code === "unknown_message" && uploads.some((u) => u.status === "uploading")) {
             uploads = uploads.map((u) =>
-              u.status === "uploading" ? { ...u, status: "failed", error: "Your computer's pew2 is too old for screenshots. Update it, then try again." } : u,
+              u.status === "uploading"
+                ? {
+                    ...u,
+                    status: "failed",
+                    error:
+                      "Your computer's pew2 is too old for screenshots. Update it, then try again.",
+                  }
+                : u,
             );
             publish();
           }

@@ -3,15 +3,7 @@
  * sheet, as states of one surface. `App.tsx` mounts it once paired.
  */
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Alert,
-  Animated,
-  AppState,
-  Keyboard,
-  Pressable,
-  StyleSheet,
-  View,
-} from "react-native";
+import { Alert, Animated, AppState, Keyboard, Pressable, StyleSheet, View } from "react-native";
 import { GestureDetector } from "react-native-gesture-handler";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Reanimated from "react-native-reanimated";
@@ -23,7 +15,12 @@ import { projectDrawerRows } from "./historyMetadata";
 import { restorePresentation } from "./restoreState";
 import { currentTool } from "./activity";
 import { dockHeightFor, recordDockHeight, type DockHeights } from "./dockHeight";
-import { clearConversationNotices, ensureNotificationPermission, setOpenConversation, setWaitingBadge } from "./ui/notifier";
+import {
+  clearConversationNotices,
+  ensureNotificationPermission,
+  setOpenConversation,
+  setWaitingBadge,
+} from "./ui/notifier";
 import { useTurnBanners } from "./ui/useTurnBanners";
 import { useAppActive } from "./ui/useAppActive";
 import { waitingCount } from "./notificationPolicy";
@@ -48,13 +45,21 @@ import { DotGlyph } from "./ui/stage/DotGlyph";
 import { haptics } from "./ui/haptics";
 import { Sidebar } from "./ui/Sidebar";
 import { ConnectionSheet } from "./ui/ConnectionSheet";
+import { VoiceAccountSheet } from "./ui/VoiceAccountSheet";
+import { accountLabel } from "./voice/account";
 import { ContextDetailsSheet } from "./ui/ContextDetailsSheet";
 import { projectContains, projectFor, projectsForProvider, projectSourceKey } from "./projects";
 import { workspaceTitle } from "./contextDetails";
 import { VoiceSheet } from "./ui/VoiceSheet";
 import { ProjectDashboard } from "./ui/ProjectDashboard";
 import { useVoice } from "./ui/useVoice";
-import { clearVoiceCursor, loadNativeCall, loadVoiceCall, saveNativeCall, saveVoiceCall } from "./preferences";
+import {
+  clearVoiceCursor,
+  loadNativeCall,
+  loadVoiceCall,
+  saveNativeCall,
+  saveVoiceCall,
+} from "./preferences";
 import { greetingFor, hashSeed } from "./greeting";
 import { sounds } from "./ui/sounds";
 import { AgentCarousel } from "./ui/AgentCarousel";
@@ -111,7 +116,12 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   useEffect(() => {
     void loadNativeCall().then(setNativeCall);
   }, []);
-  const voice = useVoice({ send: daemon.send as (m: Record<string, unknown>) => boolean, online: daemon.status === "online", nativeCall, agentName: (id) => daemon.providers.find((p) => p.id === id)?.name });
+  const voice = useVoice({
+    send: daemon.send as (m: Record<string, unknown>) => boolean,
+    online: daemon.status === "online",
+    nativeCall,
+    agentName: (id) => daemon.providers.find((p) => p.id === id)?.name,
+  });
   const { handleMessage: handleVoiceMessage } = voice;
   useEffect(() => {
     voiceInbox.current = handleVoiceMessage;
@@ -119,10 +129,14 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   const [dashboardOpen, setDashboardOpen] = useState(false);
 
   const [drawerProjection, setDrawerProjection] = useState(() => ({
-    source: daemon.sessions, rows: projectDrawerRows([], daemon.sessions),
+    source: daemon.sessions,
+    rows: projectDrawerRows([], daemon.sessions),
   }));
   if (drawerProjection.source !== daemon.sessions) {
-    setDrawerProjection({ source: daemon.sessions, rows: projectDrawerRows(drawerProjection.rows, daemon.sessions) });
+    setDrawerProjection({
+      source: daemon.sessions,
+      rows: projectDrawerRows(drawerProjection.rows, daemon.sessions),
+    });
   }
 
   // Retry the socket the moment the app is back, rather than waiting out a
@@ -221,7 +235,9 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   } = useAttachments(devSheet);
   // `EXPO_PUBLIC_DEV_OPEN_DRAWER=1` (development only) starts with the drawer
   // open, so a simulator check can see it without a tap.
-  const [menuOpen, setMenuOpen] = useState(() => __DEV__ && process.env.EXPO_PUBLIC_DEV_OPEN_DRAWER === "1");
+  const [menuOpen, setMenuOpen] = useState(
+    () => __DEV__ && process.env.EXPO_PUBLIC_DEV_OPEN_DRAWER === "1",
+  );
   const [voiceCall, setVoiceCall] = useState(false);
   useEffect(() => {
     void loadVoiceCall().then(setVoiceCall);
@@ -254,8 +270,12 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     [sendPush],
   );
   const [connectionOpen, setConnectionOpen] = useState(() => devSheet === "connection");
+  const [voiceAccountOpen, setVoiceAccountOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(() => devSheet === "context");
-  const openContext = useCallback(() => { Keyboard.dismiss(); setContextOpen(true); }, []);
+  const openContext = useCallback(() => {
+    Keyboard.dismiss();
+    setContextOpen(true);
+  }, []);
   const closeContext = useCallback(() => setContextOpen(false), []);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   const openConnection = useCallback(() => {
@@ -266,7 +286,9 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   const closeConnection = useCallback(() => setConnectionOpen(false), []);
   // Which pill's menu is open, and where that pill sits, so the menu opens
   // under it instead of always at the gutter.
-  const [picker, setPicker] = useState<"model" | "mode" | null>(() => (devSheet === "model" ? "model" : null));
+  const [picker, setPicker] = useState<"model" | "mode" | null>(() =>
+    devSheet === "model" ? "model" : null,
+  );
   const [commandsOpen, setCommandsOpen] = useState(() => devSheet === "commands");
   const [newChatOpen, setNewChatOpen] = useState(() => devSheet === "newchat");
   // The reasoning currently being read, if any. Held here rather than per turn
@@ -384,7 +406,10 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   );
   const selectedProjectPath = activeId ? daemon.projectPath[activeId] : undefined;
   // The project that selection names, its branches included.
-  const selectedProject = useMemo(() => projectFor(projects, selectedProjectPath), [projects, selectedProjectPath]);
+  const selectedProject = useMemo(
+    () => projectFor(projects, selectedProjectPath),
+    [projects, selectedProjectPath],
+  );
   // The same rows the drawer animates, named by project, so the voice dashboard
   // never says "Idle" next to a spinning conversation.
   const dashboardSessions = useMemo(
@@ -410,12 +435,14 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   // this the screen fell back to home for that moment, with the agent's recent
   // chats as cards under a thumb that had just let go of Ken: one stray tap
   // opened some other conversation instead of the goal.
-  const launching = launchingGoal !== undefined && daemon.turns.length === 0 && !daemon.restoreTarget;
+  const launching =
+    launchingGoal !== undefined && daemon.turns.length === 0 && !daemon.restoreTarget;
   const inThread = daemon.turns.length > 0 || launching;
-  const sessionTitle = daemon.restoreTarget?.title
-    ?? (launching ? launchingGoal : undefined)
-    ?? daemonSessions.find((session) => session.id === (daemon.sessionId ?? threadKey))?.title
-    ?? "New conversation";
+  const sessionTitle =
+    daemon.restoreTarget?.title ??
+    (launching ? launchingGoal : undefined) ??
+    daemonSessions.find((session) => session.id === (daemon.sessionId ?? threadKey))?.title ??
+    "New conversation";
 
   // Where the reading area begins and ends: under the nav, and above the
   // composer. Both fall back to the resting height of the thing they clear,
@@ -492,7 +519,10 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   }, [typingRef]);
   const closeCarousel = useCallback(() => setCarouselOpen(false), []);
   const carouselAgents = useMemo(
-    () => orderProvidersByRecency(daemon.providers, drawerProjection.rows).filter((p) => p.available !== false),
+    () =>
+      orderProvidersByRecency(daemon.providers, drawerProjection.rows).filter(
+        (p) => p.available !== false,
+      ),
     [daemon.providers, drawerProjection.rows],
   );
   const homeChats = useMemo(
@@ -501,16 +531,25 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
         .filter(
           (row) =>
             row.providerId === activeId &&
-            (!selectedProjectPath || (selectedProject ? projectContains(selectedProject, row.cwd) : row.cwd === selectedProjectPath)),
+            (!selectedProjectPath ||
+              (selectedProject
+                ? projectContains(selectedProject, row.cwd)
+                : row.cwd === selectedProjectPath)),
         )
         .slice(0, 6)
         .map((row) => ({ id: row.id, title: row.title || "Untitled", startedAt: row.startedAt })),
     [drawerProjection.rows, activeId, selectedProjectPath, selectedProject],
   );
   const homeStatus = [
-    daemon.busy ? "Working" : daemon.status === "online" && !daemon.unreachable ? "Ready" : "Offline",
+    daemon.busy
+      ? "Working"
+      : daemon.status === "online" && !daemon.unreachable
+        ? "Ready"
+        : "Offline",
     workspaceTitle(daemon.workspace),
-    daemon.workspace?.repo && (daemon.workspace.uncommitted ?? 0) > 0 ? `${daemon.workspace.uncommitted} changed` : undefined,
+    daemon.workspace?.repo && (daemon.workspace.uncommitted ?? 0) > 0
+      ? `${daemon.workspace.uncommitted} changed`
+      : undefined,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -541,7 +580,11 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
 
   useAgentFeedback(daemon.busy, daemon.turns, daemon.permission);
 
-  const { paneSlide, edgeSwipeClosed, edgeSwipeOpen, drawerSwipe } = useDrawer({ menuOpen, setMenuOpen, reduceMotion });
+  const { paneSlide, edgeSwipeClosed, edgeSwipeOpen, drawerSwipe } = useDrawer({
+    menuOpen,
+    setMenuOpen,
+    reduceMotion,
+  });
 
   useEffect(() => {
     const animation = Animated.timing(jumpOpacity, {
@@ -552,7 +595,6 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     animation.start();
     return () => animation.stop();
   }, [atBottom, reduceMotion, jumpOpacity]);
-
 
   const openSession = useCallback(
     (id: string) => {
@@ -637,7 +679,9 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   // message that was never delivered.
   // `EXPO_PUBLIC_DEV_NEW_GOAL=1` (development only) opens the New goal screen
   // on launch, for a simulator check without a tap.
-  const [newGoalOpen, setNewGoalOpen] = useState(() => __DEV__ && process.env.EXPO_PUBLIC_DEV_NEW_GOAL === "1");
+  const [newGoalOpen, setNewGoalOpen] = useState(
+    () => __DEV__ && process.env.EXPO_PUBLIC_DEV_NEW_GOAL === "1",
+  );
   const [newGoalPrefill, setNewGoalPrefill] = useState<string>();
   const send = useCallback(
     (text: string): boolean => {
@@ -687,7 +731,17 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     // Attachments are read through their ref, so staging a photo does not
     // rebuild this and re-render the memoised dock beneath it.
     // `attachmentsRef` and `setAttachments` come from `useAttachments`: stable.
-    [cancelDictation, daemon.sessionId, promptDaemon, startDaemon, active, attachmentsRef, setAttachments, registerDaemonPush, pushExpected],
+    [
+      cancelDictation,
+      daemon.sessionId,
+      promptDaemon,
+      startDaemon,
+      active,
+      attachmentsRef,
+      setAttachments,
+      registerDaemonPush,
+      pushExpected,
+    ],
   );
 
   /**
@@ -720,7 +774,6 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     cancelDictation();
   }, [daemon.sessionId, cancelDictation]);
 
-
   /**
    * Leave the current conversation, with the next one aimed at `cwd`.
    *
@@ -747,7 +800,13 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     },
     [activeId, selectDaemonProject, leaveDaemon],
   );
-  useDevOpenSession({ rows: drawerProjection.rows, activeId, openSession, startNewChat, setNewChatOpen });
+  useDevOpenSession({
+    rows: drawerProjection.rows,
+    activeId,
+    openSession,
+    startNewChat,
+    setNewChatOpen,
+  });
 
   // Widget taps. A conversation goes through `setChoice`, exactly like a
   // banner tap, so a widget that launched the app cold waits for the session
@@ -846,19 +905,52 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     setCarouselOpen,
     setMenuOpen,
   });
-  const composerSelectors = useMemo<ComposerSelector[]>(() => [
-    ...(model ? [{ id: "model", value: "Model", label: `Model: ${valueName(model) ?? "Not reported"}${level ? `, ${valueName(level)}` : ""}`, onPress: (anchor: ComposerAnchor) => openComposerPicker("model", anchor) }] : []),
-    ...(mode && !ggAgent ? [{ id: "mode", value: valueName(mode) ?? mode.name, label: `${mode.name}: ${valueName(mode) ?? "Not reported"}`, onPress: (anchor: ComposerAnchor) => openComposerPicker("mode", anchor) }] : []),
-    ...(autopilotOffered
-      ? [{
-          id: "autopilot",
-          value: autopilotReviewing ? "Reviewing…" : "Autopilot",
-          label: autopilotReviewing ? "Autopilot, Ken is reviewing" : "Autopilot",
-          toggle: { on: autopilotOn },
-          onPress: toggleAutopilot,
-        }]
-      : []),
-  ], [model, mode, level, ggAgent, autopilotOffered, autopilotOn, autopilotReviewing, toggleAutopilot, openComposerPicker]);
+  const composerSelectors = useMemo<ComposerSelector[]>(
+    () => [
+      ...(model
+        ? [
+            {
+              id: "model",
+              value: "Model",
+              label: `Model: ${valueName(model) ?? "Not reported"}${level ? `, ${valueName(level)}` : ""}`,
+              onPress: (anchor: ComposerAnchor) => openComposerPicker("model", anchor),
+            },
+          ]
+        : []),
+      ...(mode && !ggAgent
+        ? [
+            {
+              id: "mode",
+              value: valueName(mode) ?? mode.name,
+              label: `${mode.name}: ${valueName(mode) ?? "Not reported"}`,
+              onPress: (anchor: ComposerAnchor) => openComposerPicker("mode", anchor),
+            },
+          ]
+        : []),
+      ...(autopilotOffered
+        ? [
+            {
+              id: "autopilot",
+              value: autopilotReviewing ? "Reviewing…" : "Autopilot",
+              label: autopilotReviewing ? "Autopilot, Ken is reviewing" : "Autopilot",
+              toggle: { on: autopilotOn },
+              onPress: toggleAutopilot,
+            },
+          ]
+        : []),
+    ],
+    [
+      model,
+      mode,
+      level,
+      ggAgent,
+      autopilotOffered,
+      autopilotOn,
+      autopilotReviewing,
+      toggleAutopilot,
+      openComposerPicker,
+    ],
+  );
 
   const answerPermission = useCallback(
     (requestId: string, optionId: string, deny: boolean) => {
@@ -887,353 +979,427 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
 
   return (
     <ImageResolverProvider value={imageResolver}>
-    <AgentColorProvider value={agentInk}>
-    <View style={styles.root}>
-      <StatusBar style="light" />
+      <AgentColorProvider value={agentInk}>
+        <View style={styles.root}>
+          <StatusBar style="light" />
 
-      <GestureDetector gesture={drawerSwipe}>
-      <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      <Sidebar
-        open={menuOpen}
-        providers={daemon.providers}
-        sessions={drawerProjection.rows}
-        activeProviderId={active?.id}
-        activeSessionId={daemon.sessionId}
-        // Selecting an app refilters the history in place. The drawer stays
-        // open so you can pick a conversation from that app straight after —
-        // closing here would make choosing an app cost two trips.
-        onSelectProvider={daemon.select}
-        onOpenSession={openSession}
-        onNewConversation={newConversation}
-        // Which project the history is narrowed to, and where the next
-        // conversation will open.
-        projects={projects}
-        selectedProjectPath={selectedProjectPath}
-        onSelectProject={selectProject}
-        historyLoading={daemon.loadingSessions}
-        reduceMotion={reduceMotion}
-        machineLabel={daemon.machineName ?? "Your computer"}
-        machineRemote={pairing.remote}
-        connectionStatus={daemon.status}
-        update={daemon.update}
-        onOpenConnection={openConnection}
-        onClose={closeMenu}
-        goals={
-          activeId !== undefined && daemon.goalsProviders.includes(activeId)
-            ? {
-                list: goalsHere,
-                loading: gg.goalsLoading,
-                error: gg.goalsError,
-                onRefresh: refreshGoals,
-                onOpen: openGoal,
-                onDelete: deleteGoal,
-                onNew: openNewGoal,
-              }
-            : undefined
-        }
-      />
-      </View>
-      </GestureDetector>
+          <GestureDetector gesture={drawerSwipe}>
+            <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+              <Sidebar
+                open={menuOpen}
+                providers={daemon.providers}
+                sessions={drawerProjection.rows}
+                activeProviderId={active?.id}
+                activeSessionId={daemon.sessionId}
+                // Selecting an app refilters the history in place. The drawer stays
+                // open so you can pick a conversation from that app straight after —
+                // closing here would make choosing an app cost two trips.
+                onSelectProvider={daemon.select}
+                onOpenSession={openSession}
+                onNewConversation={newConversation}
+                // Which project the history is narrowed to, and where the next
+                // conversation will open.
+                projects={projects}
+                selectedProjectPath={selectedProjectPath}
+                onSelectProject={selectProject}
+                historyLoading={daemon.loadingSessions}
+                reduceMotion={reduceMotion}
+                machineLabel={daemon.machineName ?? "Your computer"}
+                machineRemote={pairing.remote}
+                connectionStatus={daemon.status}
+                update={daemon.update}
+                onOpenConnection={openConnection}
+                onClose={closeMenu}
+                goals={
+                  activeId !== undefined && daemon.goalsProviders.includes(activeId)
+                    ? {
+                        list: goalsHere,
+                        loading: gg.goalsLoading,
+                        error: gg.goalsError,
+                        onRefresh: refreshGoals,
+                        onOpen: openGoal,
+                        onDelete: deleteGoal,
+                        onNew: openNewGoal,
+                      }
+                    : undefined
+                }
+              />
+            </View>
+          </GestureDetector>
 
-      {/* The conversation pane. Slides right to reveal the drawer beneath. */}
-      <Reanimated.View style={[styles.pane, paneSlide]}>
-      {/* Starts below the nav: this strip is the hit target for anything it
+          {/* The conversation pane. Slides right to reveal the drawer beneath. */}
+          <Reanimated.View style={[styles.pane, paneSlide]}>
+            {/* Starts below the nav: this strip is the hit target for anything it
           covers, and over the nav it would swallow taps on the menu button. */}
-      {!menuOpen && (
-        <GestureDetector gesture={edgeSwipeClosed}>
-          <View style={[styles.edgeSwipe, { top: insets.top + navHeight }]} />
-        </GestureDetector>
-      )}
-      {/* Full-bleed on both edges: the thread runs behind the status bar and
+            {!menuOpen && (
+              <GestureDetector gesture={edgeSwipeClosed}>
+                <View style={[styles.edgeSwipe, { top: insets.top + navHeight }]} />
+              </GestureDetector>
+            )}
+            {/* Full-bleed on both edges: the thread runs behind the status bar and
           down to the home indicator, and a CanvasCover covers each of those
           regions, so content fades out into the canvas colour at both ends
           rather than meeting a solid band. The dock carries the bottom inset
           itself. */}
-      <SafeAreaView style={styles.paneInner} edges={[]}>
+            <SafeAreaView style={styles.paneInner} edges={[]}>
+              <ScreenTopBar
+                daemon={daemon}
+                goals={goals}
+                insets={insets}
+                navHeight={navHeight}
+                setNavHeight={setNavHeight}
+                setMenuOpen={setMenuOpen}
+                setNewChatOpen={setNewChatOpen}
+                openProjects={() => setDashboardOpen(true)}
+                openVoice={voice.open}
+                sessionTitle={sessionTitle}
+                inThread={inThread}
+                holdingRestore={holdingRestore}
+                active={active}
+              />
 
-      <ScreenTopBar
-        daemon={daemon}
-        goals={goals}
-        insets={insets}
-        navHeight={navHeight}
-        setNavHeight={setNavHeight}
-        setMenuOpen={setMenuOpen}
-        setNewChatOpen={setNewChatOpen}
-        openProjects={() => setDashboardOpen(true)}
-        openVoice={voice.open}
-        sessionTitle={sessionTitle}
-        inThread={inThread}
-        holdingRestore={holdingRestore}
-        active={active}
-      />
-
-      {/* The one thing the keyboard moves: the thread and the dock ride up as a
+              {/* The one thing the keyboard moves: the thread and the dock ride up as a
           single transform, so the gap between them never changes and nothing
           re-lays out on the keyboard's clock. */}
-      <Reanimated.View style={[styles.body, keyboard.pane]}>
-        {inThread || daemon.restoreTarget ? (
-          // Remounted per conversation so `startRenderingFromBottom` re-arms:
-          // each transcript must open on its own newest message, not on the
-          // scroll offset the previous one happened to be left at.
-          <ChatThread
-            key={threadKey}
-            ref={scroller}
-            turns={holdingRestore ? NO_TURNS : shownTurns}
-            activeStream={daemon.activeStream}
-            restore={launching ? {
-              title: launchingGoal!,
-              state: "starting",
-              onRetry: NOOP,
-            } : daemon.restoreTarget ? {
-              title: daemon.restoreTarget.title,
-              state: restorePresentation(daemon.restoreTarget, daemon.loadingSession, daemon.restoreError, holdingRestore ? 0 : daemon.turns.length, daemon.status),
-              error: daemon.restoreError,
-              onRetry: () => daemon.openSession(daemon.restoreTarget!.id),
-            } : undefined}
-            threadTop={threadTop}
-            threadBottom={threadBottom}
-            working={working && !daemon.loadingSession && !daemon.restoreError}
-            receipt={daemon.receipt}
-            indicatorTop={insets.top + navHeight}
-            indicatorBottom={dockHeight + stripsHeight}
-            onAtBottomChange={setAtBottom}
-            onOpenThought={openThought}
-            onRetry={retrySend}
-          />
-        ) : !daemon.loadingSession ? (
-          <HomeView
-            daemon={daemon}
-            keyboard={keyboard}
-            active={active}
-            homeWaited={homeWaited}
-            reduceMotion={reduceMotion}
-            homeStatus={homeStatus}
-            openCarousel={openCarousel}
-            pewSmiling={pewSmiling}
-            homeChats={homeChats}
-            openSession={openSession}
-            greeting={greeting}
-            emptyReason={emptyReason}
-            bottomClearance={dockHeightFor(dockHeights, false, restingDockHeight) + stripsHeight}
-          />
-        ) : null}
+              <Reanimated.View style={[styles.body, keyboard.pane]}>
+                {inThread || daemon.restoreTarget ? (
+                  // Remounted per conversation so `startRenderingFromBottom` re-arms:
+                  // each transcript must open on its own newest message, not on the
+                  // scroll offset the previous one happened to be left at.
+                  <ChatThread
+                    key={threadKey}
+                    ref={scroller}
+                    turns={holdingRestore ? NO_TURNS : shownTurns}
+                    activeStream={daemon.activeStream}
+                    restore={
+                      launching
+                        ? {
+                            title: launchingGoal!,
+                            state: "starting",
+                            onRetry: NOOP,
+                          }
+                        : daemon.restoreTarget
+                          ? {
+                              title: daemon.restoreTarget.title,
+                              state: restorePresentation(
+                                daemon.restoreTarget,
+                                daemon.loadingSession,
+                                daemon.restoreError,
+                                holdingRestore ? 0 : daemon.turns.length,
+                                daemon.status,
+                              ),
+                              error: daemon.restoreError,
+                              onRetry: () => daemon.openSession(daemon.restoreTarget!.id),
+                            }
+                          : undefined
+                    }
+                    threadTop={threadTop}
+                    threadBottom={threadBottom}
+                    working={working && !daemon.loadingSession && !daemon.restoreError}
+                    receipt={daemon.receipt}
+                    indicatorTop={insets.top + navHeight}
+                    indicatorBottom={dockHeight + stripsHeight}
+                    onAtBottomChange={setAtBottom}
+                    onOpenThought={openThought}
+                    onRetry={retrySend}
+                  />
+                ) : !daemon.loadingSession ? (
+                  <HomeView
+                    daemon={daemon}
+                    keyboard={keyboard}
+                    active={active}
+                    homeWaited={homeWaited}
+                    reduceMotion={reduceMotion}
+                    homeStatus={homeStatus}
+                    openCarousel={openCarousel}
+                    pewSmiling={pewSmiling}
+                    homeChats={homeChats}
+                    openSession={openSession}
+                    greeting={greeting}
+                    emptyReason={emptyReason}
+                    bottomClearance={
+                      dockHeightFor(dockHeights, false, restingDockHeight) + stripsHeight
+                    }
+                  />
+                ) : null}
 
-        <View style={[styles.dockOverlay, { bottom: 0 }]}>
-          {/* Only ever a way back down: there is no jump-to-top, because the top
+                <View style={[styles.dockOverlay, { bottom: 0 }]}>
+                  {/* Only ever a way back down: there is no jump-to-top, because the top
               of a transcript is history and the end is where work happens. */}
-          <Animated.View
-            pointerEvents={atBottom ? "none" : "auto"}
-            style={[styles.jumpToEnd, { opacity: jumpOpacity }]}
-          >
-            <CircleButton
-              label="Scroll to latest message"
-              onPress={() => {
-                // The thread only rides the keyboard from the bottom, and the
-                // scroll that gets there is animated — so claim the state now
-                // rather than waiting for the last frame's scroll event.
-                setAtBottom(true);
-                scroller.current?.scrollToEnd({ animated: !reduceMotion });
-              }}
-              size={theme.size.chip}
-            >
-              <DotGlyph name="down" size={16} />
-            </CircleButton>
-          </Animated.View>
-          {dockHeight > 0 && (
-            <CanvasCover edge="bottom" height={dockHeight + stripsHeight} style={styles.dockCover} />
-          )}
-          {/* The dock keeps the composer even while an approval is pending:
+                  <Animated.View
+                    pointerEvents={atBottom ? "none" : "auto"}
+                    style={[styles.jumpToEnd, { opacity: jumpOpacity }]}
+                  >
+                    <CircleButton
+                      label="Scroll to latest message"
+                      onPress={() => {
+                        // The thread only rides the keyboard from the bottom, and the
+                        // scroll that gets there is animated — so claim the state now
+                        // rather than waiting for the last frame's scroll event.
+                        setAtBottom(true);
+                        scroller.current?.scrollToEnd({ animated: !reduceMotion });
+                      }}
+                      size={theme.size.chip}
+                    >
+                      <DotGlyph name="down" size={16} />
+                    </CircleButton>
+                  </Animated.View>
+                  {dockHeight > 0 && (
+                    <CanvasCover
+                      edge="bottom"
+                      height={dockHeight + stripsHeight}
+                      style={styles.dockCover}
+                    />
+                  )}
+                  {/* The dock keeps the composer even while an approval is pending:
               the request is its own blocking sheet now, so swapping this out
               under it would only resize the thread behind a covered surface.
 
               It owns the draft, so typing re-renders this subtree and not the
               whole app. That is what leaves the JS thread free for the
               composer's own growth animation while a line wraps. */}
-          <View
-            onLayout={(e) => {
-              const height = Math.round(e.nativeEvent.layout.height);
-              setStripsHeight((prev) => (prev === height ? prev : height));
-            }}
-          >
-            {/* GG's Checklist / Plan chips ride the composer's context row now. */}
-            <QueuedStrip messages={queuedHere} onCancel={cancelQueued} />
-          </View>
-          <ComposerDock
-            ref={composer}
-            style={[
-              styles.dock,
-              // Constant. The spacer below the body carries the keyboard, and it
-              // already gives this clearance back, so the composer keeps the
-              // same gap above either boundary without re-laying out.
-              { paddingBottom: insets.bottom + theme.space(2) },
-            ]}
-            // Settled heights only. The dock reports once its growth animation
-            // has stopped, not on every frame of it — measured at roughly one
-            // layout pass per two pixels, which turned a single wrapped line
-            // into about ten re-renders of this whole component, each one
-            // rebuilding the thread's spacers and re-running its follow-scroll
-            // on the exact frames the composer was trying to animate.
-            onHeightSettled={(height) => {
-              // Recorded against the state it was measured in, and only when it
-              // actually changed — the keyboard's own animation causes layout
-              // passes that have nothing to do with the draft.
-              setDockHeights((prev) => recordDockHeight(prev, typing, height));
-            }}
-            typing={typing}
-            workspace={isGoalsProvider(active?.id) && !openSessionId ? undefined : daemon.workspace}
-            usage={daemon.usage}
-            showCommands={daemon.commands.length > 0}
-            onCommands={openCommands}
-            onProjectDetails={openContext}
-            onChecklist={stripsHere.checklist ? openChecklist : undefined}
-            planMode={stripsHere.plan && planHere?.planMode === true}
-            selectors={composerSelectors}
-            onSend={send}
-            busy={showsStop(daemon)}
-            onStop={daemon.cancel}
-            // Never locked by the network. A dead socket used to disable the
-            // whole composer — no keyboard, no typing, nothing — which is the
-            // one moment a phone is most likely to be in a tunnel and the user
-            // most wants to get a thought down. Offline sends are queued and
-            // delivered on reconnect (see `outbox.ts`), so the only thing that
-            // still locks it is a refusal retrying cannot fix: a rotated key or
-            // a version mismatch, where nothing typed here could ever go.
-            editable={!daemon.fatal}
-            placeholder={
-              dictation.listening
-                ? "Listening..."
-                : daemon.status !== "online"
-                  ? "Offline. Sends when you reconnect"
-                  : !active
-                    ? "Waiting for an agent..."
-                    : isGoalsProvider(active.id)
-                      ? goalsPlaceholder(active.name, Boolean(openSessionId))
-                      : "Build anything..."
-            }
-            attachments={attachments}
-            onAttach={openAttach}
-            onRemoveAttachment={removeAttachment}
-            dictation={dictation}
-          />
-        </View>
-      </Reanimated.View>
+                  <View
+                    onLayout={(e) => {
+                      const height = Math.round(e.nativeEvent.layout.height);
+                      setStripsHeight((prev) => (prev === height ? prev : height));
+                    }}
+                  >
+                    {/* GG's Checklist / Plan chips ride the composer's context row now. */}
+                    <QueuedStrip messages={queuedHere} onCancel={cancelQueued} />
+                  </View>
+                  <ComposerDock
+                    ref={composer}
+                    style={[
+                      styles.dock,
+                      // Constant. The spacer below the body carries the keyboard, and it
+                      // already gives this clearance back, so the composer keeps the
+                      // same gap above either boundary without re-laying out.
+                      { paddingBottom: insets.bottom + theme.space(2) },
+                    ]}
+                    // Settled heights only. The dock reports once its growth animation
+                    // has stopped, not on every frame of it — measured at roughly one
+                    // layout pass per two pixels, which turned a single wrapped line
+                    // into about ten re-renders of this whole component, each one
+                    // rebuilding the thread's spacers and re-running its follow-scroll
+                    // on the exact frames the composer was trying to animate.
+                    onHeightSettled={(height) => {
+                      // Recorded against the state it was measured in, and only when it
+                      // actually changed — the keyboard's own animation causes layout
+                      // passes that have nothing to do with the draft.
+                      setDockHeights((prev) => recordDockHeight(prev, typing, height));
+                    }}
+                    typing={typing}
+                    workspace={
+                      isGoalsProvider(active?.id) && !openSessionId ? undefined : daemon.workspace
+                    }
+                    usage={daemon.usage}
+                    showCommands={daemon.commands.length > 0}
+                    onCommands={openCommands}
+                    onProjectDetails={openContext}
+                    onChecklist={stripsHere.checklist ? openChecklist : undefined}
+                    planMode={stripsHere.plan && planHere?.planMode === true}
+                    selectors={composerSelectors}
+                    onSend={send}
+                    busy={showsStop(daemon)}
+                    onStop={daemon.cancel}
+                    // Never locked by the network. A dead socket used to disable the
+                    // whole composer — no keyboard, no typing, nothing — which is the
+                    // one moment a phone is most likely to be in a tunnel and the user
+                    // most wants to get a thought down. Offline sends are queued and
+                    // delivered on reconnect (see `outbox.ts`), so the only thing that
+                    // still locks it is a refusal retrying cannot fix: a rotated key or
+                    // a version mismatch, where nothing typed here could ever go.
+                    editable={!daemon.fatal}
+                    placeholder={
+                      dictation.listening
+                        ? "Listening..."
+                        : daemon.status !== "online"
+                          ? "Offline. Sends when you reconnect"
+                          : !active
+                            ? "Waiting for an agent..."
+                            : isGoalsProvider(active.id)
+                              ? goalsPlaceholder(active.name, Boolean(openSessionId))
+                              : "Build anything..."
+                    }
+                    attachments={attachments}
+                    onAttach={openAttach}
+                    onRemoveAttachment={removeAttachment}
+                    dictation={dictation}
+                  />
+                </View>
+              </Reanimated.View>
 
-      {/* Outside the lifted pane: a sheet belongs to the screen's bottom edge,
+              {/* Outside the lifted pane: a sheet belongs to the screen's bottom edge,
           not to the composer, so it must not ride up with the keyboard. */}
-      <ContextDetailsSheet visible={contextOpen} workspace={daemon.workspace} usage={daemon.usage} inConversation={daemon.sessionId !== undefined} onClose={closeContext} />
-      <ConnectionSheet visible={connectionOpen} machineLabel={daemon.machineName ?? "Your computer"} machineRemote={pairing.remote} status={daemon.status} update={daemon.update} voiceCall={voiceCall} onVoiceCall={changeVoiceCall} nativeCall={callKitAvailable() ? nativeCall : undefined} onNativeCall={callKitAvailable() ? changeNativeCall : undefined} onClose={closeConnection} onUnpair={() => {
-        voice.clear();
-        void clearVoiceCursor();
-        onUnpair();
-      }} />
-      <CommandSheet
-        visible={commandsOpen}
-        commands={daemon.commands}
-        onSelect={pickCommand}
-        onClose={closeCommands}
-      />
+              <ContextDetailsSheet
+                visible={contextOpen}
+                workspace={daemon.workspace}
+                usage={daemon.usage}
+                inConversation={daemon.sessionId !== undefined}
+                onClose={closeContext}
+              />
+              <VoiceAccountSheet
+                visible={voiceAccountOpen}
+                machineLabel={daemon.machineName ?? "Your computer"}
+                view={daemon.voiceAccount.view}
+                command={daemon.voiceAccount.command}
+                onClose={() => setVoiceAccountOpen(false)}
+              />
+              <ConnectionSheet
+                voiceAccountLabel={accountLabel(daemon.voiceAccount.view)}
+                onVoiceAccount={() => {
+                  setConnectionOpen(false);
+                  setVoiceAccountOpen(true);
+                  daemon.voiceAccount.command("status");
+                }}
+                visible={connectionOpen}
+                machineLabel={daemon.machineName ?? "Your computer"}
+                machineRemote={pairing.remote}
+                status={daemon.status}
+                update={daemon.update}
+                voiceCall={voiceCall}
+                onVoiceCall={changeVoiceCall}
+                nativeCall={callKitAvailable() ? nativeCall : undefined}
+                onNativeCall={callKitAvailable() ? changeNativeCall : undefined}
+                onClose={closeConnection}
+                onUnpair={() => {
+                  voice.clear();
+                  void clearVoiceCursor();
+                  onUnpair();
+                }}
+              />
+              <CommandSheet
+                visible={commandsOpen}
+                commands={daemon.commands}
+                onSelect={pickCommand}
+                onClose={closeCommands}
+              />
 
-      <NewChatSheet
-        visible={newChatOpen}
-        currentFolder={workspaceTitle(daemon.workspace)}
-        currentCwd={daemon.workspace?.cwd}
-        projects={projects}
-        onStart={startNewChat}
-        onClose={closeNewChat}
-        browse={daemon.browse}
-        onBrowse={daemon.browseWorkspaces}
-      />
+              <NewChatSheet
+                visible={newChatOpen}
+                currentFolder={workspaceTitle(daemon.workspace)}
+                currentCwd={daemon.workspace?.cwd}
+                projects={projects}
+                onStart={startNewChat}
+                onClose={closeNewChat}
+                browse={daemon.browse}
+                onBrowse={daemon.browseWorkspaces}
+              />
 
-      <AttachmentSheet visible={attachOpen} onSelect={pickAttachment} onClose={closeAttach} />
+              <AttachmentSheet
+                visible={attachOpen}
+                onSelect={pickAttachment}
+                onClose={closeAttach}
+              />
 
-      <ThoughtSheet visible={thought !== null} text={thought ?? ""} onClose={closeThought} />
-      {carouselOpen && carouselAgents.length > 0 && (
-        <AgentCarousel agents={carouselAgents} currentId={activeId} onSelect={daemon.select} onClose={closeCarousel} arriveSmiling />
-      )}
+              <ThoughtSheet
+                visible={thought !== null}
+                text={thought ?? ""}
+                onClose={closeThought}
+              />
+              {carouselOpen && carouselAgents.length > 0 && (
+                <AgentCarousel
+                  agents={carouselAgents}
+                  currentId={activeId}
+                  onSelect={daemon.select}
+                  onClose={closeCarousel}
+                  arriveSmiling
+                />
+              )}
 
-      {/* One picker, pointed at whichever pill opened it. The mode selector is
+              {/* One picker, pointed at whichever pill opened it. The mode selector is
           excluded from the model menu so each pill owns exactly one list. */}
-      <ConfigPicker
-        visible={picker !== null}
-        onClose={closePicker}
-        anchorX={pickerAnchor?.x}
-        anchorY={pickerAnchor?.y}
-        options={
-          picker === "mode"
-            ? mode
-              ? [mode]
-              : []
-            : daemon.configOptions.filter((option) => option.id !== mode?.id)
-        }
-        onSelect={daemon.setConfig}
-      />
+              <ConfigPicker
+                visible={picker !== null}
+                onClose={closePicker}
+                anchorX={pickerAnchor?.x}
+                anchorY={pickerAnchor?.y}
+                options={
+                  picker === "mode"
+                    ? mode
+                      ? [mode]
+                      : []
+                    : daemon.configOptions.filter((option) => option.id !== mode?.id)
+                }
+                onSelect={daemon.setConfig}
+              />
 
-      <VoiceSheet
-        visible={voice.sheetOpen}
-        machine={voice.view.machine}
-        store={voice.view.store}
-        transcript={voice.view.transcript}
-        onOpenProjects={() => setDashboardOpen(true)}
-        held={daemon.sessions.flatMap((session) => session.permission ? [{ sessionId: session.id, requestId: session.permission.requestId, options: session.permission.options }] : [])}
-        onClose={voice.close}
-        onTalk={voice.talk}
-        onEnd={voice.end}
-        onAnswer={(sessionId, requestId, optionId, deny) => {
-          if (daemon.permission?.requestId === requestId) answerPermission(requestId, optionId, deny);
-          else daemon.send({ t: "session.permission", sessionId, requestId, optionId });
-        }}
-        screenshots={voice.view.screenshots}
-        onPickScreenshot={voice.pickScreenshot}
-        onRemoveScreenshot={voice.removeScreenshot}
-        onSendScreenshot={voice.sendScreenshot}
-        onDismiss={voice.view.store.canDismiss ? voice.dismiss : undefined}
-      />
+              <VoiceSheet
+                visible={voice.sheetOpen}
+                machine={voice.view.machine}
+                store={voice.view.store}
+                transcript={voice.view.transcript}
+                onOpenProjects={() => setDashboardOpen(true)}
+                held={daemon.sessions.flatMap((session) =>
+                  session.permission
+                    ? [
+                        {
+                          sessionId: session.id,
+                          requestId: session.permission.requestId,
+                          options: session.permission.options,
+                        },
+                      ]
+                    : [],
+                )}
+                onClose={voice.close}
+                onTalk={voice.talk}
+                onEnd={voice.end}
+                onAnswer={(sessionId, requestId, optionId, deny) => {
+                  if (daemon.permission?.requestId === requestId)
+                    answerPermission(requestId, optionId, deny);
+                  else daemon.send({ t: "session.permission", sessionId, requestId, optionId });
+                }}
+                screenshots={voice.view.screenshots}
+                onPickScreenshot={voice.pickScreenshot}
+                onRemoveScreenshot={voice.removeScreenshot}
+                onSendScreenshot={voice.sendScreenshot}
+                onDismiss={voice.view.store.canDismiss ? voice.dismiss : undefined}
+              />
 
-      {/* After the voice sheet, not before: it opens from that sheet's Projects
+              {/* After the voice sheet, not before: it opens from that sheet's Projects
           button, and a sheet earlier in the tree paints underneath it. */}
-      <ProjectDashboard
-        visible={dashboardOpen}
-        store={voice.view.store}
-        sessions={dashboardSessions}
-        onClose={() => setDashboardOpen(false)}
-        onDismiss={voice.view.store.canDismiss ? voice.dismiss : undefined}
-      />
+              <ProjectDashboard
+                visible={dashboardOpen}
+                store={voice.view.store}
+                sessions={dashboardSessions}
+                onClose={() => setDashboardOpen(false)}
+                onDismiss={voice.view.store.canDismiss ? voice.dismiss : undefined}
+              />
 
-      <GoalSheets
-        daemon={daemon}
-        goals={goals}
-        newGoalOpen={newGoalOpen}
-        newGoalPrefill={newGoalPrefill}
-        answerPermission={answerPermission}
-        send={send}
-      />
+              <GoalSheets
+                daemon={daemon}
+                goals={goals}
+                newGoalOpen={newGoalOpen}
+                newGoalPrefill={newGoalPrefill}
+                answerPermission={answerPermission}
+                send={send}
+              />
 
-      {/* While the drawer is open the pane itself is the way back: tapping
+              {/* While the drawer is open the pane itself is the way back: tapping
           anywhere on it closes, which matches the push metaphor better than a
           separate dimming layer would. */}
-      {menuOpen && (
-        // The gesture lives on this wrapper rather than the Pressable, so a drag
-        // and a tap stay two separate things: the detector claims the touch once
-        // it moves horizontally, and the Pressable keeps everything else.
-        <GestureDetector gesture={edgeSwipeOpen}>
-          <View style={StyleSheet.absoluteFill}>
-            <Pressable
-              style={StyleSheet.absoluteFill}
-              accessibilityRole="button"
-              accessibilityLabel="Close menu"
-              onPress={() => {
-                haptics.tap();
-                setMenuOpen(false);
-              }}
-            />
-          </View>
-        </GestureDetector>
-      )}
-
-      </SafeAreaView>
-      </Reanimated.View>
-    </View>
-    </AgentColorProvider>
+              {menuOpen && (
+                // The gesture lives on this wrapper rather than the Pressable, so a drag
+                // and a tap stay two separate things: the detector claims the touch once
+                // it moves horizontally, and the Pressable keeps everything else.
+                <GestureDetector gesture={edgeSwipeOpen}>
+                  <View style={StyleSheet.absoluteFill}>
+                    <Pressable
+                      style={StyleSheet.absoluteFill}
+                      accessibilityRole="button"
+                      accessibilityLabel="Close menu"
+                      onPress={() => {
+                        haptics.tap();
+                        setMenuOpen(false);
+                      }}
+                    />
+                  </View>
+                </GestureDetector>
+              )}
+            </SafeAreaView>
+          </Reanimated.View>
+        </View>
+      </AgentColorProvider>
     </ImageResolverProvider>
   );
 }

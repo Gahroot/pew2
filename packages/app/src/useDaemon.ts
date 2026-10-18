@@ -57,6 +57,7 @@ import {
 } from "./daemonState";
 import { useImageCache } from "./useImageCache";
 import { openConnection } from "./daemonConnection";
+import { useVoiceAccount } from "./voice/useVoiceAccount";
 import { createActions, deliverPrompt as deliverPromptVia } from "./daemonActions";
 export type { PushAddress, TurnFinished } from "./daemonState";
 
@@ -152,9 +153,9 @@ export function useDaemon(
   // The message entered before a session existed — text and any files with it.
   // Sent as soon as the daemon confirms one, so the composer works straight
   // from the empty state.
-  const queued = useRef<
-    { text: string; attachments: readonly PendingAttachment[] } | undefined
-  >(undefined);
+  const queued = useRef<{ text: string; attachments: readonly PendingAttachment[] } | undefined>(
+    undefined,
+  );
   // Counter behind the ids of optimistic user turns. Starting an agent can take
   // seconds, and the daemon's echo arrives only after that, so the prompt is
   // rendered locally first and reconciled when the echo lands.
@@ -246,13 +247,23 @@ export function useDaemon(
       notifiedTurns.current.add(turn);
       onTurnFinished.current?.(turn);
     }
-    setState((prev) => ({ ...prev, completedTurns: prev.completedTurns?.filter((turn) => !completed.includes(turn)) }));
+    setState((prev) => ({
+      ...prev,
+      completedTurns: prev.completedTurns?.filter((turn) => !completed.includes(turn)),
+    }));
   }, [state.completedTurns]);
 
   // Same reason, for the rest of the options: the socket effect reads them when
   // it needs them rather than depending on them.
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  const accountInbox = useRef<(message: unknown) => void>(() => {});
+  optionsRef.current = {
+    ...options,
+    onVoiceMessage: (message) => {
+      accountInbox.current(message);
+      options.onVoiceMessage?.(message);
+    },
+  };
 
   // What each session's agent has said during its current turn, keyed by
   // session, so a notification can quote a conversation that is not on screen.
@@ -276,9 +287,7 @@ export function useDaemon(
   // yet": the keychain read starts at mount and finishes long before the
   // daemon's provider list arrives over the socket, so no chip is shown for the
   // wrong agent first.
-  const [rememberedProviderId, setRememberedProviderId] = useState<string | undefined>(
-    undefined,
-  );
+  const [rememberedProviderId, setRememberedProviderId] = useState<string | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
     loadLastProvider()
@@ -415,6 +424,13 @@ export function useDaemon(
     return true;
   }, []);
 
+  const voiceAccount = useVoiceAccount(
+    `${url}:${deviceId}:${pairingKey}`,
+    !!pairingKey && state.status === "online",
+    post,
+  );
+  accountInbox.current = voiceAccount.receive;
+
   // Sent outside any state updater: React may invoke an updater twice, and a
   // socket write in one would ask the daemon for the same picture twice.
   const sendImageRequest = useCallback(
@@ -483,7 +499,13 @@ export function useDaemon(
   // in `daemonActions.ts`.
   const deliverPrompt = useCallback(
     (sessionId: string, text: string, attachments: readonly PendingAttachment[]): boolean =>
-      deliverPromptVia({ localSeq, outbox, sessionRef, setState, viewingRef }, post, sessionId, text, attachments),
+      deliverPromptVia(
+        { localSeq, outbox, sessionRef, setState, viewingRef },
+        post,
+        sessionId,
+        text,
+        attachments,
+      ),
     [post],
   );
 
@@ -533,15 +555,24 @@ export function useDaemon(
     (goal: GoalSummary) => {
       const providerId = goalProviderOf(goal);
       const rows = sessionsRef.current;
-      if (goal.sessionId && rows.some((row) => row.id === goal.sessionId) &&
-          (liveSessions.current === undefined || liveSessions.current.has(goal.sessionId))) {
+      if (
+        goal.sessionId &&
+        rows.some((row) => row.id === goal.sessionId) &&
+        (liveSessions.current === undefined || liveSessions.current.has(goal.sessionId))
+      ) {
         actions.openSession(goal.sessionId);
         return;
       }
       if (goal.agentSessionId) {
         const id = agentSessionKey(providerId, goal.agentSessionId);
         if (!rows.some((row) => row.id === id)) {
-          restoring.current = { id, providerId, agentSessionId: goal.agentSessionId, title: goal.name, cwd: goal.path };
+          restoring.current = {
+            id,
+            providerId,
+            agentSessionId: goal.agentSessionId,
+            title: goal.name,
+            cwd: goal.path,
+          };
         }
         actions.openSession(id);
         return;
@@ -565,7 +596,10 @@ export function useDaemon(
   /** @deprecated alias: any goals backend is available. */
   const hasGgCoder = goalsProviders.length > 0;
   const refreshGoalsAction = actions.refreshGoals;
-  const refreshGoals = useCallback(() => refreshGoalsAction(goalsProviders), [refreshGoalsAction, goalsProviders]);
+  const refreshGoals = useCallback(
+    () => refreshGoalsAction(goalsProviders),
+    [refreshGoalsAction, goalsProviders],
+  );
   useEffect(() => {
     if (state.status === "online" && hasGgCoder) refreshGoals();
   }, [state.status, hasGgCoder, refreshGoals]);
@@ -659,10 +693,9 @@ export function useDaemon(
   const commands =
     state.commands.length > 0
       ? state.commands
-      : (effectiveProviderId ? knownCommands[effectiveProviderId] : undefined) ?? [];
+      : ((effectiveProviderId ? knownCommands[effectiveProviderId] : undefined) ?? []);
   const loadingSessions = effectiveProviderId
-    ? pendingCapabilities.current.has(effectiveProviderId) ||
-      state.loadingProject !== undefined
+    ? pendingCapabilities.current.has(effectiveProviderId) || state.loadingProject !== undefined
     : false;
 
   // Fetch the chosen project's conversations.
@@ -670,9 +703,7 @@ export function useDaemon(
   // An effect rather than part of `selectProject` so the one rule covers a
   // reconnect too: the socket dies on every backgrounding, and a request
   // written to the dead one is never answered.
-  const openProjectPath = effectiveProviderId
-    ? state.projectPath[effectiveProviderId]
-    : undefined;
+  const openProjectPath = effectiveProviderId ? state.projectPath[effectiveProviderId] : undefined;
   useEffect(() => {
     if (state.status !== "online" || !effectiveProviderId || !openProjectPath) return;
     const key = `${effectiveProviderId}:${openProjectPath}`;
@@ -698,6 +729,7 @@ export function useDaemon(
     setForeground,
     /** Sends one sealed message; false when not connected. Used by the voice hook. */
     send: post,
+    voiceAccount,
     // Exported so the UI names the same agent the composer targets: the drawer
     // and top bar must not show Claude Code while a prompt would go elsewhere.
     effectiveProviderId,

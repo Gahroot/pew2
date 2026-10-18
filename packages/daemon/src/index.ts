@@ -582,7 +582,9 @@ export class Daemon extends DaemonConnectSession {
     const out: RunningSession[] = [];
     for (const [sessionId, session] of this.sessions) {
       if (!session.agentSessionId) continue;
-      const blocked = (session.permissions?.size ?? 0) > 0 || (session.working === true && (session.asks?.size ?? 0) > 0);
+      const blocked =
+        (session.permissions?.size ?? 0) > 0 ||
+        (session.working === true && (session.asks?.size ?? 0) > 0);
       out.push({
         sessionId,
         providerId: session.providerId,
@@ -617,7 +619,9 @@ export class Daemon extends DaemonConnectSession {
   peekSession(sessionId: string): SessionPeek | undefined {
     if (sessionId.startsWith("desk:")) {
       const rest = sessionId.slice("desk:".length);
-      const desk = this.desktopSessions().find((d) => `${d.providerId}:${d.agentSessionId}` === rest);
+      const desk = this.desktopSessions().find(
+        (d) => `${d.providerId}:${d.agentSessionId}` === rest,
+      );
       if (!desk) return undefined;
       return {
         ...(desk.lastPrompt ? { lastPrompt: desk.lastPrompt } : null),
@@ -639,11 +643,15 @@ export class Daemon extends DaemonConnectSession {
    */
   startDesktopActivity(roots = defaultDeskRoots(this.env)) {
     if (this.desk || this.env.PEW2_DESKTOP_ACTIVITY === "off") return;
-    const loaded = new Set(this.providers.filter((p) => !p.commandMissing).map((p) => p.manifest.id));
+    const loaded = new Set(
+      this.providers.filter((p) => !p.commandMissing).map((p) => p.manifest.id),
+    );
     this.desk = new DesktopActivityWatcher({
       roots: roots.filter((r) => loaded.has(r.providerId) && this.isEnabled(r.providerId)),
       ownedAgentSessionIds: () =>
-        new Set([...this.sessions.values()].flatMap((s) => (s.agentSessionId ? [s.agentSessionId] : []))),
+        new Set(
+          [...this.sessions.values()].flatMap((s) => (s.agentSessionId ? [s.agentSessionId] : [])),
+        ),
       onChange: () => this.send(this.desktopActivity()),
     });
     this.desk.start();
@@ -793,6 +801,13 @@ export class Daemon extends DaemonConnectSession {
 
   private voiceReady?: VoiceService;
   private voiceStarting?: Promise<VoiceService>;
+  private voiceStopped = false;
+  private voicePairingEpoch = 0;
+
+  invalidateVoiceAccount() {
+    this.voicePairingEpoch++;
+    this.voiceReady?.invalidateAccount();
+  }
 
   /**
    * The voice service, created on first use and also at boot (`attach`) so a
@@ -800,6 +815,7 @@ export class Daemon extends DaemonConnectSession {
    * is up rather than when someone first speaks.
    */
   voice(): Promise<VoiceService> {
+    const pairingEpoch = this.voicePairingEpoch;
     this.voiceStarting ??= VoiceService.create({
       dataDir: dirname(userProvidersDir(this.env)),
       env: this.env,
@@ -821,7 +837,12 @@ export class Daemon extends DaemonConnectSession {
       peekSession: (sessionId) => this.peekSession(sessionId),
       dave: daveClient(this.env),
       push: (event) => pushVoiceEvent(this.pushTargets, event, fetch, { voip: this.voip }),
-    }).then((service) => (this.voiceReady = service));
+    }).then((service) => {
+      if (this.voiceStopped) service.dispose();
+      else if (pairingEpoch !== this.voicePairingEpoch) service.invalidateAccount();
+      this.voiceReady = service;
+      return service;
+    });
     return this.voiceStarting;
   }
 
@@ -890,6 +911,7 @@ export class Daemon extends DaemonConnectSession {
   }
 
   closeAll() {
+    this.voiceStopped = true;
     this.desk?.stop();
     this.desk = undefined;
     if (this.reaper) {

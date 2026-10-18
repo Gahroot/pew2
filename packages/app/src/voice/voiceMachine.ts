@@ -152,8 +152,17 @@ const STOP_TIMERS: Effect[] = [
   { type: "cancelRetry" },
 ];
 
-function fail(state: MachineState, code: ErrorCode, message?: string, notifyDaemon = true): StepResult {
-  const effects: Effect[] = [...STOP_TIMERS, { type: "teardownRealtime" }, { type: "audioDeactivate" }];
+function fail(
+  state: MachineState,
+  code: ErrorCode,
+  message?: string,
+  notifyDaemon = true,
+): StepResult {
+  const effects: Effect[] = [
+    ...STOP_TIMERS,
+    { type: "teardownRealtime" },
+    { type: "audioDeactivate" },
+  ];
   if (notifyDaemon && state.voiceSessionId && state.phase !== "opening") {
     effects.push({ type: "sendClose", voiceSessionId: state.voiceSessionId, reason: "error" });
   }
@@ -171,10 +180,19 @@ function fail(state: MachineState, code: ErrorCode, message?: string, notifyDaem
 }
 
 function close(state: MachineState, reason: CloseReason): StepResult {
-  if (state.phase === "closing" || state.phase === "closed" || state.phase === "idle" || state.phase === "error") {
+  if (
+    state.phase === "closing" ||
+    state.phase === "closed" ||
+    state.phase === "idle" ||
+    state.phase === "error"
+  ) {
     return { state, effects: [] };
   }
-  const effects: Effect[] = [...STOP_TIMERS, { type: "teardownRealtime" }, { type: "audioDeactivate" }];
+  const effects: Effect[] = [
+    ...STOP_TIMERS,
+    { type: "teardownRealtime" },
+    { type: "audioDeactivate" },
+  ];
   if (state.voiceSessionId) {
     effects.push({ type: "sendClose", voiceSessionId: state.voiceSessionId, reason });
   }
@@ -196,18 +214,35 @@ function reconnect(state: MachineState): StepResult {
   ];
   // The previous daemon-side session is told it is over; the next open is new.
   if (state.voiceSessionId) {
-    effects.push({ type: "sendClose", voiceSessionId: state.voiceSessionId, reason: "interrupted" });
+    effects.push({
+      type: "sendClose",
+      voiceSessionId: state.voiceSessionId,
+      reason: "interrupted",
+    });
   }
   effects.push({ type: "scheduleRetry", ms: reconnectDelay(attempt) });
   return {
-    state: { ...state, phase: "reconnecting", reconnects: attempt, endAfterSpeech: false, message: undefined },
+    state: {
+      ...state,
+      phase: "reconnecting",
+      reconnects: attempt,
+      endAfterSpeech: false,
+      message: undefined,
+    },
     effects,
   };
 }
 
 function open(state: MachineState, voiceSessionId: string, focus: Focus): StepResult {
   return {
-    state: { ...state, phase: "opening", voiceSessionId, focus, message: undefined, errorCode: undefined },
+    state: {
+      ...state,
+      phase: "opening",
+      voiceSessionId,
+      focus,
+      message: undefined,
+      errorCode: undefined,
+    },
     effects: [
       { type: "audioActivate" },
       { type: "sendOpen", voiceSessionId, focus },
@@ -234,7 +269,7 @@ export function step(state: MachineState, event: MachineEvent): StepResult {
       };
 
     case "unavailable":
-      if (state.phase !== "opening") return NOTHING(state);
+      if (!isActive(state.phase)) return NOTHING(state);
       return fail(state, "unavailable", event.message, false);
 
     case "oldDaemon":
@@ -242,7 +277,8 @@ export function step(state: MachineState, event: MachineEvent): StepResult {
       return fail(state, "old_daemon", undefined, false);
 
     case "offline":
-      if (state.phase === "opening" && state.reconnects === 0) return fail(state, "offline", undefined, false);
+      if (state.phase === "opening" && state.reconnects === 0)
+        return fail(state, "offline", undefined, false);
       if (isActive(state.phase) && state.phase !== "interrupted") return reconnect(state);
       return NOTHING(state);
 
@@ -307,7 +343,11 @@ export function step(state: MachineState, event: MachineEvent): StepResult {
       // Hand the audio hardware over cleanly; the conversation is rebuilt, not paused.
       const effects: Effect[] = [...STOP_TIMERS, { type: "teardownRealtime" }];
       if (state.voiceSessionId) {
-        effects.push({ type: "sendClose", voiceSessionId: state.voiceSessionId, reason: "interrupted" });
+        effects.push({
+          type: "sendClose",
+          voiceSessionId: state.voiceSessionId,
+          reason: "interrupted",
+        });
       }
       return {
         state: { ...state, phase: "interrupted", interruptedAt: event.now, endAfterSpeech: false },
@@ -317,7 +357,8 @@ export function step(state: MachineState, event: MachineEvent): StepResult {
 
     case "interruptionEnded": {
       if (state.phase !== "interrupted") return NOTHING(state);
-      const recent = state.interruptedAt !== undefined && event.now - state.interruptedAt <= RESUME_WINDOW_MS;
+      const recent =
+        state.interruptedAt !== undefined && event.now - state.interruptedAt <= RESUME_WINDOW_MS;
       if (event.shouldResume && recent) {
         return open(state, event.voiceSessionId, { source: state.focus?.source ?? "in_app" });
       }
@@ -333,7 +374,11 @@ export function step(state: MachineState, event: MachineEvent): StepResult {
     case "background":
       // A live conversation survives backgrounding (UIBackgroundModes: audio).
       // One that has not yet got audio flowing cannot be trusted to finish.
-      if (state.phase === "opening" || state.phase === "connecting" || state.phase === "reconnecting") {
+      if (
+        state.phase === "opening" ||
+        state.phase === "connecting" ||
+        state.phase === "reconnecting"
+      ) {
         return close(state, "app_background");
       }
       return NOTHING(state);
@@ -343,7 +388,9 @@ export function step(state: MachineState, event: MachineEvent): StepResult {
       return open(state, event.voiceSessionId, state.focus ?? { source: "in_app" });
 
     case "closeDone":
-      return state.phase === "closing" ? { state: { ...state, phase: "closed" }, effects: [] } : NOTHING(state);
+      return state.phase === "closing"
+        ? { state: { ...state, phase: "closed" }, effects: [] }
+        : NOTHING(state);
 
     case "reset":
       return { state: { ...initialState }, effects: [] };

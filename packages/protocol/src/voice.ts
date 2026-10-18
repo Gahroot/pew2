@@ -412,7 +412,16 @@ export const VoiceReady = z.object({
 export const VoiceUnavailable = z.object({
   t: z.literal("voice.unavailable"),
   voiceSessionId: z.string().optional(),
-  code: z.enum(["no_api_key", "mint_failed", "busy", "disabled"]),
+  code: z.enum([
+    "no_api_key",
+    "mint_failed",
+    "busy",
+    "disabled",
+    "account-required",
+    "reconnect-required",
+    "not-entitled",
+    "rate-limited",
+  ]),
   message: z.string(),
 });
 
@@ -476,8 +485,98 @@ export const VoiceState = z.object({
   dismissed: z.array(z.string()).optional(),
 });
 
-export const VoiceClientMessages = [VoiceOpen, VoiceToolCall, VoiceClose, VoiceSync, VoiceAttach, VoiceDetach, VoiceDismiss] as const;
+// Account frames contain display data only. Ownership comes from the sealed
+// transport context, never a client-supplied device id. Unknown fields are rejected.
+const AccountRequestId = z.string().min(1).max(100);
+const AccountAttemptId = z.string().uuid();
+export const VoiceAccountStatusRequest = z
+  .object({
+    t: z.literal("voice.account.status"),
+    requestId: AccountRequestId,
+    attemptId: AccountAttemptId.optional(),
+  })
+  .strict();
+export const VoiceAccountConnect = z
+  .object({
+    t: z.literal("voice.account.connect"),
+    requestId: AccountRequestId,
+  })
+  .strict();
+export const VoiceAccountCancel = z
+  .object({
+    t: z.literal("voice.account.cancel"),
+    requestId: AccountRequestId,
+    attemptId: AccountAttemptId,
+  })
+  .strict();
+export const VoiceAccountDisconnect = z
+  .object({
+    t: z.literal("voice.account.disconnect"),
+    requestId: AccountRequestId,
+  })
+  .strict();
+export const VoiceAccountState = z.enum([
+  "not-connected",
+  "authorizing",
+  "connected",
+  "reconnect-required",
+  "not-entitled",
+]);
+export const VoiceAccountStatus = z
+  .object({
+    t: z.literal("voice.account.state"),
+    requestId: AccountRequestId,
+    supported: z.literal(true),
+    state: VoiceAccountState,
+    voiceReady: z.boolean(),
+    authorization: z
+      .object({
+        attemptId: AccountAttemptId,
+        userCode: z
+          .string()
+          .min(1)
+          .max(64)
+          .regex(/^[A-Za-z0-9-]+$/),
+        verificationUrl: z.literal("https://auth.openai.com/codex/device"),
+        expiresAt: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
+    error: z
+      .object({
+        code: z.enum([
+          "unavailable",
+          "denied",
+          "expired",
+          "cancelled",
+          "rate-limited",
+          "storage",
+          "invalid-attempt",
+        ]),
+        message: z.string().min(1).max(300),
+        retryable: z.boolean(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type VoiceAccountStatus = z.output<typeof VoiceAccountStatus>;
+
+export const VoiceClientMessages = [
+  VoiceOpen,
+  VoiceToolCall,
+  VoiceClose,
+  VoiceSync,
+  VoiceAttach,
+  VoiceDetach,
+  VoiceDismiss,
+  VoiceAccountStatusRequest,
+  VoiceAccountConnect,
+  VoiceAccountCancel,
+  VoiceAccountDisconnect,
+] as const;
 export const VoiceServerMessages = [
+  VoiceAccountStatus,
   VoiceReady,
   VoiceUnavailable,
   VoiceToolResult,

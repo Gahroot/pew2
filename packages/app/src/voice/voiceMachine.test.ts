@@ -45,7 +45,10 @@ describe("happy path", () => {
   });
   test("a second activation does nothing", () => {
     const { state } = run(live);
-    expect(step(state, { type: "activate", voiceSessionId: "v2", focus })).toEqual({ state, effects: [] });
+    expect(step(state, { type: "activate", voiceSessionId: "v2", focus })).toEqual({
+      state,
+      effects: [],
+    });
   });
   test("model speech toggles speaking/listening and arms the idle timer", () => {
     const a = run([{ type: "modelSpeaking" }], run(live).state);
@@ -78,12 +81,18 @@ describe("ending", () => {
     expect(b.effects).toContainEqual({ type: "sendClose", voiceSessionId: "v1", reason: "model" });
   });
   test("silence after the model's turn ends the conversation", () => {
-    const a = run([{ type: "modelSpeaking" }, { type: "modelDone" }, { type: "idleTimeout" }], run(live).state);
+    const a = run(
+      [{ type: "modelSpeaking" }, { type: "modelDone" }, { type: "idleTimeout" }],
+      run(live).state,
+    );
     expect(a.state.phase).toBe("closing");
     expect(a.state.closeReason).toBe("idle");
   });
   test("detected sound cancels the idle timer without changing phase", () => {
-    const listening = run([{ type: "modelSpeaking" }, { type: "modelDone" }], run(live).state).state;
+    const listening = run(
+      [{ type: "modelSpeaking" }, { type: "modelDone" }],
+      run(live).state,
+    ).state;
     const a = step(listening, { type: "speechDetected" });
     expect(a).toEqual({ state: listening, effects: [{ type: "cancelIdleTimer" }] });
     expect(step(initialState, { type: "speechDetected" }).effects).toEqual([]);
@@ -108,6 +117,18 @@ describe("errors", () => {
     expect(a.state.message).toBe("Add an OpenAI key on your computer.");
     expect(types(a.effects)).not.toContain("sendClose");
   });
+  test("disconnecting the account tears down an active audio session", () => {
+    const result = step(run(live).state, {
+      type: "unavailable",
+      code: "account-required",
+      message: "Connect ChatGPT in Connection > Voice account.",
+    });
+    expect(result.state.phase).toBe("error");
+    expect(result.state.message).toContain("Voice account");
+    expect(types(result.effects)).toContain("teardownRealtime");
+    expect(types(result.effects)).toContain("audioDeactivate");
+    expect(types(result.effects)).not.toContain("sendClose");
+  });
   test("an older daemon gets a plain upgrade message", () => {
     const a = run([{ type: "activate", voiceSessionId: "v1", focus }, { type: "oldDaemon" }]);
     expect(a.state.errorCode).toBe("old_daemon");
@@ -122,7 +143,9 @@ describe("errors", () => {
     expect(a.state.errorCode).toBe("mic_denied");
   });
   test("an open that never completes is abandoned", () => {
-    expect(run([{ type: "activate", voiceSessionId: "v1", focus }, { type: "openTimeout" }]).state.phase).toBe("error");
+    expect(
+      run([{ type: "activate", voiceSessionId: "v1", focus }, { type: "openTimeout" }]).state.phase,
+    ).toBe("error");
   });
   test("can start again after an error", () => {
     const a = run([{ type: "activate", voiceSessionId: "v1", focus }, { type: "oldDaemon" }]);
@@ -162,7 +185,12 @@ describe("reconnect", () => {
   });
   test("budget refills once audio flows", () => {
     const state = run(
-      [{ type: "transportDown" }, { type: "retryDue", voiceSessionId: "v2" }, { type: "ready" }, { type: "transportUp" }],
+      [
+        { type: "transportDown" },
+        { type: "retryDue", voiceSessionId: "v2" },
+        { type: "ready" },
+        { type: "transportUp" },
+      ],
       run(live).state,
     ).state;
     expect(state.reconnects).toBe(0);
@@ -181,7 +209,11 @@ describe("interruptions", () => {
   test("a phone call tears everything down and tells the daemon", () => {
     const a = run([{ type: "interruptionBegan", now: 1000 }], run(live).state);
     expect(a.state.phase).toBe("interrupted");
-    expect(a.effects).toContainEqual({ type: "sendClose", voiceSessionId: "v1", reason: "interrupted" });
+    expect(a.effects).toContainEqual({
+      type: "sendClose",
+      voiceSessionId: "v1",
+      reason: "interrupted",
+    });
   });
   test("a short call resumes with a fresh open", () => {
     const a = run(
@@ -204,14 +236,22 @@ describe("interruptions", () => {
     });
     expect(long.state.phase).toBe("closing");
     expect(long.effects).toEqual([{ type: "audioDeactivate" }]);
-    const no = step(base, { type: "interruptionEnded", shouldResume: false, now: 10, voiceSessionId: "v2" });
+    const no = step(base, {
+      type: "interruptionEnded",
+      shouldResume: false,
+      now: 10,
+      voiceSessionId: "v2",
+    });
     expect(no.state.phase).toBe("closing");
   });
   test("losing the headset ends the conversation", () => {
     expect(run([{ type: "routeLost" }], run(live).state).state.closeReason).toBe("interrupted");
   });
   test("backgrounding mid-connect closes; a live conversation survives", () => {
-    const connecting = run([{ type: "activate", voiceSessionId: "v1", focus }, { type: "ready" }]).state;
+    const connecting = run([
+      { type: "activate", voiceSessionId: "v1", focus },
+      { type: "ready" },
+    ]).state;
     expect(run([{ type: "background" }], connecting).state.closeReason).toBe("app_background");
     expect(run([{ type: "background" }], run(live).state).state.phase).toBe("listening");
   });

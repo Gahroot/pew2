@@ -1,13 +1,13 @@
 /**
  * Mint the short-lived secret the phone uses to talk to OpenAI Realtime.
  *
- * The API key never leaves this process: the phone gets only an ephemeral
- * client secret. `fetch` is injected so tests never touch the network, and no
- * error path ever includes the key.
+ * The connected account token stays in this process. Only an ephemeral secret
+ * reaches the phone. Provider failures are mapped, never echoed.
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { redactSecrets } from "./safety.js";
+import { z } from "zod";
+import { boundedJson } from "./accountHttp.js";
 
 export const MINT_URL = "https://api.openai.com/v1/realtime/client_secrets";
 export const DEFAULT_MODEL = "gpt-realtime-2.1";
@@ -37,18 +37,26 @@ export async function readVoicePrefs(dataDir: string): Promise<VoicePrefs> {
   }
 }
 
-/** Environment wins over the prefs file. */
-export function resolveApiKey(env: NodeJS.ProcessEnv, prefs: VoicePrefs): string | undefined {
-  const key = env.OPENAI_API_KEY?.trim() || prefs.openaiApiKey?.trim();
-  return key || undefined;
-}
-
+export const MINT_MESSAGES = {
+  "account-required":
+    "Open Connection → Voice account and connect ChatGPT on this computer. Existing API keys are not used for voice.",
+  "reconnect-required": "Reconnect ChatGPT in Connection → Voice account.",
+  "not-entitled": "Voice is not available on this ChatGPT account.",
+  "rate-limited": "OpenAI is limiting voice sessions. Try again later.",
+  mint_failed: "Could not start voice with OpenAI. Try again.",
+} as const;
+export type MintCode = keyof typeof MINT_MESSAGES;
 export type MintResult =
   | { ok: true; secret: string; expiresAt: number; model: string }
-  | { ok: false; code: "no_api_key" | "mint_failed"; message: string };
+  | { ok: false; code: MintCode; message: string };
+const failure = (code: MintCode): MintResult => ({ ok: false, code, message: MINT_MESSAGES[code] });
+const Secret = z.object({
+  value: z.string().min(1).max(24000),
+  expires_at: z.number().int().positive(),
+});
 
 export interface MintOptions {
-  apiKey: string | undefined;
+  accessToken: string | undefined;
   model?: string;
   /** The session config (instructions, tools, audio...) to bake into the secret. */
   session: Record<string, unknown>;
@@ -58,44 +66,39 @@ export interface MintOptions {
 }
 
 export async function mintRealtimeSecret(options: MintOptions): Promise<MintResult> {
-  const key = options.apiKey;
-  if (!key) {
-    return {
-      ok: false,
-      code: "no_api_key",
-      message: "Sign in with `codex login` on this computer, or set OPENAI_API_KEY where the pew2 daemon runs, then restart it.",
-    };
-  }
+  const token = options.accessToken;
+  if (!token) return failure("account-required");
   const model = options.model ?? DEFAULT_MODEL;
   const doFetch = options.fetch ?? fetch;
-  const scrub = (text: string) => redactSecrets(text).split(key).join("[redacted]");
+  const timeout = AbortSignal.timeout(10_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   try {
     const response = await doFetch(MINT_URL, {
       method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      redirect: "error",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({
         expires_after: { anchor: "created_at", seconds: options.ttlSeconds ?? 600 },
         session: { ...options.session, type: "realtime", model },
       }),
-      signal: options.signal ?? AbortSignal.timeout(10_000),
+      signal,
     });
     if (!response.ok) {
-      const detail = scrub((await response.text().catch(() => "")).slice(0, 200));
-      return {
-        ok: false,
-        code: "mint_failed",
-        message: `OpenAI refused the voice session (HTTP ${response.status}).${detail ? ` ${detail}` : ""}`,
-      };
+      await response.body?.cancel();
+      return failure(
+        response.status === 401
+          ? "reconnect-required"
+          : response.status === 403
+            ? "not-entitled"
+            : response.status === 429
+              ? "rate-limited"
+              : "mint_failed",
+      );
     }
-    const body = (await response.json()) as { value?: unknown; expires_at?: unknown };
-    if (typeof body.value !== "string" || !body.value) {
-      return { ok: false, code: "mint_failed", message: "OpenAI sent no client secret." };
-    }
-    const expiresAt =
-      typeof body.expires_at === "number" ? Math.floor(body.expires_at) : Math.floor(Date.now() / 1000) + 600;
-    return { ok: true, secret: body.value, expiresAt, model };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, code: "mint_failed", message: `Could not reach OpenAI: ${scrub(message)}` };
+    const body = Secret.parse(await boundedJson(response, signal));
+    signal.throwIfAborted();
+    return { ok: true, secret: body.value, expiresAt: body.expires_at, model };
+  } catch {
+    return failure("mint_failed");
   }
 }

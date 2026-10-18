@@ -1,4 +1,12 @@
-import { Alert, Pressable, StyleSheet, Switch, Text, View, useWindowDimensions } from "react-native";
+import {
+  Alert,
+  Pressable,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { StageScroll } from "./stage/StageScroll";
 import { Sheet } from "./Sheet";
 import { PrivacyLink } from "./PrivacyLink";
@@ -11,7 +19,8 @@ import { theme } from "../theme";
 import type { Status } from "../useDaemon";
 
 // Same fixed desktop install/update instruction formerly shown in Sidebar.
-const INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/KenKaiii/pew2/main/install.sh | sh";
+const INSTALL_COMMAND =
+  "curl -fsSL https://raw.githubusercontent.com/Gahroot/pew2/main/install.sh | sh";
 /** Shared label column, so every value starts at the same x. */
 const LABEL_WIDTH = 92;
 
@@ -23,6 +32,8 @@ interface Props {
   update?: { latest: string; automatic: boolean };
   onClose: () => void;
   onUnpair: () => void;
+  voiceAccountLabel?: string;
+  onVoiceAccount?: () => void;
   /** "Voice call" setting. Omitted hides the row. */
   voiceCall?: boolean;
   onVoiceCall?: (on: boolean) => void;
@@ -31,63 +42,185 @@ interface Props {
   onNativeCall?: (on: boolean) => void;
 }
 
-const PHASE = { online: "paired", connecting: "pairing", offline: "waiting" } satisfies Record<Status, HandshakePhase>;
+const PHASE = { online: "paired", connecting: "pairing", offline: "waiting" } satisfies Record<
+  Status,
+  HandshakePhase
+>;
 
-function Row({ label, index, children }: { label: string; index: number; children: React.ReactNode }) {
+function Row({
+  label,
+  index,
+  children,
+}: {
+  label: string;
+  index: number;
+  children: React.ReactNode;
+}) {
   return (
     <Dissolve kind="row" delay={index * 50}>
       <View style={styles.row}>
-        <Led tone="dim" style={styles.rowLabel}>{label}</Led>
+        <Led tone="dim" style={styles.rowLabel}>
+          {label}
+        </Led>
         <View style={styles.rowValue}>{children}</View>
       </View>
     </Dissolve>
   );
 }
 
-export function ConnectionSheet({ visible, machineLabel, machineRemote, status, update, onClose, onUnpair, voiceCall, onVoiceCall, nativeCall, onNativeCall }: Props) {
+export function ConnectionSheet({
+  visible,
+  machineLabel,
+  machineRemote,
+  status,
+  update,
+  onClose,
+  onUnpair,
+  voiceCall,
+  onVoiceCall,
+  nativeCall,
+  onNativeCall,
+  voiceAccountLabel,
+  onVoiceAccount,
+}: Props) {
   const { height: screenHeight } = useWindowDimensions();
-  const title = status === "online" ? "Connected" : status === "connecting" ? "Connecting…" : "Offline";
-  return <Sheet visible={visible} label="Connection" labelTone={status === "connecting" ? "attention" : "agent"} pewMood={status === "online" ? "happy" : status === "connecting" ? "thinking" : "sleepy"} title={title} onClose={onClose} dismissLabel="Close connection details">
-    <StageScroll style={[styles.scroll, { maxHeight: Math.round(screenHeight * 0.75) }]} contentContainerStyle={styles.content}>
-      <Handshake phase={PHASE[status]} />
-      <DashedRule />
-      <Row label="Computer" index={0}>
-        {/* The computer's own name, never the relay's address. */}
-        <Text selectable numberOfLines={1} style={styles.value}>{machineLabel}</Text>
-      </Row>
-      <Row label="Route" index={1}>
-        <Text numberOfLines={1} style={styles.value}>{machineRemote ? "Relay, sealed end to end" : "Same network"}</Text>
-      </Row>
-      {update && <Row label="pew2" index={2}>
-        {update.automatic ? <Text numberOfLines={1} style={styles.value}>Updating to {update.latest}…</Text> :
-          <Pressable accessibilityRole="button" accessibilityLabel={`pew2 ${update.latest} is available for ${machineLabel}. How to update.`} hitSlop={8} onPress={() => {
-            haptics.tap();
-            Alert.alert(`pew2 ${update.latest} is available`, `This computer can't update itself, so run this on ${machineLabel}:\n\n${INSTALL_COMMAND}`, [{ text: "OK" }]);
-          }}><Text numberOfLines={1} style={[styles.value, styles.link]}>{update.latest} available · How</Text></Pressable>}
-      </Row>}
-      {onVoiceCall && <Row label="Voice call" index={3}>
-        <View style={styles.switchRow}>
-          <Text numberOfLines={2} style={[styles.value, styles.switchText]}>Pew calls when a task finishes or needs you. Silenced by Do Not Disturb and Sleep.</Text>
-          <Switch accessibilityLabel="Voice call" value={voiceCall === true} onValueChange={(on) => { haptics.tap(); onVoiceCall(on); }} />
-        </View>
-      </Row>}
-      {onNativeCall && <Row label="Call screen" index={4}>
-        <View style={styles.switchRow}>
-          <Text numberOfLines={3} style={[styles.value, styles.switchText]}>Ring with the phone's own call screen, and talk to Pew as a call.</Text>
-          <Switch accessibilityLabel="Native call screen" value={nativeCall === true} onValueChange={(on) => { haptics.tap(); onNativeCall(on); }} />
-        </View>
-      </Row>}
-      <DashedRule />
-      <PrivacyLink />
-      <Pressable accessibilityRole="button" accessibilityLabel={`Forget pairing with ${machineLabel}`} style={styles.action} onPress={() => {
-        haptics.warned();
-        Alert.alert("Forget this computer?", "You'll need to scan or paste its pairing link to connect again.", [
-          { text: "Cancel", style: "cancel" },
-          { text: "Forget", style: "destructive", onPress: () => { haptics.warned(); onUnpair(); } },
-        ]);
-      }}><Text style={styles.destructive}>Unpair this computer</Text></Pressable>
-    </StageScroll>
-  </Sheet>;
+  const title =
+    status === "online" ? "Connected" : status === "connecting" ? "Connecting…" : "Offline";
+  return (
+    <Sheet
+      visible={visible}
+      label="Connection"
+      labelTone={status === "connecting" ? "attention" : "agent"}
+      pewMood={status === "online" ? "happy" : status === "connecting" ? "thinking" : "sleepy"}
+      title={title}
+      onClose={onClose}
+      dismissLabel="Close connection details"
+    >
+      <StageScroll
+        style={[styles.scroll, { maxHeight: Math.round(screenHeight * 0.75) }]}
+        contentContainerStyle={styles.content}
+      >
+        <Handshake phase={PHASE[status]} />
+        <DashedRule />
+        <Row label="Computer" index={0}>
+          {/* The computer's own name, never the relay's address. */}
+          <Text selectable numberOfLines={1} style={styles.value}>
+            {machineLabel}
+          </Text>
+        </Row>
+        <Row label="Route" index={1}>
+          <Text numberOfLines={1} style={styles.value}>
+            {machineRemote ? "Relay, sealed end to end" : "Same network"}
+          </Text>
+        </Row>
+        {update && (
+          <Row label="pew2" index={2}>
+            {update.automatic ? (
+              <Text numberOfLines={1} style={styles.value}>
+                Updating to {update.latest}…
+              </Text>
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`pew2 ${update.latest} is available for ${machineLabel}. How to update.`}
+                hitSlop={8}
+                onPress={() => {
+                  haptics.tap();
+                  Alert.alert(
+                    `pew2 ${update.latest} is available`,
+                    `This computer can't update itself, so run this on ${machineLabel}:\n\n${INSTALL_COMMAND}`,
+                    [{ text: "OK" }],
+                  );
+                }}
+              >
+                <Text numberOfLines={1} style={[styles.value, styles.link]}>
+                  {update.latest} available · How
+                </Text>
+              </Pressable>
+            )}
+          </Row>
+        )}
+        {onVoiceAccount && (
+          <Row label="Voice account" index={3}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Voice account: ${voiceAccountLabel ?? "Not connected"}. Manage ChatGPT sign-in.`}
+              style={styles.action}
+              onPress={() => {
+                haptics.tap();
+                onVoiceAccount();
+              }}
+            >
+              <Text style={[styles.value, styles.link]}>
+                {voiceAccountLabel ?? "Connect ChatGPT"}
+              </Text>
+            </Pressable>
+          </Row>
+        )}
+        {onVoiceCall && (
+          <Row label="Voice call" index={4}>
+            <View style={styles.switchRow}>
+              <Text numberOfLines={2} style={[styles.value, styles.switchText]}>
+                Pew calls when a task finishes or needs you. Silenced by Do Not Disturb and Sleep.
+              </Text>
+              <Switch
+                accessibilityLabel="Voice call"
+                value={voiceCall === true}
+                onValueChange={(on) => {
+                  haptics.tap();
+                  onVoiceCall(on);
+                }}
+              />
+            </View>
+          </Row>
+        )}
+        {onNativeCall && (
+          <Row label="Call screen" index={4}>
+            <View style={styles.switchRow}>
+              <Text numberOfLines={3} style={[styles.value, styles.switchText]}>
+                Ring with the phone's own call screen, and talk to Pew as a call.
+              </Text>
+              <Switch
+                accessibilityLabel="Native call screen"
+                value={nativeCall === true}
+                onValueChange={(on) => {
+                  haptics.tap();
+                  onNativeCall(on);
+                }}
+              />
+            </View>
+          </Row>
+        )}
+        <DashedRule />
+        <PrivacyLink />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Forget pairing with ${machineLabel}`}
+          style={styles.action}
+          onPress={() => {
+            haptics.warned();
+            Alert.alert(
+              "Forget this computer?",
+              "You'll need to scan or paste its pairing link to connect again.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Forget",
+                  style: "destructive",
+                  onPress: () => {
+                    haptics.warned();
+                    onUnpair();
+                  },
+                },
+              ],
+            );
+          }}
+        >
+          <Text style={styles.destructive}>Unpair this computer</Text>
+        </Pressable>
+      </StageScroll>
+    </Sheet>
+  );
 }
 const styles = StyleSheet.create({
   // Everything shows at once (it is short); only a very small screen scrolls.
@@ -96,7 +229,12 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", minHeight: theme.size.touch },
   rowLabel: { width: LABEL_WIDTH },
   rowValue: { flex: 1, alignItems: "flex-end" },
-  value: { color: theme.color.text, fontSize: theme.font.body, lineHeight: theme.line.body, textAlign: "right" },
+  value: {
+    color: theme.color.text,
+    fontSize: theme.font.body,
+    lineHeight: theme.line.body,
+    textAlign: "right",
+  },
   switchRow: { flexDirection: "row", alignItems: "center", gap: theme.space(3) },
   switchText: { flex: 1, fontSize: theme.font.small },
   link: { color: theme.color.accent },

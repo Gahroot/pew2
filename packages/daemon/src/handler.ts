@@ -209,29 +209,30 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
         // conversation comes first — it is the authority on where its own
         // session lives, it needs no client to be up to date, and it is right
         // even for an older app that sends no `cwd` at all.
-        if (isGoalsId(message.providerId) && !(message.cwd && daemon.isGoalFolder(message.cwd, message.providerId))) {
+        if (
+          isGoalsId(message.providerId) &&
+          !(message.cwd && daemon.isGoalFolder(message.cwd, message.providerId))
+        ) {
           reply({ t: "error", code: "not_a_goal", message: NOT_A_GOAL });
           break;
         }
-        const recorded = await daemon.agentSessionCwd(
-          message.providerId,
-          message.agentSessionId,
-        );
+        const recorded = await daemon.agentSessionCwd(message.providerId, message.agentSessionId);
         // Only asked when the agent had no record: checking a path also files it
         // as a project this client has opened, and the one it sent here is not
         // the one being opened.
         const named =
           recorded ??
-          (message.cwd
-            ? await daemon.knownProject(message.providerId, message.cwd)
-            : undefined);
+          (message.cwd ? await daemon.knownProject(message.providerId, message.cwd) : undefined);
         const workspace = named ?? (await daemon.lastWorkspace(message.providerId)) ?? cwd;
         openResumed(ctx, message.providerId, message.agentSessionId, workspace);
         break;
       }
 
       case "session.start": {
-        if (isGoalsId(message.providerId) && !(message.cwd && daemon.isGoalFolder(message.cwd, message.providerId))) {
+        if (
+          isGoalsId(message.providerId) &&
+          !(message.cwd && daemon.isGoalFolder(message.cwd, message.providerId))
+        ) {
           reply({ t: "error", code: "not_a_goal", message: NOT_A_GOAL });
           break;
         }
@@ -267,8 +268,19 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
           reply(errorMessage("push_unidentified", "Say hello before registering for push."));
           break;
         }
-        const nativeCall = message.nativeCall === true ? { ...(message.voip ? { voip: message.voip } : null) } : undefined;
-        if (!daemon.pushTargets.register(deviceId, message.token, message.platform, message.voiceCall === true, nativeCall)) {
+        const nativeCall =
+          message.nativeCall === true
+            ? { ...(message.voip ? { voip: message.voip } : null) }
+            : undefined;
+        if (
+          !daemon.pushTargets.register(
+            deviceId,
+            message.token,
+            message.platform,
+            message.voiceCall === true,
+            nativeCall,
+          )
+        ) {
           // Said out loud rather than ignored: a silently rejected token looks
           // exactly like a working one until someone waits for a notification
           // that never comes.
@@ -287,11 +299,7 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
       // choice so the session this prompt creates opens with it already set,
       // instead of the change being dropped on the floor.
       case "provider.config": {
-        await daemon.rememberConfigOption(
-          message.providerId,
-          message.configId,
-          message.value,
-        );
+        await daemon.rememberConfigOption(message.providerId, message.configId, message.value);
         break;
       }
 
@@ -317,8 +325,7 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
         // The root comes from the session the daemon started, never from the
         // message: a client-supplied `cwd` would let a caller name its own
         // containment root and read anything on the machine.
-        const root =
-          (message.sessionId ? daemon.sessionCwd(message.sessionId) : undefined) ?? cwd;
+        const root = (message.sessionId ? daemon.sessionCwd(message.sessionId) : undefined) ?? cwd;
         try {
           const image = await loadImage(uri, { cwd: root });
           reply({ t: "image", requestId, uri, ...image });
@@ -421,6 +428,20 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
       // Voice orchestration. One implementation here serves both transports; the
       // events themselves are broadcast by the service as tasks change, so a
       // reply only ever answers the asker.
+      case "voice.account.status":
+      case "voice.account.connect":
+      case "voice.account.cancel":
+      case "voice.account.disconnect": {
+        // Only transport-proven identity can own an OAuth attempt.
+        if (!ctx.deviceId) {
+          reply(errorMessage("unauthorized", "Pair this device first."));
+          break;
+        }
+        const voice = await daemon.voice();
+        reply(await voice.accountRequest(message, ctx.deviceId));
+        break;
+      }
+
       case "voice.open": {
         const voice = await daemon.voice();
         reply(await voice.open(message));
@@ -484,7 +505,11 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
 
       case "plan.decide": {
         if (isGoalsId(daemon.sessionProvider(message.sessionId))) {
-          reply({ t: "error", code: "unsupported", message: "Plans are for GG Coder conversations." });
+          reply({
+            t: "error",
+            code: "unsupported",
+            message: "Plans are for GG Coder conversations.",
+          });
           break;
         }
         // A turn on the normal prompt path, so busy/idle/queue rules hold.
@@ -508,7 +533,12 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
       case "checklist": {
         try {
           const result = await daemon.checklist(message.sessionId);
-          reply({ t: "checklist", requestId: message.requestId, sessionId: message.sessionId, ...result });
+          reply({
+            t: "checklist",
+            requestId: message.requestId,
+            sessionId: message.sessionId,
+            ...result,
+          });
         } catch (error) {
           reply({
             t: "checklist",
@@ -525,9 +555,20 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
         // No `providerIds` (an older app) gets exactly today's gg-only frame.
         const named = message.providerIds ? { providerIds: message.providerIds } : {};
         try {
-          reply({ t: "goals", requestId: message.requestId, goals: await daemon.listGoals(message.providerIds), ...named });
+          reply({
+            t: "goals",
+            requestId: message.requestId,
+            goals: await daemon.listGoals(message.providerIds),
+            ...named,
+          });
         } catch (error) {
-          reply({ t: "goals", requestId: message.requestId, goals: [], error: humanError(error), ...named });
+          reply({
+            t: "goals",
+            requestId: message.requestId,
+            goals: [],
+            error: humanError(error),
+            ...named,
+          });
         }
         break;
       }
@@ -537,16 +578,30 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
           // Files picked on the phone become files on this computer first,
           // and join the context by path like anything chosen here.
           const filePaths = await storeGoalFiles(message.files ?? []);
-          const goal = await daemon.createGoal({
-            name: message.name,
-            goal: message.goal,
-            context: [...message.context, ...filePaths],
-            instructions: message.instructions,
-          }, message.providerId ?? GG_GOALS_ID);
-          reply({ t: "goal.result", requestId: message.requestId, ok: true, goal, files: filePaths.length });
+          const goal = await daemon.createGoal(
+            {
+              name: message.name,
+              goal: message.goal,
+              context: [...message.context, ...filePaths],
+              instructions: message.instructions,
+            },
+            message.providerId ?? GG_GOALS_ID,
+          );
+          reply({
+            t: "goal.result",
+            requestId: message.requestId,
+            ok: true,
+            goal,
+            files: filePaths.length,
+          });
           await broadcastGoals(ctx, goal.providerId ?? GG_GOALS_ID);
         } catch (error) {
-          reply({ t: "goal.result", requestId: message.requestId, ok: false, error: humanError(error) });
+          reply({
+            t: "goal.result",
+            requestId: message.requestId,
+            ok: false,
+            error: humanError(error),
+          });
         }
         break;
       }
@@ -578,7 +633,12 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
           });
           await broadcastGoals(ctx, goalsId);
         } catch (error) {
-          reply({ t: "goal.result", requestId: message.requestId, ok: false, error: humanError(error) });
+          reply({
+            t: "goal.result",
+            requestId: message.requestId,
+            ok: false,
+            error: humanError(error),
+          });
         }
         break;
       }
@@ -740,7 +800,11 @@ function openResumed(
 /** Every client's goal list for one backend moves after a change. Best effort. */
 async function broadcastGoals(ctx: HandlerContext, goalsId: string) {
   try {
-    ctx.broadcast({ t: "goals", goals: await ctx.daemon.listGoals([goalsId]), providerIds: [goalsId] });
+    ctx.broadcast({
+      t: "goals",
+      goals: await ctx.daemon.listGoals([goalsId]),
+      providerIds: [goalsId],
+    });
   } catch {
     // The reply already said what happened; a failed refresh changes nothing.
   }
@@ -751,7 +815,11 @@ async function broadcastGoals(ctx: HandlerContext, goalsId: string) {
  * turn on the goal's open session — opening one first through the ordinary
  * start/resume flows when none is.
  */
-async function resumeGoal(ctx: HandlerContext, goalId: string, goalsId?: string): Promise<wire.GoalSummary> {
+async function resumeGoal(
+  ctx: HandlerContext,
+  goalId: string,
+  goalsId?: string,
+): Promise<wire.GoalSummary> {
   const { daemon } = ctx;
   const goal = await daemon.findGoal(goalId, goalsId);
   const providerId = goal.providerId ?? GG_GOALS_ID;

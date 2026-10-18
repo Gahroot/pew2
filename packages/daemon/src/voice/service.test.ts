@@ -8,6 +8,22 @@ import { scratch } from "./scratch.js";
 import { contextText, deskContext, VoiceService } from "./service.js";
 import type { RunningSession, VoiceEvent } from "./types.js";
 import { buildRegistry } from "./registry.js";
+import { AccountAuth, type VoiceAccount } from "./accountAuth.js";
+
+const connectedAccount = () =>
+  AccountAuth.create({
+    dataDir: "unused",
+    storage: {
+      read: async () => ({
+        accessToken: "own-access",
+        refreshToken: "own-refresh",
+        expiresAt: Date.now() + 3600_000,
+      }),
+      replace: async () => {},
+      delete: async () => {},
+    },
+    probe: async () => ({ ok: true }),
+  });
 
 function host(): VoiceHost & { permissionAnswers: string[] } {
   const permissionAnswers: string[] = [];
@@ -34,7 +50,13 @@ const mintFetch = (async () =>
 
 async function service(
   env: NodeJS.ProcessEnv = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" },
-  extra: { dave?: DaveClient; runningSessions?: () => RunningSession[]; dataDir?: string } = {},
+  extra: {
+    dave?: DaveClient;
+    runningSessions?: () => RunningSession[];
+    dataDir?: string;
+    account?: VoiceAccount;
+    fetch?: typeof fetch;
+  } = {},
 ) {
   const emitted: unknown[] = [];
   const pushed: VoiceEvent[] = [];
@@ -50,18 +72,113 @@ async function service(
     usableProviders: () => ["echo"],
     push: (e) => void pushed.push(e),
     fetch: mintFetch,
+    account: await connectedAccount(),
     tickMs: 0,
     ...extra,
   });
   return { svc, emitted, pushed, h };
 }
 
-test("open without a key is unavailable/no_api_key", async () => {
-  const { svc } = await service({ CODEX_HOME: "/nonexistent-codex-home" });
+test("voice never adopts CLI credentials or falls back to API billing", async () => {
+  const dataDir = scratch();
+  const fsp = await import("node:fs/promises");
+  const path = await import("node:path");
+  await fsp.writeFile(
+    path.join(dataDir, "auth.json"),
+    JSON.stringify({ tokens: { access_token: "cli-access", refresh_token: "cli-refresh" } }),
+  );
+  await fsp.writeFile(
+    path.join(dataDir, "voice-prefs.json"),
+    JSON.stringify({ openaiApiKey: "prefs-key" }),
+  );
+  const account = await AccountAuth.create({ dataDir, probe: async () => ({ ok: true }) });
+  let requests = 0;
+  const { svc } = await service(
+    { OPENAI_API_KEY: "env-key", CODEX_HOME: dataDir },
+    {
+      dataDir,
+      account,
+      fetch: (async () => {
+        requests++;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+    },
+  );
   expect(await svc.open({ voiceSessionId: "v", source: "in_app" })).toMatchObject({
     t: "voice.unavailable",
-    code: "no_api_key",
+    code: "account-required",
   });
+  expect(requests).toBe(0);
+  svc.dispose();
+});
+
+test("disconnect ends voice legs, preserves coding tasks and fences an in-flight mint", async () => {
+  let finish: ((value: Response) => void) | undefined;
+  const { svc, emitted } = await service();
+  await svc.open({ voiceSessionId: "active", source: "in_app" });
+  const task = svc.store.createTask({
+    projectId: "p",
+    projectName: "pew2",
+    cwd: "/code/pew2",
+    providerId: "echo",
+    title: "Coding",
+    prompt: "Work",
+  });
+  await svc.accountRequest({ t: "voice.account.disconnect", requestId: "d" }, "phone");
+  expect(emitted).toContainEqual(
+    expect.objectContaining({
+      t: "voice.unavailable",
+      voiceSessionId: "active",
+      code: "account-required",
+    }),
+  );
+  expect(svc.store.getTask(task.taskId)).toBeDefined();
+  expect(await svc.open({ voiceSessionId: "again", source: "in_app" })).toMatchObject({
+    t: "voice.unavailable",
+    code: "account-required",
+  });
+  svc.dispose();
+  const pending = await service(undefined, {
+    fetch: (async () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      })) as unknown as typeof fetch,
+  });
+  const opening = pending.svc.open({ voiceSessionId: "late", source: "in_app" });
+  for (let i = 0; i < 400 && !finish; i++)
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  expect(finish).toBeDefined();
+  await pending.svc.accountRequest({ t: "voice.account.disconnect", requestId: "d" }, "phone");
+  finish?.(new Response(JSON.stringify({ value: "late-secret", expires_at: 999 })));
+  const result = await opening;
+  expect(result.t).toBe("voice.unavailable");
+  expect(JSON.stringify(result)).not.toContain("late-secret");
+  pending.svc.dispose();
+});
+
+test("shared handler requires transport identity for account operations", async () => {
+  const { svc } = await service();
+  const replies: unknown[] = [];
+  const context = {
+    daemon: { voice: async () => svc } as unknown as Daemon,
+    reply: (m: unknown) => {
+      replies.push(m);
+    },
+    broadcast: () => {},
+  };
+  await handleMessage(JSON.stringify({ t: "voice.account.disconnect", requestId: "r" }), context);
+  expect(replies.at(-1)).toMatchObject({ t: "error", code: "unauthorized" });
+  expect(await svc.account.accessToken()).toMatchObject({ ok: true });
+  await handleMessage(JSON.stringify({ t: "voice.account.disconnect", requestId: "r" }), {
+    ...context,
+    deviceId: "verified-phone",
+  });
+  expect(replies.at(-1)).toMatchObject({
+    t: "voice.account.state",
+    requestId: "r",
+    state: "not-connected",
+  });
+  svc.dispose();
 });
 
 test("open mints a secret and returns the session config plus a snapshot", async () => {
@@ -91,8 +208,16 @@ function fakeDave() {
   let top = "o1";
   const daveFetch = (async (url: string, init?: RequestInit) => {
     requests.push({ method: init?.method ?? "GET", path: new URL(url).pathname });
-    const objective = { id: top, projectId: "p-tri", projectName: "Triten", objective: "Call the client about the secret deal", humanOnly: false };
-    return new Response(JSON.stringify({ top: objective, queue: [objective], projects: [], decisions: [] }));
+    const objective = {
+      id: top,
+      projectId: "p-tri",
+      projectName: "Triten",
+      objective: "Call the client about the secret deal",
+      humanOnly: false,
+    };
+    return new Response(
+      JSON.stringify({ top: objective, queue: [objective], projects: [], decisions: [] }),
+    );
   }) as unknown as typeof fetch;
   return {
     requests,
@@ -109,10 +234,17 @@ test("DAVE: open() makes exactly one read-only GET of its focus list; the tools 
   const dave = fakeDave();
   const { svc } = await service(env, { dave: dave.client });
   const ready = await svc.open({ voiceSessionId: "v", source: "in_app" });
-  expect(toolNames(ready)).toEqual(expect.arrayContaining(["check_backlog", "delegate_backlog_item"]));
+  expect(toolNames(ready)).toEqual(
+    expect.arrayContaining(["check_backlog", "delegate_backlog_item"]),
+  );
   expect(dave.requests).toEqual([{ method: "GET", path: "/api/intel/focus" }]);
 
-  await svc.tool({ voiceSessionId: "v", callId: "d1", name: "check_backlog", args: { about: "priorities" } });
+  await svc.tool({
+    voiceSessionId: "v",
+    callId: "d1",
+    name: "check_backlog",
+    args: { about: "priorities" },
+  });
   // Asking adds exactly the one read it needs; nothing else touched DAVE.
   expect(dave.requests).toEqual([
     { method: "GET", path: "/api/intel/focus" },
@@ -141,7 +273,9 @@ test("check-in: one sentence about what happened since, said once, naming DAVE's
   const { svc } = await service(env, { dave: dave.client });
 
   // First sight of DAVE records silently; nothing has happened yet.
-  const first = (await svc.open({ voiceSessionId: "v1", source: "in_app" })) as { snapshot: { checkin?: { say?: string } } };
+  const first = (await svc.open({ voiceSessionId: "v1", source: "in_app" })) as {
+    snapshot: { checkin?: { say?: string } };
+  };
   expect(first.snapshot.checkin).toMatchObject({ finished: 0, failed: 0, needsYou: 0, dave: [] });
   expect(first.snapshot.checkin?.say).toBeUndefined();
   expect(instructionsOf(first)).not.toContain("\n\nCheck-in:");
@@ -149,29 +283,50 @@ test("check-in: one sentence about what happened since, said once, naming DAVE's
 
   // Two agents finish, one is waiting on an approval, and DAVE's top pick for Triten changes.
   const enqueue = (name: string) =>
-    svc.orchestrator.enqueue({ projectId: `p_${name}`, projectName: name, cwd: `/code/${name}`, providerId: "echo", title: name, prompt: name });
+    svc.orchestrator.enqueue({
+      projectId: `p_${name}`,
+      projectName: name,
+      cwd: `/code/${name}`,
+      providerId: "echo",
+      title: name,
+      prompt: name,
+    });
   const [a, b, c] = [enqueue("alpha"), enqueue("beta"), enqueue("gamma")];
   await new Promise((r) => setTimeout(r, 0));
-  for (const done of [a, b]) svc.store.transition(done.taskId, "completed", "task.completed", "The agent says it finished.");
+  for (const done of [a, b])
+    svc.store.transition(done.taskId, "completed", "task.completed", "The agent says it finished.");
   const sessionId = svc.store.getTask(c.taskId)?.sessionId;
   if (!sessionId) throw new Error("expected gamma to have a session");
   svc.orchestrator.onSessionPayload(sessionId, {
     kind: "permission_request",
     requestId: "perm_1",
-    params: { toolCall: { title: "npm test", kind: "execute" }, options: [{ optionId: "y", kind: "allow_once" }] },
+    params: {
+      toolCall: { title: "npm test", kind: "execute" },
+      options: [{ optionId: "y", kind: "allow_once" }],
+    },
   });
   dave.setTop("o2");
 
-  const second = (await svc.open({ voiceSessionId: "v2", source: "in_app" })) as { snapshot: { checkin?: { say?: string; dave: string[] } } };
-  const say = "Two agents finished, one is blocked by an approval, and DAVE has a new recommendation for Triten. Want the details?";
-  expect(second.snapshot.checkin).toMatchObject({ say, finished: 2, needsYou: 1, dave: ["Triten"] });
+  const second = (await svc.open({ voiceSessionId: "v2", source: "in_app" })) as {
+    snapshot: { checkin?: { say?: string; dave: string[] } };
+  };
+  const say =
+    "Two agents finished, one is blocked by an approval, and DAVE has a new recommendation for Triten. Want the details?";
+  expect(second.snapshot.checkin).toMatchObject({
+    say,
+    finished: 2,
+    needsYou: 1,
+    dave: ["Triten"],
+  });
   expect(instructionsOf(second)).toContain(`\n\nCheck-in: ${say}`);
   // Project names only: DAVE's objective text never reaches the model.
   expect(instructionsOf(second)).not.toContain("secret deal");
   await svc.close({ voiceSessionId: "v2" });
 
   // Heard once: the next session repeats neither the results nor DAVE's news; the live approval still counts.
-  const third = (await svc.open({ voiceSessionId: "v3", source: "in_app" })) as { snapshot: { checkin?: { say?: string } } };
+  const third = (await svc.open({ voiceSessionId: "v3", source: "in_app" })) as {
+    snapshot: { checkin?: { say?: string } };
+  };
   expect(third.snapshot.checkin?.say).toBe("One is blocked by an approval. Want the details?");
   svc.dispose();
 });
@@ -180,7 +335,12 @@ test("focus survives a new voice session and a restart, as working-memory lines"
   const dataDir = scratch();
   const first = await service(undefined, { dataDir });
   await first.svc.open({ voiceSessionId: "v1", source: "in_app" });
-  await first.svc.tool({ voiceSessionId: "v1", callId: "s", name: "start_task", args: { project: "pew2", instruction: "fix the login screen" } });
+  await first.svc.tool({
+    voiceSessionId: "v1",
+    callId: "s",
+    name: "start_task",
+    args: { project: "pew2", instruction: "fix the login screen" },
+  });
   await first.svc.close({ voiceSessionId: "v1" });
   first.svc.dispose();
 
@@ -207,22 +367,38 @@ test("contextText carries goal progress and an open question per task", () => {
         priority: 0,
         createdAt: 1,
         updatedAt: 2,
-        goal: { done: 2, total: 3, status: "running", verified: "pass", needsYou: "Grant the browser permission" },
+        goal: {
+          done: 2,
+          total: 3,
+          status: "running",
+          verified: "pass",
+          needsYou: "Grant the browser permission",
+        },
         question: { requestId: "ask_1", text: "Use the staging database?", options: ["Yes", "No"] },
       },
     ],
   });
-  expect(text).toContain("  Goal: 2 of 3 milestones, run running, verifier passed, needs you: Grant the browser permission");
+  expect(text).toContain(
+    "  Goal: 2 of 3 milestones, run running, verifier passed, needs you: Grant the browser permission",
+  );
   expect(text).toContain("  Question ask_1: Use the staging database? (options: Yes, No)");
 });
 
 test("events are broadcast, an answer elsewhere unblocks, and urgent ones push", async () => {
   const { svc, emitted, pushed } = await service();
-  await svc.tool({ voiceSessionId: "v", callId: "c1", name: "start_task", args: { project: "pew2", instruction: "go" } });
+  await svc.tool({
+    voiceSessionId: "v",
+    callId: "c1",
+    name: "start_task",
+    args: { project: "pew2", instruction: "go" },
+  });
   svc.orchestrator.onSessionPayload("s1", {
     kind: "permission_request",
     requestId: "perm_1",
-    params: { toolCall: { title: "npm test", kind: "execute" }, options: [{ optionId: "y", kind: "allow_once" }] },
+    params: {
+      toolCall: { title: "npm test", kind: "execute" },
+      options: [{ optionId: "y", kind: "allow_once" }],
+    },
   });
   expect(pushed.map((e) => e.kind)).toEqual(["task.approval"]);
   svc.orchestrator.onPermissionAnswered("s1", "perm_1");
@@ -242,7 +418,12 @@ test("events are broadcast, an answer elsewhere unblocks, and urgent ones push",
 
 test("close persists the heard cursor and unheard events come back in the snapshot", async () => {
   const { svc } = await service();
-  await svc.tool({ voiceSessionId: "v", callId: "c1", name: "start_task", args: { project: "pew2", instruction: "go" } });
+  await svc.tool({
+    voiceSessionId: "v",
+    callId: "c1",
+    name: "start_task",
+    args: { project: "pew2", instruction: "go" },
+  });
   expect((await svc.snapshot()).unheard.length).toBeGreaterThan(0);
   await svc.close({ voiceSessionId: "v", heardEventId: 2 });
   expect(svc.store.heardEventId).toBe(2);
@@ -254,13 +435,17 @@ test("close persists the heard cursor and unheard events come back in the snapsh
 
 test("handler: voice.open/tool(dedupe)/sync/close and hello -> voice.state", async () => {
   const { svc } = await service();
-  const fake = { refreshProviders: async () => ({ errors: [] }), voice: async () => svc } as unknown as Daemon;
+  const fake = {
+    refreshProviders: async () => ({ errors: [] }),
+    voice: async () => svc,
+  } as unknown as Daemon;
   const replies: Array<Record<string, unknown>> = [];
-  const send = (m: Record<string, unknown>) => handleMessage(JSON.stringify(m), {
-    daemon: fake,
-    reply: (r) => replies.push(r as Record<string, unknown>),
-    broadcast: () => {},
-  });
+  const send = (m: Record<string, unknown>) =>
+    handleMessage(JSON.stringify(m), {
+      daemon: fake,
+      reply: (r) => replies.push(r as Record<string, unknown>),
+      broadcast: () => {},
+    });
 
   await send({ t: "hello", wire: 2, role: "app", deviceId: "d1" });
   expect(replies.at(-1)).toMatchObject({ t: "voice.state" });
@@ -268,7 +453,13 @@ test("handler: voice.open/tool(dedupe)/sync/close and hello -> voice.state", asy
   await send({ t: "voice.open", voiceSessionId: "v", source: "in_app" });
   expect(replies.at(-1)).toMatchObject({ t: "voice.ready", voiceSessionId: "v" });
 
-  const call = { t: "voice.tool", voiceSessionId: "v", callId: "dup", name: "start_task", args: { project: "pew2", instruction: "x" } };
+  const call = {
+    t: "voice.tool",
+    voiceSessionId: "v",
+    callId: "dup",
+    name: "start_task",
+    args: { project: "pew2", instruction: "x" },
+  };
   await send(call);
   await send(call);
   const results = replies.filter((r) => r.t === "voice.tool.result");
@@ -305,11 +496,19 @@ test("voice push data is exactly VoiceCallbackPush, sent to registered tokens", 
   const registry = new PushRegistry();
   registry.register("d", "ExponentPushToken[abc]", "ios");
   const [message] = voiceMessages(registry, event);
-  expect(message?.data).toEqual({ type: "voice.callback", eventId: 7, taskId: "t_1", projectId: "proj_x", class: "approval" });
+  expect(message?.data).toEqual({
+    type: "voice.callback",
+    eventId: 7,
+    taskId: "t_1",
+    projectId: "proj_x",
+    class: "approval",
+  });
   const bodies: string[] = [];
   await pushVoiceEvent(registry, event, (async (_u: unknown, init?: RequestInit) => {
     bodies.push(init?.body as string);
-    return new Response(JSON.stringify({ data: [{ status: "error", details: { error: "DeviceNotRegistered" } }] }));
+    return new Response(
+      JSON.stringify({ data: [{ status: "error", details: { error: "DeviceNotRegistered" } }] }),
+    );
   }) as unknown as typeof fetch);
   expect(bodies).toHaveLength(1);
   expect(registry.size).toBe(0); // dead token dropped
@@ -345,10 +544,15 @@ test("tasks saved before repositories were tracked are filed under theirs at sta
 
   const second = await VoiceService.create({
     ...deps,
-    detectWorktree: async (path: string) => (path.includes("/worktrees/billing/") ? { repo: "billing", gone: true } : undefined),
+    detectWorktree: async (path: string) =>
+      path.includes("/worktrees/billing/") ? { repo: "billing", gone: true } : undefined,
   });
   const billing = (await second.projects()).find((p) => p.name === "billing");
-  expect(second.store.getTask(task.taskId)?.repo).toEqual({ projectId: billing?.projectId, name: "billing", branch: "ez-mun7ig9t" });
+  expect(second.store.getTask(task.taskId)?.repo).toEqual({
+    projectId: billing?.projectId,
+    name: "billing",
+    branch: "ez-mun7ig9t",
+  });
   // Idempotent: nothing left to fill on the next start.
   expect(await second.backfillRepos()).toBe(0);
   // And the model hears it as billing's work.
@@ -374,7 +578,11 @@ test("a push about a branch is titled by its repository", () => {
 test("voice.open: clientVad selects the manual-turn config; no marker keeps the server answering", async () => {
   const { svc } = await service();
   const turn = (r: Record<string, unknown>) =>
-    (r as { realtime: { session: { audio: { input: { turn_detection: Record<string, unknown> } } } } }).realtime.session.audio.input.turn_detection;
+    (
+      r as {
+        realtime: { session: { audio: { input: { turn_detection: Record<string, unknown> } } } };
+      }
+    ).realtime.session.audio.input.turn_detection;
   const old = await svc.open({ voiceSessionId: "old", source: "in_app" });
   const next = await svc.open({ voiceSessionId: "new", source: "in_app", clientVad: true });
   expect(old.t).toBe("voice.ready");
@@ -385,11 +593,33 @@ test("voice.open: clientVad selects the manual-turn config; no marker keeps the 
 
 test("voice.dismiss persists, broadcasts, and drops the task from every later picture", async () => {
   const { svc, emitted } = await service();
-  const a = svc.store.createTask({ projectId: "p1", projectName: "pew2", cwd: "/code/pew2", providerId: "echo", title: "a", prompt: "a" });
+  const a = svc.store.createTask({
+    projectId: "p1",
+    projectName: "pew2",
+    cwd: "/code/pew2",
+    providerId: "echo",
+    title: "a",
+    prompt: "a",
+  });
   svc.store.transition(a.taskId, "completed", "task.completed", "done");
-  const b = svc.store.createTask({ projectId: "p2", projectName: "other", cwd: "/code/other", providerId: "echo", title: "b", prompt: "b", repo: { projectId: "p3", name: "repo" } });
+  const b = svc.store.createTask({
+    projectId: "p2",
+    projectName: "other",
+    cwd: "/code/other",
+    providerId: "echo",
+    title: "b",
+    prompt: "b",
+    repo: { projectId: "p3", name: "repo" },
+  });
   svc.store.transition(b.taskId, "failed", "task.failed", "broke");
-  const live = svc.store.createTask({ projectId: "p1", projectName: "pew2", cwd: "/code/pew2", providerId: "echo", title: "live", prompt: "live" });
+  const live = svc.store.createTask({
+    projectId: "p1",
+    projectName: "pew2",
+    cwd: "/code/pew2",
+    providerId: "echo",
+    title: "live",
+    prompt: "live",
+  });
   emitted.length = 0;
 
   // Through the handler, as either transport delivers it; a live task id is ignored.
@@ -430,14 +660,41 @@ test("worktrees only git knows about are filed under their repository, deleted o
   const projects = await svc.projects();
   const root = projects.find((p) => p.name === "triten-os");
   expect(projects.map((p) => p.name)).toEqual(["triten-os", "triten-os (fix/boot)"]);
-  expect(projects[1]?.worktree).toEqual({ repo: "triten-os", repoId: root?.projectId, branch: "fix/boot" });
+  expect(projects[1]?.worktree).toEqual({
+    repo: "triten-os",
+    repoId: root?.projectId,
+    branch: "fix/boot",
+  });
   svc.dispose();
 });
 
 const deskSessions: RunningSession[] = [
-  { sessionId: "desk:codex:1", providerId: "codex", cwd: "/code/other", state: "idle", idleMs: 0, origin: "desktop" },
-  { sessionId: "desk:claude:2", providerId: "claude", agentName: "Claude Code", cwd: "/code/pew2/src", state: "working", idleMs: 0, origin: "desktop", title: "Fix login" },
-  { sessionId: "p1", providerId: "echo", cwd: "/code/pew2", state: "working", idleMs: 0, origin: "pew2" },
+  {
+    sessionId: "desk:codex:1",
+    providerId: "codex",
+    cwd: "/code/other",
+    state: "idle",
+    idleMs: 0,
+    origin: "desktop",
+  },
+  {
+    sessionId: "desk:claude:2",
+    providerId: "claude",
+    agentName: "Claude Code",
+    cwd: "/code/pew2/src",
+    state: "working",
+    idleMs: 0,
+    origin: "desktop",
+    title: "Fix login",
+  },
+  {
+    sessionId: "p1",
+    providerId: "echo",
+    cwd: "/code/pew2",
+    state: "working",
+    idleMs: 0,
+    origin: "pew2",
+  },
 ];
 
 test("deskContext lists only desk sessions, working first, and is empty without any", () => {
@@ -451,7 +708,9 @@ test("deskContext lists only desk sessions, working first, and is empty without 
 
 test("open() tells the model what is running at the computer", async () => {
   const { svc } = await service(undefined, { runningSessions: () => deskSessions });
-  const ready = (await svc.open({ voiceSessionId: "v", source: "in_app" })) as { realtime: { session: { instructions: string } } };
+  const ready = (await svc.open({ voiceSessionId: "v", source: "in_app" })) as {
+    realtime: { session: { instructions: string } };
+  };
   expect(ready.realtime.session.instructions).toContain("Running on the computer now:");
   svc.dispose();
 });

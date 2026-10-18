@@ -2,8 +2,37 @@
 
 The daemon half is documented in `docs/VOICE.md`. Nothing below has been run on a device or simulator; every native piece is marked **UNTESTED**.
 
+## Connect a voice account — native flow UNTESTED
+
+With the paired computer awake and online, open **Connection → Voice account**.
+Choose **Connect ChatGPT**, then **Open ChatGPT** and enter the displayed code.
+**Copy code** copies only that temporary code to the phone's clipboard. Complete
+sign-in on the official page and return to Pew2. **Cancel** stops the pending
+attempt; **Disconnect** confirms removal of only Pew2's voice credentials and
+ends active voice calls, not coding sessions or EZ Coder login.
+
+Connecting an account does not request microphone access. OAuth credentials stay
+on the paired computer in a separate owner-only file, not in the phone or Codex
+CLI storage. Windows voice-account storage is not supported yet and fails closed.
+There is no automatic API-key fallback. Each tester must use their own computer,
+pairing and account.
+
+**Connected** and **Voice ready** are different: login triggers a credential-mint
+probe without opening audio. A 401 requires reconnecting; a 403 reports that voice
+is unavailable for the account; network/rate-limit failures are retryable. The
+**Retry** button refreshes account status; it does not itself open audio or repeat
+the readiness probe. Provider permission for this Pew2 device flow and Realtime
+use remains unresolved. No live OAuth or successful Realtime mint is verified;
+see `docs/VOICE-ACCOUNT-EVIDENCE.md`. Do not promise subscription coverage.
+
+While offline, account actions are disabled rather than queued. Reconnecting
+requests fresh status; unpairing clears the phone's account display. To remove
+credentials from the computer, disconnect while online before forgetting the
+pairing. An older daemon displays **Update Pew2 on your computer** after the
+status request times out. Expired codes require a new sign-in.
+
 ## How a conversation runs
-`voice.open` -> `voice.ready` (ephemeral secret + session config + snapshot) -> the app does the SDP exchange with `https://api.openai.com/v1/realtime/calls?model=...` (WebRTC, `react-native-webrtc`), applies `realtime.session` with `session.update` on the `oai-events` channel, and forwards every function call verbatim as `voice.tool`. `voice.tool.result` goes back as `function_call_output` + `response.create`. `endSession` ends the call after the model stops speaking. The OpenAI API key never reaches the phone.
+`voice.open` -> `voice.ready` (ephemeral secret + session config + snapshot) -> the app does the SDP exchange with `https://api.openai.com/v1/realtime/calls?model=...` (WebRTC, `react-native-webrtc`), applies `realtime.session` with `session.update` on the `oai-events` channel, and forwards every function call verbatim as `voice.tool`. `voice.tool.result` goes back as `function_call_output` + `response.create`. `endSession` ends the call after the model stops speaking. Long-lived OAuth tokens never reach the phone.
 
 Code: `src/voice/*` (pure, tested) and `src/ui/{useVoice,voiceController,VoiceSheet,voiceNotifier,audioSession,realtimeTransport}`.
 
@@ -40,6 +69,26 @@ cd ios && pod install
 npx expo run:ios --device
 ```
 Prebuild picks up `modules/pew2-voice` (autolinking) and runs `plugins/withVoiceIntent.js`. Check that `Pew2VoiceIntents.swift` is in the app target's Compile Sources. The microphone string is shared by `expo-speech-recognition` and the WebRTC plugin (same text in both).
+
+## Voice-account native harness — not yet rendered
+
+Use an existing iOS development client, not Expo Go. From `packages/app`:
+
+```bash
+EXPO_PUBLIC_HARNESS=VoiceAccountSheet EXPO_PUBLIC_VOICE_ACCOUNT=authorizing bun run harness
+```
+
+Select the iOS target using Expo. Restart Metro with a different scene to inspect
+`offline`, `checking`, `unsupported`, `empty`, `authorizing`, `connected`,
+`reconnect`, `notEntitled`, `retry`, or `expired`. These fixtures use a fake code
+and simulated account-command transitions, not real provider authorization.
+Open/copy still use the installed native integrations.
+
+Check all scenes on small and standard iPhones, large text, reduced motion and
+VoiceOver; capture screenshots and verify labelled actions and focus order.
+Then test real pairing, account login and disconnect separately. The attempted
+`xcrun simctl list devices available -j` stalled without output and was stopped;
+no native rendering, interactions or accessibility order is confirmed here.
 
 ## Not verified / known gaps
 - Everything native: Swift module, App Intent, WebRTC connect, routing, resume of Music, interruptions, notification actions.
