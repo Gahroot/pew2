@@ -34,15 +34,45 @@ function localIdentity() {
   }
 }
 
+/**
+ * The App Group the app and its extensions share: always `group.` + the app's
+ * bundle id. A group belongs to one Apple team, so a fork signing under its
+ * own id cannot use the upstream one: its provisioning profiles would never
+ * include it, and the archive fails on every target. Deriving it means a fork
+ * changes one value, and the widget code reads it the same way (see
+ * `widgetAppGroup` and `targets/_shared/PewSnapshot.swift`).
+ */
+function appGroupFor(bundleId) {
+  return `group.${bundleId}`;
+}
+
+/**
+ * Which Apple identity builds this: the bundle id and the team, from
+ * `IOS_BUNDLE_ID` / `APPLE_TEAM_ID` when a build profile sets them, otherwise
+ * what `app.json` says. The App Group follows the bundle id. With neither
+ * variable the result is exactly `app.json`.
+ */
+function iosIdentity(ios, env) {
+  const bundleIdentifier = env.IOS_BUNDLE_ID ?? ios.bundleIdentifier;
+  return {
+    ...ios,
+    bundleIdentifier,
+    appleTeamId: env.APPLE_TEAM_ID ?? ios.appleTeamId,
+    entitlements: {
+      ...ios.entitlements,
+      "com.apple.security.application-groups": [appGroupFor(bundleIdentifier)],
+    },
+  };
+}
+
 module.exports = () => {
   const local = localIdentity();
   const owner = process.env.EAS_OWNER ?? local.owner;
   const projectId = process.env.EAS_PROJECT_ID ?? local.projectId;
 
-  const iosBundleId = process.env.IOS_BUNDLE_ID;
   return {
     ...expo,
-    ...(iosBundleId ? { ios: { ...expo.ios, bundleIdentifier: iosBundleId } } : {}),
+    ios: iosIdentity(expo.ios, process.env),
     ...(owner ? { owner } : {}),
     ...(projectId
       ? { extra: { ...expo.extra, eas: { ...expo.extra?.eas, projectId } } }

@@ -6,9 +6,24 @@ import {
   widgetLink,
   openConversationLink,
   sameSnapshot,
+  widgetAppGroup,
   widgetSnapshot,
   type WidgetInput,
 } from "./widgetSnapshot";
+
+describe("widgetAppGroup", () => {
+  it("is group. + the bundle id the build was signed with", () => {
+    // A fork signs under its own id and team, so its group follows that id.
+    expect(widgetAppGroup("com.prestyj.pew2")).toBe("group.com.prestyj.pew2");
+    expect(widgetAppGroup("io.github.kenkaiii.pew2")).toBe("group.io.github.kenkaiii.pew2");
+  });
+
+  it("names no group without a bundle id", () => {
+    expect(widgetAppGroup(undefined)).toBeUndefined();
+    expect(widgetAppGroup(null)).toBeUndefined();
+    expect(widgetAppGroup("")).toBeUndefined();
+  });
+});
 
 const providers = [
   { id: "claude", name: "Claude Code", color: "#D97757" },

@@ -9,9 +9,10 @@
  */
 import { useEffect, useRef } from "react";
 import { Linking, Platform } from "react-native";
+import Constants from "expo-constants";
 import { writeWidgetSnapshot } from "../../modules/pew-widget";
 import {
-  WIDGET_APP_GROUP,
+  widgetAppGroup,
   WIDGET_KEY,
   sameSnapshot,
   widgetLink,
@@ -30,8 +31,12 @@ export function useHomeWidget(snapshot: WidgetContent): void {
   const written = useRef<WidgetContent | undefined>(undefined);
   useEffect(() => {
     if (Platform.OS !== "ios" || sameSnapshot(written.current, snapshot)) return;
+    // The bundle id this build was signed with (`app.config.js`), so the
+    // group is the one this app is actually entitled to.
+    const group = widgetAppGroup(Constants.expoConfig?.ios?.bundleIdentifier);
+    if (!group) return;
     try {
-      if (writeWidgetSnapshot(WIDGET_APP_GROUP, WIDGET_KEY, JSON.stringify({ ...snapshot, at: Date.now() }))) {
+      if (writeWidgetSnapshot(group, WIDGET_KEY, JSON.stringify({ ...snapshot, at: Date.now() }))) {
         written.current = snapshot;
       }
     } catch {

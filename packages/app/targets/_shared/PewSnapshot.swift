@@ -8,7 +8,14 @@
 import Foundation
 
 enum PewStore {
-  static let appGroup = "group.io.github.kenkaiii.pew2"
+  /// `group.` + the app's bundle id, the rule `app.config.js` signs with, so a
+  /// fork signing under its own id reads its own group. Every extension's id is
+  /// the app's plus one component (`.widget`, `.notifications`).
+  static let appGroup: String = {
+    let mine = Bundle.main.bundleIdentifier ?? ""
+    let app = mine.split(separator: ".").dropLast().joined(separator: ".")
+    return "group.\(app)"
+  }()
   static let key = "pew2.snapshot"
   /// The most rows any widget shows (the large ones).
   static let rows = 7

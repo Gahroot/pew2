@@ -11,7 +11,10 @@
       }
     },
     "device": {
-      "env": { "IOS_BUNDLE_ID": "com.prestyj.pew2" },
+      "env": {
+        "IOS_BUNDLE_ID": "com.prestyj.pew2",
+        "APPLE_TEAM_ID": "JYPR97N8T4"
+      },
       "distribution": "internal",
       "ios": {
         "simulator": false
@@ -27,7 +30,8 @@
       "env": {
         "IOS_BUNDLE_ID": "com.prestyj.pew2",
         "EAS_OWNER": "gahroot",
-        "EAS_PROJECT_ID": "81086e2f-4386-48f1-98d0-93d046fcbc59"
+        "EAS_PROJECT_ID": "81086e2f-4386-48f1-98d0-93d046fcbc59",
+        "APPLE_TEAM_ID": "JYPR97N8T4"
       },
       "distribution": "store",
       "autoIncrement": true,

@@ -16,8 +16,16 @@
  * hours. The widget says when it was last told anything instead.
  */
 
-/** The App Group both the app and the widget extension are entitled to. */
-export const WIDGET_APP_GROUP = "group.io.github.kenkaiii.pew2";
+/**
+ * The App Group both the app and the widget extension are entitled to:
+ * `group.` + the app's bundle id, the rule `app.config.js` signs with. A fork
+ * builds under its own id, and an App Group belongs to one Apple team, so a
+ * fixed upstream name here would point the app at a group it is not entitled
+ * to and the widget would never update. Undefined without a bundle id.
+ */
+export function widgetAppGroup(bundleId: string | null | undefined): string | undefined {
+  return bundleId ? `group.${bundleId}` : undefined;
+}
 
 /** The key the snapshot is stored under, as a JSON string. */
 export const WIDGET_KEY = "pew2.snapshot";
