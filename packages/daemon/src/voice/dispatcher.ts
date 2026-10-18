@@ -144,9 +144,12 @@ export class Orchestrator {
     if (task.state === "cancelled") return { ok: false, error: "That task was cancelled." };
     const line = text.trim();
     if (!line) return { ok: false, error: "Empty instruction." };
+    // `/commit` and friends are expanded by the agent only when the prompt
+    // *starts* with them, so a command is always its own turn, sent verbatim.
+    const command = isSlashCommand(line);
 
     if (ACTIVE.has(task.state) || task.state === "queued" || task.state === "paused") {
-      if (task.state === "queued" || task.state === "paused") {
+      if ((task.state === "queued" || task.state === "paused") && !command) {
         // Not started: fold into the task's own prompt so the agent sees one
         // instruction, and its screenshots go out with that first prompt.
         this.store.patch(taskId, {
@@ -166,7 +169,7 @@ export class Orchestrator {
     const reuse = task.sessionId !== undefined && this.host.hasSession(task.sessionId);
     this.followUps.set(taskId, []);
     this.store.transition(taskId, "queued", "task.queued", `Queued follow-up: ${speakable(line, 80)}`, {
-      prompt: reuse ? line : `Follow-up on an earlier task "${task.title}".\n\n${line}`,
+      prompt: reuse || command ? line : `Follow-up on an earlier task "${task.title}".\n\n${line}`,
       resume: reuse,
       sessionId: reuse ? task.sessionId : undefined,
       attempts: 0,
@@ -558,6 +561,11 @@ export class Orchestrator {
       // The session may already be gone; the task state is what matters.
     }
   }
+}
+
+/** `/name` at the very start: an agent command, not prose. */
+export function isSlashCommand(text: string): boolean {
+  return /^\/[a-z][\w-]*(\s|$)/i.test(text.trim());
 }
 
 /** A task's screenshots still to send, with `more` added and nothing twice. */

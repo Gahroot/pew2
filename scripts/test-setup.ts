@@ -19,7 +19,7 @@
  * default, so a spawned daemon or agent inherits the same root.
  */
 import { afterAll } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,7 +34,12 @@ if (inherited) {
   process.env.TEMP = inherited;
   process.env.TMP = inherited;
 } else {
-  const root = mkdtempSync(join(tmpdir(), "pew2-test-run-"));
+  // Windows hands out its temp dir under an 8.3 alias (C:\Users\RUNNER~1), but
+  // git records the long form in the files worktree detection reads, so a
+  // fixture path and the path git wrote would never compare equal. The native
+  // realpath expands the alias once, here, for every test.
+  const made = mkdtempSync(join(tmpdir(), "pew2-test-run-"));
+  const root = process.platform === "win32" ? realpathSync.native(made) : made;
   process.env[ROOT_VAR] = root;
   // All three, because `os.tmpdir()` reads TMPDIR on POSIX and TEMP/TMP on
   // Windows, and both are consulted by different libraries on both platforms.

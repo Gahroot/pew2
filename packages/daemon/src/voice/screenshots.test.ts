@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, statSync } from "node:fs";
+import { sep } from "node:path";
 import { wire } from "@pew2/protocol";
 import { Orchestrator, type PromptImage, type VoiceHost } from "./dispatcher.js";
 import { buildRegistry } from "./registry.js";
@@ -42,11 +43,14 @@ describe("checkScreenshot", () => {
 test("a screenshot is written owner-only, under its id, and its phone name cannot escape", async () => {
   const dataDir = scratch();
   const path = await writeScreenshot(dataDir, "a_1", "../../etc/passwd", PNG);
-  expect(path.startsWith(`${screenshotDir(dataDir)}/`)).toBe(true);
+  expect(path.startsWith(`${screenshotDir(dataDir)}${sep}`)).toBe(true);
   // Separators are gone and the dots collapsed, so it stays one file in the directory.
   expect(readdirSync(screenshotDir(dataDir))).toEqual(["a_1-_._etc_passwd"]);
-  expect(statSync(path).mode & 0o777).toBe(0o600);
-  expect(statSync(screenshotDir(dataDir)).mode & 0o777).toBe(0o700);
+  // Windows has no POSIX modes to assert.
+  if (process.platform !== "win32") {
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(screenshotDir(dataDir)).mode & 0o777).toBe(0o700);
+  }
   expect(await readScreenshot(path, "x")).toBe(b64(PNG));
   await expect(readScreenshot(`${path}.gone`, "fix.png")).rejects.toThrow('The screenshot "fix.png" is no longer on the computer. Attach it again.');
 });

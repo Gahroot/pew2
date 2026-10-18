@@ -370,3 +370,27 @@ test("a debrief does not survive into the next run of the task", async () => {
   expect(store.getTask(t.taskId)).toMatchObject({ state: "running" });
   expect(store.getTask(t.taskId)?.debrief).toBeUndefined();
 });
+
+test("a slash command is always its own turn, sent verbatim, never folded or wrapped", async () => {
+  const { store, fake, orchestrator } = setup();
+  // Queued behind another writer in the same checkout: not folded into its prompt.
+  orchestrator.enqueue(task());
+  const queued = orchestrator.enqueue(task({ prompt: "add dark mode" }));
+  expect(orchestrator.followUp(queued.taskId, "/commit").ok).toBe(true);
+  expect(store.getTask(queued.taskId)?.prompt).toBe("add dark mode");
+  await tick();
+  fake.turns[0]?.resolve();
+  await tick();
+  fake.turns[1]?.resolve();
+  await tick();
+  expect(fake.turns.map((t) => t.text)).toEqual(["build it", "add dark mode", "/commit"]);
+
+  // Finished, its session gone: a fresh one gets "/commit" alone, not "Follow-up on…".
+  fake.turns[2]?.resolve();
+  await tick();
+  expect(store.getTask(queued.taskId)?.state).toBe("completed");
+  fake.live.clear();
+  expect(orchestrator.followUp(queued.taskId, "/commit message: dark mode").ok).toBe(true);
+  await tick();
+  expect(fake.turns.at(-1)?.text).toBe("/commit message: dark mode");
+});

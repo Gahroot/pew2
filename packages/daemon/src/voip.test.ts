@@ -90,7 +90,8 @@ describe("configureApns", () => {
   it("stores the key owner-only and refuses what is not a key or not an Apple id", async () => {
     const { dataDir } = await configured();
     expect(await readApnsConfig(dataDir)).toEqual({ keyId: "ABC123DEFG", teamId: "TEAM123456" });
-    expect((await stat(apnsKeyPath(dataDir))).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX modes to assert.
+    if (process.platform !== "win32") expect((await stat(apnsKeyPath(dataDir))).mode & 0o777).toBe(0o600);
 
     const junk = join(dataDir, "junk.p8");
     await writeFile(junk, "not a key");

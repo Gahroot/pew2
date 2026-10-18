@@ -5,13 +5,14 @@ import { buildRegistry } from "./registry.js";
 import { scratch } from "./scratch.js";
 import { VoiceStore } from "./store.js";
 import type { RunningSession, SessionPeek } from "./types.js";
-import { realtimeSession, ToolExecutor, TOOL_NAMES, VOICE_INSTRUCTIONS, VOICE_TOOLS } from "./tools.js";
+import { commitInstruction, realtimeSession, ToolExecutor, TOOL_NAMES, VOICE_INSTRUCTIONS, VOICE_TOOLS, type ToolDeps } from "./tools.js";
+import type { CreatedWorktree } from "../worktree-create.js";
 
 function harness(
   store = VoiceStore.memory(),
   projects = buildRegistry(["/code/pew2", "/code/billing-api", "/code/billing-web"], {}),
   running?: () => RunningSession[],
-  peek?: (sessionId: string) => SessionPeek | undefined,
+  extra: Partial<ToolDeps> = {},
 ) {
   const prompts: string[] = [];
   const answered: string[] = [];
@@ -39,8 +40,8 @@ function harness(
     projects: async () => projects,
     usableProviders: () => ["echo"],
     runningSessions: running,
-    peekSession: peek,
     rememberAlias: async (_path, alias) => void aliases.push(alias),
+    ...extra,
   });
   let n = 0;
   const call = async (name: string, args: Record<string, unknown> = {}, callId = `c${++n}`) => ({
@@ -338,26 +339,26 @@ describe("peek_session", () => {
     id === "desk:claude:abc" ? { lastPrompt: "fix the login screen", latest: "Editing /code/pew2/app.tsx now", tool: "Edit" } : id === "s9" ? { latest: "done" } : undefined;
 
   test("with an explicit ref, reports without a path", async () => {
-    const r = await harness(VoiceStore.memory(), undefined, () => live, peek).call("peek_session", { sessionRef: "s9" });
+    const r = await harness(VoiceStore.memory(), undefined, () => live, { peekSession: peek }).call("peek_session", { sessionRef: "s9" });
     expect(r.ok).toBe(true);
     expect(r.output).toMatchObject({ project: "billing-api", agent: "codex", state: "idle", startedAt: "app", latest: "done" });
   });
 
   test("defaults to the one working conversation", async () => {
-    const r = await harness(VoiceStore.memory(), undefined, () => live, peek).call("peek_session");
+    const r = await harness(VoiceStore.memory(), undefined, () => live, { peekSession: peek }).call("peek_session");
     expect(r.output).toMatchObject({ project: "pew2", agent: "Claude Code", startedAt: "computer", lastPrompt: "fix the login screen", tool: "Edit" });
     expect(JSON.stringify(r.output)).not.toContain("/code");
   });
 
   test("an unknown ref fails", async () => {
-    const r = await harness(VoiceStore.memory(), undefined, () => live, peek).call("peek_session", { sessionRef: "nope" });
+    const r = await harness(VoiceStore.memory(), undefined, () => live, { peekSession: peek }).call("peek_session", { sessionRef: "nope" });
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r.output)).toContain("whats_running");
   });
 
   test("several working asks which", async () => {
     const both = live.map((s) => ({ ...s, state: "working" as const }));
-    const r = await harness(VoiceStore.memory(), undefined, () => both, peek).call("peek_session");
+    const r = await harness(VoiceStore.memory(), undefined, () => both, { peekSession: peek }).call("peek_session");
     const out = r.output as { needsClarification: boolean; sessions: { sessionRef: string }[] };
     expect(out.needsClarification).toBe(true);
     expect(out.sessions.map((s) => s.sessionRef)).toEqual(["desk:claude:abc", "s9"]);
@@ -409,4 +410,150 @@ test("session config: clientVad hands turn-taking to the app, its absence keeps 
     expect(i.turn_detection.threshold).toBe(0.7);
     expect(i.turn_detection.silence_duration_ms).toBe(600);
   }
+});
+
+// ---- worktrees and commit --------------------------------------------------
+
+/** A createWorktree that records each call and hands back an ezcoder-style checkout. */
+function fakeWorktrees() {
+  const made: { root: string; branch?: string }[] = [];
+  const createWorktree = async (root: string, branch?: string) => {
+    made.push({ root, ...(branch ? { branch } : null) });
+    const slug = `${(branch ?? "ez").toLowerCase().replace(/[^a-z0-9]+/g, "-")}${made.length > 1 ? `-${made.length}` : ""}`;
+    const value: CreatedWorktree = {
+      path: `/home/.ezcoder/worktrees/triten-os/${slug}`,
+      branch: slug,
+      baseRef: "main",
+      root,
+      repo: "triten-os",
+      carried: [],
+    };
+    return { ok: true as const, value };
+  };
+  return { made, createWorktree };
+}
+
+test("like EZ Coder, every task gets its own worktree: three requests run at once, none in the main checkout", async () => {
+  const wt = fakeWorktrees();
+  const h = harness(VoiceStore.memory(), buildRegistry(["/code/triten-os"], {}), undefined, { createWorktree: wt.createWorktree });
+  const first = await h.call("start_task", { project: "triton os", instruction: "add dark mode", title: "dark mode" });
+  const second = await h.call("start_task", { project: "triton os", instruction: "fix the login bug", title: "login bug" });
+  const third = await h.call("start_task", { project: "triton os", instruction: "speed up boot", title: "boot" });
+  // Even the first, into an idle checkout, gets a branch of its own.
+  expect(first.output).toMatchObject({ newWorktree: { project: "triten-os", branch: "dark-mode" } });
+  expect(second.output).toMatchObject({ newWorktree: { project: "triten-os", branch: "login-bug-2" } });
+  expect(third.output).toMatchObject({ newWorktree: { project: "triten-os", branch: "boot-3" } });
+  expect(wt.made).toEqual([
+    { root: "/code/triten-os", branch: "dark mode" },
+    { root: "/code/triten-os", branch: "login bug" },
+    { root: "/code/triten-os", branch: "boot" },
+  ]);
+  const states = h.store.tasks().map((t) => [t.cwd, t.state]);
+  expect(states).toEqual([
+    ["/home/.ezcoder/worktrees/triten-os/boot-3", "running"],
+    ["/home/.ezcoder/worktrees/triten-os/login-bug-2", "running"],
+    ["/home/.ezcoder/worktrees/triten-os/dark-mode", "running"],
+  ]);
+  // Filed under the repository, and told where it is.
+  expect((second.output as { task: { project: string; branch: string } }).task).toMatchObject({ project: "triten-os", branch: "login-bug-2" });
+  expect(h.prompts[1]).toStartWith("fix the login bug\n\n(You are in a new git worktree of triten-os, on branch login-bug-2");
+  // The same request again is recognised across the repo's checkouts, and makes no new worktree.
+  const again = await h.call("start_task", { project: "triton os", instruction: "fix the login bug" });
+  expect(again.output).toMatchObject({ started: false, duplicate: true });
+  expect(wt.made).toHaveLength(3);
+});
+
+test("what stays put: a named branch, read-only work, 'current', and a dependent task joins its dependency's worktree", async () => {
+  const wt = fakeWorktrees();
+  const projects = buildRegistry(["/code/triten-os", "/w/triten-os/ez-abc"], {}, undefined, (path) =>
+    path.includes("ez-abc") ? { repo: "triten-os", root: "/code/triten-os", branch: "fix/old" } : undefined,
+  );
+  const h = harness(VoiceStore.memory(), projects, undefined, { createWorktree: wt.createWorktree });
+  const onBranch = await h.call("start_task", { project: "triten-os fix old", instruction: "finish it" });
+  expect(onBranch.output).not.toHaveProperty("newWorktree");
+  await h.call("start_task", { project: "triten-os", instruction: "explain the boot code", readOnly: true });
+  await h.call("start_task", { project: "triten-os", instruction: "rename x", worktree: "current" });
+  expect(wt.made).toHaveLength(0);
+  expect(h.store.tasks().map((t) => t.cwd)).toEqual(["/code/triten-os", "/code/triten-os", "/w/triten-os/ez-abc"]);
+
+  // A task building on one in a just-made worktree runs there, not in a fresh copy.
+  const base = await h.call("start_task", { project: "triten-os", instruction: "add a payments page", title: "payments" });
+  const baseId = (base.output as { task: { taskId: string } }).task.taskId;
+  const dependent = await h.call("start_task", { project: "triten-os", instruction: "add tests for payments", dependsOn: [baseId] });
+  expect(dependent.output).not.toHaveProperty("newWorktree");
+  expect(wt.made).toHaveLength(1);
+  expect(h.store.tasks()[0]).toMatchObject({ cwd: "/home/.ezcoder/worktrees/triten-os/payments", repo: { name: "triten-os", branch: "payments" } });
+});
+
+test("worktree 'new' always makes one, and fails out loud when it cannot", async () => {
+  const wt = fakeWorktrees();
+  const h = harness(VoiceStore.memory(), buildRegistry(["/code/triten-os"], {}), undefined, { createWorktree: wt.createWorktree });
+  const r = await h.call("start_task", { project: "triten-os", instruction: "try a rewrite", worktree: "new", branch: "rewrite" });
+  expect(r.output).toMatchObject({ newWorktree: { branch: "rewrite" } });
+  const without = harness(VoiceStore.memory(), buildRegistry(["/code/triten-os"], {}));
+  const refused = await without.call("start_task", { project: "triten-os", instruction: "try a rewrite", worktree: "new" });
+  expect(refused.ok).toBe(false);
+  expect(without.store.tasks()).toHaveLength(0);
+});
+
+test("create_worktree makes one from the main checkout, even when a branch is named", async () => {
+  const wt = fakeWorktrees();
+  const projects = buildRegistry(["/code/triten-os", "/home/.ezcoder/worktrees/triten-os/ez-abc"], {}, undefined, (path) =>
+    path.includes("ez-abc") ? { repo: "triten-os", root: "/code/triten-os", branch: "fix/old" } : undefined,
+  );
+  const h = harness(VoiceStore.memory(), projects, undefined, { createWorktree: wt.createWorktree });
+  const r = await h.call("create_worktree", { project: "triten os fix old", branch: "payments" });
+  expect(r.output).toMatchObject({ created: true, project: "triten-os", branch: "payments" });
+  expect(wt.made).toEqual([{ root: "/code/triten-os", branch: "payments" }]);
+  expect(JSON.stringify(r.output)).not.toContain("/home");
+});
+
+test("list_worktrees names every branch git knows, with what is running there, and never a path", async () => {
+  const projects = buildRegistry(["/code/triten-os", "/w/triten-os/ez-abc"], {}, undefined, (path) =>
+    path.includes("ez-abc") ? { repo: "triten-os", root: "/code/triten-os", branch: "fix/old" } : undefined,
+  );
+  const h = harness(VoiceStore.memory(), projects, undefined, {
+    registeredWorktrees: async () => [
+      { path: "/w/triten-os/ez-abc", branch: "fix/old", gone: false },
+      { path: "/w/triten-os/ez-new", branch: "payments", gone: false },
+      { path: "/w/triten-os/ez-dead", gone: true },
+    ],
+  });
+  await h.call("start_task", { project: "triten-os fix old", instruction: "keep going" });
+  const r = await h.call("list_worktrees", { project: "triten os" });
+  const out = r.output as { project: string; branches: { branch: string; tasks?: unknown[] }[] };
+  expect(out.project).toBe("triten-os");
+  expect(out.branches.map((b) => b.branch)).toEqual(["fix/old", "payments"]);
+  expect(out.branches[0]?.tasks).toHaveLength(1);
+  expect(JSON.stringify(out)).not.toContain("/w/");
+});
+
+test("commit sends EZ Coder's /commit verbatim to the task that did the work", async () => {
+  const h = harness(VoiceStore.memory(), buildRegistry(["/code/triten-os"], {}), undefined, { usableProviders: () => ["ezcoder"] });
+  await h.call("start_task", { project: "triten-os", instruction: "add dark mode" });
+  const r = await h.call("commit", {});
+  expect(r.output).toMatchObject({ committing: true, command: "/commit" });
+  // Running task: queued as its own next turn, never folded into prose.
+  const task = h.store.tasks()[0];
+  expect(task?.prompt).toBe("add dark mode");
+  expect(h.store.recentEvents(task?.taskId, 5).some((e) => e.text.includes("/commit"))).toBe(true);
+});
+
+test("commit for a project with no task starts one there; other agents get the procedure in words", async () => {
+  const ez = harness(VoiceStore.memory(), buildRegistry(["/code/triten-os"], {}), undefined, { usableProviders: () => ["claude", "ezcoder"] });
+  await ez.call("commit", { project: "triton os", note: "use message: add boot logo" });
+  expect(ez.store.tasks()[0]).toMatchObject({ providerId: "ezcoder", cwd: "/code/triten-os", prompt: "/commit use message: add boot logo" });
+  expect(ez.prompts).toEqual(["/commit use message: add boot logo"]);
+  expect(commitInstruction("claude")).not.toStartWith("/");
+  expect(commitInstruction("claude")).toContain("Push only if the branch has an upstream.");
+  // Several candidates: ask, don't guess.
+  await ez.call("start_task", { project: "triten-os", instruction: "a", worktree: "current" });
+  const ask = await ez.call("commit", {});
+  expect(ask.output).toMatchObject({ needsClarification: true });
+});
+
+test("the instructions teach worktrees and commit", () => {
+  expect(VOICE_INSTRUCTIONS).toContain("call commit");
+  expect(VOICE_INSTRUCTIONS).toContain("EZ Coder's worktrees of a repository");
+  for (const name of ["create_worktree", "list_worktrees", "commit"]) expect(TOOL_NAMES).toContain(name);
 });
