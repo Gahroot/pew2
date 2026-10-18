@@ -693,8 +693,10 @@ test("daveCheckinEnabled is on unless PEW2_DAVE_CHECKIN=off", () => {
 
 // ---- closed loop: next, progress, review and confirm-gated writes ----------
 
-const reply = (body: unknown, status = 200) => () =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const reply =
+  (body: unknown, status = 200) =>
+  () =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const prepared = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -730,7 +732,9 @@ const nextState = {
     prepared(A2),
     prepared(A3),
     prepared(A4),
-    prepared(HAND, { primary: { label: "Hand to EZ Coder", op: { op: "hand_to_ezcoder", objectiveId: "o1" } } }),
+    prepared(HAND, {
+      primary: { label: "Hand to EZ Coder", op: { op: "hand_to_ezcoder", objectiveId: "o1" } },
+    }),
   ],
   skipped: 0,
 };
@@ -766,7 +770,8 @@ const csrfRoute = (tokens: string[]) => {
 };
 const noLeak = (out: unknown) => {
   const text = JSON.stringify(out);
-  for (const leak of ["bob@acme.com", "https://", "secret.example"]) expect(text).not.toContain(leak);
+  for (const leak of ["bob@acme.com", "https://", "secret.example"])
+    expect(text).not.toContain(leak);
 };
 
 test("progress asks DAVE's briefing as pew and holds no timestamp between calls", async () => {
@@ -779,15 +784,29 @@ test("progress asks DAVE's briefing as pew and holds no timestamp between calls"
   const reqs = [...a.seen, ...b.seen].map((s) => `${s.method} ${s.url}${s.search}`);
   expect(reqs).toEqual(Array(3).fill("GET /api/intel/briefing?caller=pew"));
   expect(ra.output).toEqual(rb.output);
-  const out = ra.output as { window: string; moved: { moved: string[]; stillMissing: string[]; percentDone: number }[] };
+  const out = ra.output as {
+    window: string;
+    moved: { moved: string[]; stillMissing: string[]; percentDone: number }[];
+  };
   expect(out.window).toBe("since you last asked");
-  expect(out.moved[0]).toMatchObject({ moved: ["Export to CSV"], stillMissing: ["Import"], percentDone: 38 });
+  expect(out.moved[0]).toMatchObject({
+    moved: ["Export to CSV"],
+    stillMissing: ["Import"],
+    percentDone: 38,
+  });
   noLeak(ra.output);
 });
 
 test("the spoken window follows sinceSource", async () => {
   const window = async (src: string) =>
-    ((await harness({ routes: { "/api/intel/briefing": reply(briefing(src)) } }).call("check_backlog", { about: "progress" })).output as { window: string }).window;
+    (
+      (
+        await harness({ routes: { "/api/intel/briefing": reply(briefing(src)) } }).call(
+          "check_backlog",
+          { about: "progress" },
+        )
+      ).output as { window: string }
+    ).window;
   expect(await window("last_asked")).toBe("since you last asked");
   expect(await window("default_24h")).toBe("in the last day");
   expect(await window("explicit")).toBe("since October 14");
@@ -795,7 +814,10 @@ test("the spoken window follows sinceSource", async () => {
 
 test("next gives DAVE's one recommendation plus two alternatives; overview leads with it", async () => {
   const h = harness({
-    routes: { "/api/intel/next": reply(nextState), "/api/intel/briefing": reply(briefing("default_24h")) },
+    routes: {
+      "/api/intel/next": reply(nextState),
+      "/api/intel/briefing": reply(briefing("default_24h")),
+    },
   });
   const next = (await h.call("check_backlog", { about: "next" })).output as {
     recommendation: { actionId: string };
@@ -827,9 +849,15 @@ test("review summarises agreement and patterns", async () => {
       }),
     },
   });
-  const out = (await h.call("check_backlog", { about: "review" })).output as Record<string, unknown>;
+  const out = (await h.call("check_backlog", { about: "review" })).output as Record<
+    string,
+    unknown
+  >;
   expect(h.seen.at(-1)?.search).toBe("?days=30");
-  expect(out).toMatchObject({ agreement: "75 percent followed", suggestions: ["Raise billing-api"] });
+  expect(out).toMatchObject({
+    agreement: "75 percent followed",
+    suggestions: ["Raise billing-api"],
+  });
 });
 
 test("POST: CSRF fetched with the exact Origin, cached, and refetched once on 403", async () => {
@@ -838,7 +866,9 @@ test("POST: CSRF fetched with the exact Origin, cached, and refetched once on 40
     "/api/security/csrf": csrfRoute(["t1", "t2"]),
     "POST /api/triage/undo": (s) => {
       posts++;
-      return s.csrf === "t2" ? reply({ restored: 1, skipped: 0 })() : new Response("no", { status: 403 });
+      return s.csrf === "t2"
+        ? reply({ restored: 1, skipped: 0 })()
+        : new Response("no", { status: 403 });
     },
   });
   const r = await dave.client.post("/api/triage/undo", { batchId: "x" }, TriageUndoSchema);
@@ -850,7 +880,12 @@ test("POST: CSRF fetched with the exact Origin, cached, and refetched once on 40
     "POST /api/triage/undo",
   ]);
   const post = dave.seen.at(-1);
-  expect(post).toMatchObject({ origin: ORIGIN, csrf: "t2", contentType: "application/json", body: { batchId: "x" } });
+  expect(post).toMatchObject({
+    origin: ORIGIN,
+    csrf: "t2",
+    contentType: "application/json",
+    body: { batchId: "x" },
+  });
   await dave.client.post("/api/triage/undo", { batchId: "y" }, TriageUndoSchema);
   expect(dave.seen.filter((s) => s.url === "/api/security/csrf")).toHaveLength(2);
   expect(posts).toBe(3);
@@ -891,7 +926,12 @@ test("act_on_backlog asks first, posts only after a yes, and never enqueues", as
     routes: {
       "/api/intel/next": reply(nextState),
       "/api/security/csrf": csrfRoute(["t1"]),
-      [`POST /api/intel/next/${A1}/act`]: reply({ ok: true, actionId: A1, op: "accept_proposal", summary: "Accepted the export plan." }),
+      [`POST /api/intel/next/${A1}/act`]: reply({
+        ok: true,
+        actionId: A1,
+        op: "accept_proposal",
+        summary: "Accepted the export plan.",
+      }),
     },
   });
   let enqueued = 0;
@@ -906,15 +946,35 @@ test("act_on_backlog asks first, posts only after a yes, and never enqueues", as
   expect(first.needsConfirmation).toBe(true);
   expect(h.seen.some((s) => s.method === "POST")).toBe(false);
   // A token without a yes, or for another choice, changes nothing.
-  await h.call("act_on_backlog", { actionId: A1, choice: "primary", confirmToken: first.confirmToken });
+  await h.call("act_on_backlog", {
+    actionId: A1,
+    choice: "primary",
+    confirmToken: first.confirmToken,
+  });
   expect(h.seen.some((s) => s.method === "POST")).toBe(false);
-  const again = (await h.call("act_on_backlog", { actionId: A1, choice: "primary" })).output as { confirmToken: string };
-  await h.call("act_on_backlog", { actionId: A1, choice: "skip", confirmToken: again.confirmToken, userConfirmed: true });
+  const again = (await h.call("act_on_backlog", { actionId: A1, choice: "primary" })).output as {
+    confirmToken: string;
+  };
+  await h.call("act_on_backlog", {
+    actionId: A1,
+    choice: "skip",
+    confirmToken: again.confirmToken,
+    userConfirmed: true,
+  });
   expect(h.seen.some((s) => s.method === "POST")).toBe(false);
-  const t = (await h.call("act_on_backlog", { actionId: A1, choice: "primary" })).output as { confirmToken: string };
-  const done = await h.call("act_on_backlog", { actionId: A1, choice: "primary", confirmToken: t.confirmToken, userConfirmed: true });
+  const t = (await h.call("act_on_backlog", { actionId: A1, choice: "primary" })).output as {
+    confirmToken: string;
+  };
+  const done = await h.call("act_on_backlog", {
+    actionId: A1,
+    choice: "primary",
+    confirmToken: t.confirmToken,
+    userConfirmed: true,
+  });
   expect(done.output).toMatchObject({ acted: true, say: "Accepted the export plan." });
-  expect(h.seen.filter((s) => s.method === "POST").map((s) => s.body)).toEqual([{ op: "accept_proposal" }]);
+  expect(h.seen.filter((s) => s.method === "POST").map((s) => s.body)).toEqual([
+    { op: "accept_proposal" },
+  ]);
 
   const hand = await h.call("act_on_backlog", { actionId: HAND, choice: "primary" });
   expect(hand.output).toMatchObject({ acted: false, handOff: true });
@@ -931,11 +991,22 @@ test("act_on_backlog reports a stale action, before and after the yes", async ()
       [`POST /api/intel/next/${A2}/act`]: reply({ error: "stale" }, 409),
     },
   });
-  expect((await h.call("act_on_backlog", { actionId: "ffffffffffffffff", choice: "skip" })).output).toMatchObject({ stale: true });
-  const t = (await h.call("act_on_backlog", { actionId: A2, choice: "defer", until: "2026-10-20" })).output as { confirmToken: string };
-  const r = await h.call("act_on_backlog", { actionId: A2, choice: "defer", until: "2026-10-20", confirmToken: t.confirmToken, userConfirmed: true });
+  expect(
+    (await h.call("act_on_backlog", { actionId: "ffffffffffffffff", choice: "skip" })).output,
+  ).toMatchObject({ stale: true });
+  const t = (await h.call("act_on_backlog", { actionId: A2, choice: "defer", until: "2026-10-20" }))
+    .output as { confirmToken: string };
+  const r = await h.call("act_on_backlog", {
+    actionId: A2,
+    choice: "defer",
+    until: "2026-10-20",
+    confirmToken: t.confirmToken,
+    userConfirmed: true,
+  });
   expect(r.output).toMatchObject({ acted: false, stale: true });
-  expect(h.seen.filter((s) => s.method === "POST").map((s) => s.body)).toEqual([{ op: "defer", date: "2026-10-20" }]);
+  expect(h.seen.filter((s) => s.method === "POST").map((s) => s.body)).toEqual([
+    { op: "defer", date: "2026-10-20" },
+  ]);
 });
 
 test("act_on_backlog never claims a copy: no question, no post, and it says the draft is in DAVE", async () => {
@@ -947,7 +1018,15 @@ test("act_on_backlog never claims a copy: no question, no post, and it says the 
       "/api/intel/next": reply({
         ...nextState,
         queue: [
-          prepared(COPY, { ...copyStep, draft: { kind: "email", to: "bob@acme.com", subject: "Export", text: "Hi Bob, about the secret deal" } }),
+          prepared(COPY, {
+            ...copyStep,
+            draft: {
+              kind: "email",
+              to: "bob@acme.com",
+              subject: "Export",
+              text: "Hi Bob, about the secret deal",
+            },
+          }),
           prepared(BARE, copyStep),
         ],
       }),
@@ -955,11 +1034,22 @@ test("act_on_backlog never claims a copy: no question, no post, and it says the 
     },
   });
   const r = await h.call("act_on_backlog", { actionId: COPY, choice: "primary" });
-  expect(r.output).toEqual({ acted: false, copyInDave: true, say: "The email is ready to copy in DAVE; nothing was copied." });
+  expect(r.output).toEqual({
+    acted: false,
+    copyInDave: true,
+    say: "The email is ready to copy in DAVE; nothing was copied.",
+  });
   // A yes changes nothing either: there is still nothing for Pew to do.
-  const yes = await h.call("act_on_backlog", { actionId: COPY, choice: "primary", confirmToken: "x", userConfirmed: true });
+  const yes = await h.call("act_on_backlog", {
+    actionId: COPY,
+    choice: "primary",
+    confirmToken: "x",
+    userConfirmed: true,
+  });
   expect(yes.output).toMatchObject({ acted: false, copyInDave: true });
-  expect((await h.call("act_on_backlog", { actionId: BARE, choice: "primary" })).output).toMatchObject({
+  expect(
+    (await h.call("act_on_backlog", { actionId: BARE, choice: "primary" })).output,
+  ).toMatchObject({
     say: "It's ready to copy in DAVE; nothing was copied.",
   });
   expect(h.seen.some((s) => s.method === "POST")).toBe(false);
@@ -974,22 +1064,80 @@ test("act_on_backlog never claims a copy: no question, no post, and it says the 
 
 test("clean_up_backlog previews, then applies exactly the frozen keys after a yes; undo asks too", async () => {
   const key = (n: number) => `m:mi-${String(n).padStart(24, "0")}`;
-  const entry = (n: number, bucket: string, projectName: string, meetingTitle = "Acme kickoff") => ({
-    key: key(n), kind: "promise", bucket, title: `Idea ${n} for bob@acme.com`, projectId: "p-acme", projectName, dueDate: null,
-    meetingAt: null, meetingTitle, reasons: [], confirmed: false,
+  const entry = (
+    n: number,
+    bucket: string,
+    projectName: string,
+    meetingTitle = "Acme kickoff",
+  ) => ({
+    key: key(n),
+    kind: "promise",
+    bucket,
+    title: `Idea ${n} for bob@acme.com`,
+    projectId: "p-acme",
+    projectName,
+    dueDate: null,
+    meetingAt: null,
+    meetingTitle,
+    reasons: [],
+    confirmed: false,
   });
-  let entries = [entry(1, "ideas", "Acme Portal"), entry(2, "ideas", "Acme Portal"), entry(3, "old_asks", "billing-api"), entry(4, "ideas", "billing-api", "Weekly")];
+  let entries = [
+    entry(1, "ideas", "Acme Portal"),
+    entry(2, "ideas", "Acme Portal"),
+    entry(3, "old_asks", "billing-api"),
+    entry(4, "ideas", "billing-api", "Weekly"),
+  ];
   const h = harness({
     routes: {
       "/api/security/csrf": csrfRoute(["t1"]),
-      "POST /api/triage/preview": () => reply({ generatedAt: "x", entries, counts: {}, total: entries.length, confirmedHidden: 0 })(),
-      "POST /api/triage/apply": (s) => reply({ batchId: "tb-000000000000000000000001", changed: (s.body as { keys: string[] }).keys.length, skipped: [], kept: [], summary: "Cleared 3 items." })(),
-      "/api/triage/batches": reply({ batches: [{ id: "tb-000000000000000000000001", createdAt: "x", source: "ui", action: "clear", summary: "Cleared 3 items.", count: 3, undoneAt: null }] }),
+      "POST /api/triage/preview": () =>
+        reply({
+          generatedAt: "x",
+          entries,
+          counts: {},
+          total: entries.length,
+          confirmedHidden: 0,
+        })(),
+      "POST /api/triage/apply": (s) =>
+        reply({
+          batchId: "tb-000000000000000000000001",
+          changed: (s.body as { keys: string[] }).keys.length,
+          skipped: [],
+          kept: [],
+          summary: "Cleared 3 items.",
+        })(),
+      "/api/triage/batches": reply({
+        batches: [
+          {
+            id: "tb-000000000000000000000001",
+            createdAt: "x",
+            source: "ui",
+            action: "clear",
+            summary: "Cleared 3 items.",
+            count: 3,
+            undoneAt: null,
+          },
+        ],
+      }),
       "POST /api/triage/undo": reply({ restored: 3, skipped: 0 }),
     },
   });
-  const p = (await h.call("clean_up_backlog", { buckets: ["ideas", "old_asks"], project: "acme", meeting: "kickoff", olderThanDays: 7, action: "clear" })).output as {
-    needsConfirmation: boolean; confirmToken: string; keys: string[]; byBucket: Record<string, number>; byProject: Record<string, number>; examples: string[];
+  const p = (
+    await h.call("clean_up_backlog", {
+      buckets: ["ideas", "old_asks"],
+      project: "acme",
+      meeting: "kickoff",
+      olderThanDays: 7,
+      action: "clear",
+    })
+  ).output as {
+    needsConfirmation: boolean;
+    confirmToken: string;
+    keys: string[];
+    byBucket: Record<string, number>;
+    byProject: Record<string, number>;
+    examples: string[];
   };
   expect(h.seen.find((s) => s.url === "/api/triage/preview")?.body).toEqual({
     filter: { buckets: ["old_asks", "ideas"], olderThanDays: 7, projectId: "p-acme" },
@@ -1003,21 +1151,48 @@ test("clean_up_backlog previews, then applies exactly the frozen keys after a ye
 
   // New noise arrives before the yes; a widened key list does not redeem the token.
   entries = [...entries, entry(5, "ideas", "Acme Portal")];
-  const widened = await h.call("clean_up_backlog", { action: "clear", keys: [...p.keys, key(5)], confirmToken: p.confirmToken, userConfirmed: true });
+  const widened = await h.call("clean_up_backlog", {
+    action: "clear",
+    keys: [...p.keys, key(5)],
+    confirmToken: p.confirmToken,
+    userConfirmed: true,
+  });
   expect(widened.output).toMatchObject({ cleaned: false });
-  const p2 = (await h.call("clean_up_backlog", { buckets: ["ideas", "old_asks"], project: "acme", meeting: "kickoff", action: "clear" })).output as { confirmToken: string; keys: string[] };
+  const p2 = (
+    await h.call("clean_up_backlog", {
+      buckets: ["ideas", "old_asks"],
+      project: "acme",
+      meeting: "kickoff",
+      action: "clear",
+    })
+  ).output as { confirmToken: string; keys: string[] };
   entries = [...entries, entry(6, "ideas", "Acme Portal")];
-  const yes = await h.call("clean_up_backlog", { action: "clear", keys: [...p2.keys].reverse(), confirmToken: p2.confirmToken, userConfirmed: true });
+  const yes = await h.call("clean_up_backlog", {
+    action: "clear",
+    keys: [...p2.keys].reverse(),
+    confirmToken: p2.confirmToken,
+    userConfirmed: true,
+  });
   expect(yes.output).toMatchObject({ cleaned: true, batchId: "tb-000000000000000000000001" });
   expect(h.seen.filter((s) => s.url === "/api/triage/apply").map((s) => s.body)).toEqual([
     { keys: [...p2.keys].reverse(), action: "clear" },
   ]);
   expect(p2.keys).not.toContain(key(6));
 
-  const u = (await h.call("undo_backlog_clean_up", {})).output as { needsConfirmation: boolean; confirmToken: string; batchId: string };
+  const u = (await h.call("undo_backlog_clean_up", {})).output as {
+    needsConfirmation: boolean;
+    confirmToken: string;
+    batchId: string;
+  };
   expect(u.needsConfirmation).toBe(true);
   expect(h.seen.some((s) => s.url === "/api/triage/undo")).toBe(false);
-  const undone = await h.call("undo_backlog_clean_up", { batchId: u.batchId, confirmToken: u.confirmToken, userConfirmed: true });
+  const undone = await h.call("undo_backlog_clean_up", {
+    batchId: u.batchId,
+    confirmToken: u.confirmToken,
+    userConfirmed: true,
+  });
   expect(undone.output).toMatchObject({ undone: true });
-  expect(h.seen.find((s) => s.url === "/api/triage/undo")?.body).toEqual({ batchId: "tb-000000000000000000000001" });
+  expect(h.seen.find((s) => s.url === "/api/triage/undo")?.body).toEqual({
+    batchId: "tb-000000000000000000000001",
+  });
 });

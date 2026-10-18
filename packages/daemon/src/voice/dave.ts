@@ -125,7 +125,11 @@ export class DaveClient {
       }
       if (sent.response.status === 409) {
         await sent.response.body?.cancel().catch(() => undefined);
-        return { ok: false, stale: true, say: "That changed in DAVE since; check the backlog again." };
+        return {
+          ok: false,
+          stale: true,
+          say: "That changed in DAVE since; check the backlog again.",
+        };
       }
       if (sent.response.status === 400) {
         await sent.response.body?.cancel().catch(() => undefined);
@@ -598,8 +602,18 @@ const BatchesSchema = z
   .passthrough();
 
 const MONTHS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
 ];
 
 /** How Pew names the window DAVE chose: the cursor lives in DAVE, never here. */
@@ -627,7 +641,9 @@ export function actionView(a: PreparedAction) {
     ...(a.primary.op.op === "copy" ? { copyInDave: true } : null),
     ...(a.draft ? { draftReady: clean(a.draft.kind, 20) } : null),
     ...(a.doneWhen.length ? { doneWhen: a.doneWhen.slice(0, 3).map((d) => clean(d, 120)) } : null),
-    ...(a.missing.length ? { notConfirmed: a.missing.slice(0, 2).map((d) => clean(d, 120)) } : null),
+    ...(a.missing.length
+      ? { notConfirmed: a.missing.slice(0, 2).map((d) => clean(d, 120)) }
+      : null),
     ...(a.uncertain ? { uncertain: clean(a.uncertain, 120) } : null),
   };
 }
@@ -636,7 +652,9 @@ function progressItem(r: z.output<typeof ProgressSchema>) {
   return {
     project: clean(r.projectName, 60),
     what: clean(r.headline),
-    ...(r.advanced.length ? { moved: r.advanced.slice(0, 3).map((x) => clean(x.title, 100)) } : null),
+    ...(r.advanced.length
+      ? { moved: r.advanced.slice(0, 3).map((x) => clean(x.title, 100)) }
+      : null),
     ...(r.stillMissing.length
       ? { stillMissing: r.stillMissing.slice(0, 3).map((x) => clean(x.title, 100)) }
       : null),
@@ -646,8 +664,7 @@ function progressItem(r: z.output<typeof ProgressSchema>) {
 
 export function nextView(state: z.output<typeof NextStateSchema>) {
   const first = state.action ?? state.queue[0];
-  if (!first)
-    return { available: true, note: "DAVE has nothing prepared right now." };
+  if (!first) return { available: true, note: "DAVE has nothing prepared right now." };
   const others = state.queue.filter((a) => a.id !== first.id).slice(0, 2);
   return {
     available: true,
@@ -680,7 +697,11 @@ export function reviewView(r: z.output<typeof ReviewSchema>) {
       r.agreementRate === null || r.agreementRate === undefined
         ? "not enough yet"
         : `${Math.round(r.agreementRate * 100)} percent followed`,
-    totals: Object.fromEntries(Object.keys(r.totals).sort().map((k) => [k, r.totals[k] ?? 0])),
+    totals: Object.fromEntries(
+      Object.keys(r.totals)
+        .sort()
+        .map((k) => [k, r.totals[k] ?? 0]),
+    ),
     patterns: r.patterns.slice(0, 3).map((p) => clean(p)),
     suggestions: r.suggestions.slice(0, 3).map((x) => clean(x.text)),
   };
@@ -916,7 +937,10 @@ async function check(args: Record<string, unknown>, ctx: BacklogToolContext): Pr
       return briefing.ok ? good(progressView(briefing.value)) : unavailable(briefing.say);
     }
     case "review": {
-      const review = await ctx.client.get("/api/intel/recommendations/review?days=30", ReviewSchema);
+      const review = await ctx.client.get(
+        "/api/intel/recommendations/review?days=30",
+        ReviewSchema,
+      );
       return review.ok ? good(reviewView(review.value)) : unavailable(review.say);
     }
     case "priorities": {
@@ -963,7 +987,9 @@ async function check(args: Record<string, unknown>, ctx: BacklogToolContext): Pr
       return intel.ok ? good(projectView(intel.value, focus.value, now)) : unavailable(intel.say);
     }
     default:
-      return fail("about must be overview, next, progress, priorities, commitments, project or review.");
+      return fail(
+        "about must be overview, next, progress, priorities, commitments, project or review.",
+      );
   }
 }
 
@@ -1081,7 +1107,11 @@ async function delegate(
 }
 
 /** Ask first; true only for a redeemed token on a spoken yes. */
-function confirmed(args: Record<string, unknown>, ctx: BacklogToolContext, subject: string): boolean {
+function confirmed(
+  args: Record<string, unknown>,
+  ctx: BacklogToolContext,
+  subject: string,
+): boolean {
   return args.userConfirmed === true && ctx.confirm.redeem(arg(args, "confirmToken", 40), subject);
 }
 
@@ -1102,7 +1132,11 @@ async function act(args: Record<string, unknown>, ctx: BacklogToolContext): Prom
   const all = [...(next.value.action ? [next.value.action] : []), ...next.value.queue];
   const action = all.find((a) => a.id === actionId);
   if (!action)
-    return good({ acted: false, stale: true, say: "DAVE's recommendation changed; check the backlog again." });
+    return good({
+      acted: false,
+      stale: true,
+      say: "DAVE's recommendation changed; check the backlog again.",
+    });
   const title = clean(action.title);
   if (choice === "primary" && action.primary.op.op === "hand_to_ezcoder")
     return good({
@@ -1145,7 +1179,11 @@ async function act(args: Record<string, unknown>, ctx: BacklogToolContext): Prom
   );
   if (!r.ok)
     return r.stale
-      ? good({ acted: false, stale: true, say: "That's out of date in DAVE; check the backlog again." })
+      ? good({
+          acted: false,
+          stale: true,
+          say: "That's out of date in DAVE; check the backlog again.",
+        })
       : unavailable(r.say);
   return good({ acted: true, say: clean(r.value.summary) || `Done: ${title}.` });
 }
@@ -1157,9 +1195,14 @@ function countBy(values: readonly string[]): Record<string, number> {
 }
 
 const cleanSubject = (keys: readonly string[], action: string) =>
-  `dave-clean:${createHash("sha256").update([...keys].sort().join("\n")).digest("hex")}:${action}`;
+  `dave-clean:${createHash("sha256")
+    .update([...keys].sort().join("\n"))
+    .digest("hex")}:${action}`;
 
-async function cleanUp(args: Record<string, unknown>, ctx: BacklogToolContext): Promise<ToolResult> {
+async function cleanUp(
+  args: Record<string, unknown>,
+  ctx: BacklogToolContext,
+): Promise<ToolResult> {
   const action = arg(args, "action", 10) ?? "clear";
   if (action !== "clear" && action !== "done") return fail("action must be clear or done.");
 
@@ -1205,8 +1248,12 @@ async function cleanUp(args: Record<string, unknown>, ctx: BacklogToolContext): 
     if (!r.best)
       return good({
         needsClarification: true,
-        reason: r.candidates.length ? "Several of DAVE's projects match." : "DAVE has no project by that name.",
-        ...(r.candidates.length ? { question: didYouMean(r.candidates.map((c) => c.project.name)) } : null),
+        reason: r.candidates.length
+          ? "Several of DAVE's projects match."
+          : "DAVE has no project by that name.",
+        ...(r.candidates.length
+          ? { question: didYouMean(r.candidates.map((c) => c.project.name)) }
+          : null),
       });
     filter.projectId = r.best.projectId;
   }
@@ -1218,10 +1265,15 @@ async function cleanUp(args: Record<string, unknown>, ctx: BacklogToolContext): 
     entries = entries.filter((e) => e.meetingTitle?.toLowerCase().includes(meeting));
     const titles = [...new Set(entries.map((e) => clean(e.meetingTitle, 60)))].sort();
     if (titles.length > 1)
-      return good({ needsClarification: true, reason: "Several meetings match.", question: didYouMean(titles) });
+      return good({
+        needsClarification: true,
+        reason: "Several meetings match.",
+        question: didYouMean(titles),
+      });
   }
   entries = entries.filter((e) => TRIAGE_KEY.test(e.key)).slice(0, 1000);
-  if (!entries.length) return good({ cleaned: false, say: "Nothing matches that, so there is nothing to clean up." });
+  if (!entries.length)
+    return good({ cleaned: false, say: "Nothing matches that, so there is nothing to clean up." });
   const keys = entries.map((e) => e.key);
   const n = keys.length;
   const examples = entries.slice(0, 3).map((e) => clean(e.title, 100));
@@ -1262,7 +1314,10 @@ async function undoCleanUp(
       question: summary ? `Undo the clean-up: ${summary}?` : "Undo that clean-up in DAVE?",
     });
   const r = await ctx.client.post("/api/triage/undo", { batchId }, TriageUndoSchema);
-  if (!r.ok) return r.notFound ? good({ undone: false, say: "DAVE has no such clean-up." }) : unavailable(r.say);
+  if (!r.ok)
+    return r.notFound
+      ? good({ undone: false, say: "DAVE has no such clean-up." })
+      : unavailable(r.say);
   return good({
     undone: true,
     say: `Restored ${r.value.restored} item${r.value.restored === 1 ? "" : "s"}.${r.value.skipped ? ` ${r.value.skipped} had changed since, so DAVE left them.` : ""}`,

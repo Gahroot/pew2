@@ -18,7 +18,11 @@
  * @param gap The space kept between the block and the composer.
  * @returns undefined until the body has been measured.
  */
-export function homeMaxHeight(bodyHeight: number, bottomClearance: number, gap: number): number | undefined {
+export function homeMaxHeight(
+  bodyHeight: number,
+  bottomClearance: number,
+  gap: number,
+): number | undefined {
   if (bodyHeight <= 0) return undefined;
   // Centred, the block's bottom edge is at (body + block) / 2, which has to stay
   // at or above body - clearance - gap.
@@ -38,7 +42,11 @@ export function homeMaxHeight(bodyHeight: number, bottomClearance: number, gap: 
  * @param rowHeight The row's height, including its space above.
  * @param maxHeight From `homeMaxHeight`. Undefined keeps the row.
  */
-export function recentChatsFit(coreHeight: number, rowHeight: number, maxHeight: number | undefined): boolean {
+export function recentChatsFit(
+  coreHeight: number,
+  rowHeight: number,
+  maxHeight: number | undefined,
+): boolean {
   if (maxHeight === undefined || coreHeight <= 0) return true;
   return coreHeight + rowHeight <= maxHeight;
 }

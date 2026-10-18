@@ -43,7 +43,10 @@ export function orderProvidersByRecency<P extends ProviderLike>(
 }
 
 /** Each goals provider and the agent it is synthesised from. */
-const GOALS_AGENTS: Readonly<Record<string, string>> = { "gg-goals": "ggcoder", "ez-goals": "ezcoder" };
+const GOALS_AGENTS: Readonly<Record<string, string>> = {
+  "gg-goals": "ggcoder",
+  "ez-goals": "ezcoder",
+};
 
 /**
  * A goals provider immediately follows its agent wherever that agent landed

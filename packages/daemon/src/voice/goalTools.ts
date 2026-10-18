@@ -32,7 +32,13 @@ const AGENT_NAME = "EZ Coder";
 const MAX_PROJECTS_SCANNED = 60;
 const FINISHED_RUN: ReadonlySet<string> = new Set(["passed", "failed"]);
 
-export const GOAL_TOOL_NAMES = ["start_goal", "goal_status", "list_goals", "resume_goal", "answer_question"] as const;
+export const GOAL_TOOL_NAMES = [
+  "start_goal",
+  "goal_status",
+  "list_goals",
+  "resume_goal",
+  "answer_question",
+] as const;
 export type GoalToolName = (typeof GOAL_TOOL_NAMES)[number];
 
 export function isGoalTool(name: string): name is GoalToolName {
@@ -53,11 +59,22 @@ export const GOAL_TOOLS = [
         project: s("Spoken project name or projectId."),
         objective: s("The outcome, in the user's words."),
         title: s("A few words to call it by."),
-        worktree: { type: "string", enum: ["auto", "new", "current"], description: "As start_task." },
+        worktree: {
+          type: "string",
+          enum: ["auto", "new", "current"],
+          description: "As start_task.",
+        },
         branch: s("Optional branch name for a new worktree."),
-        attachmentIds: { type: "array", items: { type: "string" }, description: "Screenshots to send with it." },
+        attachmentIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Screenshots to send with it.",
+        },
         confirmToken: s("Token from the first call."),
-        userConfirmed: { type: "boolean", description: "True only if the user just said yes out loud." },
+        userConfirmed: {
+          type: "boolean",
+          description: "True only if the user just said yes out loud.",
+        },
       },
       required: ["project", "objective"],
     },
@@ -81,7 +98,11 @@ export const GOAL_TOOLS = [
     type: "function",
     name: "list_goals",
     description: "Goals still in progress across the user's projects, or one project's.",
-    parameters: { type: "object", properties: { project: s("Spoken project name, optional.") }, required: [] },
+    parameters: {
+      type: "object",
+      properties: { project: s("Spoken project name, optional.") },
+      required: [],
+    },
   },
   {
     type: "function",
@@ -94,7 +115,10 @@ export const GOAL_TOOLS = [
         goal: s("What the user called the goal."),
         project: s("Spoken project name, to narrow it."),
         confirmToken: s("Token from the first call."),
-        userConfirmed: { type: "boolean", description: "True only if the user just said yes out loud." },
+        userConfirmed: {
+          type: "boolean",
+          description: "True only if the user just said yes out loud.",
+        },
       },
       required: ["goal"],
     },
@@ -102,7 +126,8 @@ export const GOAL_TOOLS = [
   {
     type: "function",
     name: "answer_question",
-    description: "Answer a question an agent asked. With one question open, taskId and requestId may be left out.",
+    description:
+      "Answer a question an agent asked. With one question open, taskId and requestId may be left out.",
     parameters: {
       type: "object",
       properties: {
@@ -116,7 +141,9 @@ export const GOAL_TOOLS = [
 ] as const;
 
 /** Where a new goal runs, as `start_task` decides it. A string is a speakable refusal. */
-export type GoalPlacement = { target: VoiceProject; note?: string; newWorktree?: { project: string; branch: string } } | string;
+export type GoalPlacement =
+  | { target: VoiceProject; note?: string; newWorktree?: { project: string; branch: string } }
+  | string;
 
 export interface GoalToolContext {
   store: VoiceStore;
@@ -129,7 +156,12 @@ export interface GoalToolContext {
   goalRunsBase: string;
   resolveProject: (query: string, projects: readonly VoiceProject[]) => Resolution;
   /** `ToolExecutor.daveGuard`: a result when the words meant the backlog, undefined to carry on. */
-  daveGuard: (query: string, r: Resolution, instruction?: string, extra?: Record<string, unknown>) => ToolResult | undefined;
+  daveGuard: (
+    query: string,
+    r: Resolution,
+    instruction?: string,
+    extra?: Record<string, unknown>,
+  ) => ToolResult | undefined;
   /** `ToolExecutor.clarify`: "did you mean A or B?". */
   clarify: (r: Resolution) => ToolResult;
   /** Worktree placement, as `start_task`. */
@@ -139,7 +171,9 @@ export interface GoalToolContext {
     want: { mode: "auto" | "new" | "current"; branch: string },
   ) => Promise<GoalPlacement>;
   /** A conversational reference ("that goal") to ids; undefined when nothing resolves confidently. */
-  focusResolve?: (phrase: string) => { taskId?: string; projectId?: string; runId?: string } | undefined;
+  focusResolve?: (
+    phrase: string,
+  ) => { taskId?: string; projectId?: string; runId?: string } | undefined;
   /** `taskView` from tools.ts. */
   taskView: (task: StoredTask) => unknown;
   /** Screenshot ids that exist, or a speakable error. */
@@ -158,7 +192,13 @@ export function goalSubject(projectId: string, objective: string): string {
   return `goal:${projectId}:${createHash("sha256").update(objective).digest("hex").slice(0, 12)}`;
 }
 
-const tokens = (text: string) => new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+const tokens = (text: string) =>
+  new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 2),
+  );
 
 /** Share of the query's words found in the text; 0 when nothing matches. */
 function overlap(query: string, text: string): number {
@@ -176,10 +216,23 @@ interface FoundRun {
 }
 
 /** Runs across the registry (or the given projects), newest first, deterministic. */
-async function registryRuns(ctx: GoalToolContext, projects: readonly VoiceProject[]): Promise<FoundRun[]> {
-  const scanned = [...projects].sort((a, b) => a.projectId.localeCompare(b.projectId)).slice(0, MAX_PROJECTS_SCANNED);
-  const lists = await Promise.all(scanned.map(async (project) => (await readGoalRuns(ctx.goalRunsBase, project.path)).map((run) => ({ project, run }))));
-  return lists.flat().sort((a, b) => b.run.updatedAt.localeCompare(a.run.updatedAt) || a.run.id.localeCompare(b.run.id));
+async function registryRuns(
+  ctx: GoalToolContext,
+  projects: readonly VoiceProject[],
+): Promise<FoundRun[]> {
+  const scanned = [...projects]
+    .sort((a, b) => a.projectId.localeCompare(b.projectId))
+    .slice(0, MAX_PROJECTS_SCANNED);
+  const lists = await Promise.all(
+    scanned.map(async (project) =>
+      (await readGoalRuns(ctx.goalRunsBase, project.path)).map((run) => ({ project, run })),
+    ),
+  );
+  return lists
+    .flat()
+    .sort(
+      (a, b) => b.run.updatedAt.localeCompare(a.run.updatedAt) || a.run.id.localeCompare(b.run.id),
+    );
 }
 
 /** The live goal task holding a run, if any. */
@@ -208,13 +261,20 @@ function runView(found: FoundRun, task: StoredTask | undefined, ctx: GoalToolCon
     ...(task ? { taskId: task.taskId, taskState: task.state } : null),
     progress,
     say,
-    live: { working: live.working, approvals: live.approvals, ...(live.question ? { question: live.question } : null) },
+    live: {
+      working: live.working,
+      approvals: live.approvals,
+      ...(live.question ? { question: live.question } : null),
+    },
     nothingNeedsYou: !progress.needsYou && !live.question && live.approvals === 0,
   };
 }
 
 /** Narrow the registry to what the user named; a result is a clarification to return. */
-async function projectsFor(ctx: GoalToolContext, query: string | undefined): Promise<VoiceProject[] | ToolResult> {
+async function projectsFor(
+  ctx: GoalToolContext,
+  query: string | undefined,
+): Promise<VoiceProject[] | ToolResult> {
   const all = await ctx.projects();
   if (!query) return all;
   const r = ctx.resolveProject(query, all);
@@ -225,18 +285,26 @@ async function projectsFor(ctx: GoalToolContext, query: string | undefined): Pro
 }
 
 /** Pick a run by what the user called it. A result is a clarification. */
-function pickRun(found: readonly FoundRun[], phrase: string | undefined): FoundRun | ToolResult | undefined {
+function pickRun(
+  found: readonly FoundRun[],
+  phrase: string | undefined,
+): FoundRun | ToolResult | undefined {
   if (found.length === 0) return undefined;
   if (!phrase) return found.length === 1 ? found[0] : undefined;
   const scored = found
-    .map((f) => ({ f, score: Math.max(overlap(phrase, f.run.title), overlap(phrase, f.run.goal) * 0.9) }))
+    .map((f) => ({
+      f,
+      score: Math.max(overlap(phrase, f.run.title), overlap(phrase, f.run.goal) * 0.9),
+    }))
     .filter((x) => x.score >= 0.34)
     .sort((a, b) => b.score - a.score);
   const first = scored[0];
   if (!first) return undefined;
   const second = scored[1];
   if (second && first.score - second.score < 0.15) {
-    const names = scored.slice(0, 3).map((x) => `${speakable(x.f.run.title, 50)} in ${x.f.project.name}`);
+    const names = scored
+      .slice(0, 3)
+      .map((x) => `${speakable(x.f.run.title, 50)} in ${x.f.project.name}`);
     return good({ needsClarification: true, question: `Did you mean ${names.join(" or ")}?` });
   }
   return first.f;
@@ -252,7 +320,8 @@ async function startGoal(args: Record<string, unknown>, ctx: GoalToolContext): P
   if (meant) return meant;
   if (!r.best) return ctx.clarify(r);
   const project = r.best;
-  if (!ctx.usableProviders().includes(EZCODER)) return fail("EZ Coder isn't available on the computer, and goals need it.");
+  if (!ctx.usableProviders().includes(EZCODER))
+    return fail("EZ Coder isn't available on the computer, and goals need it.");
   const repoId = project.worktree?.repoId;
   const duplicate = ctx.store
     .tasks()
@@ -260,14 +329,17 @@ async function startGoal(args: Record<string, unknown>, ctx: GoalToolContext): P
       (t) =>
         !TERMINAL.has(t.state) &&
         t.goal?.objective === objective &&
-        (t.projectId === project.projectId || (t.repo?.projectId !== undefined && (t.repo.projectId === project.projectId || t.repo.projectId === repoId))),
+        (t.projectId === project.projectId ||
+          (t.repo?.projectId !== undefined &&
+            (t.repo.projectId === project.projectId || t.repo.projectId === repoId))),
     );
   if (duplicate) return good({ started: false, duplicate: true, task: ctx.taskView(duplicate) });
   const shots = ctx.attachments ? ctx.attachments(args) : [];
   if (typeof shots === "string") return fail(shots);
 
   const subject = goalSubject(project.projectId, objective);
-  const confirmed = args.userConfirmed === true && ctx.confirm.redeem(arg(args, "confirmToken", 40), subject);
+  const confirmed =
+    args.userConfirmed === true && ctx.confirm.redeem(arg(args, "confirmToken", 40), subject);
   if (!confirmed) {
     return good({
       started: false,
@@ -278,7 +350,10 @@ async function startGoal(args: Record<string, unknown>, ctx: GoalToolContext): P
   }
   const title = arg(args, "title", 80) ?? speakable(objective, 60);
   const mode = args.worktree === "new" || args.worktree === "current" ? args.worktree : "auto";
-  const placed = await ctx.place(project, projects, { mode, branch: arg(args, "branch", 60) ?? title });
+  const placed = await ctx.place(project, projects, {
+    mode,
+    branch: arg(args, "branch", 60) ?? title,
+  });
   if (typeof placed === "string") return fail(placed);
   const { target } = placed;
   const repo = target.worktree
@@ -307,7 +382,10 @@ async function startGoal(args: Record<string, unknown>, ctx: GoalToolContext): P
   });
 }
 
-async function goalStatus(args: Record<string, unknown>, ctx: GoalToolContext): Promise<ToolResult> {
+async function goalStatus(
+  args: Record<string, unknown>,
+  ctx: GoalToolContext,
+): Promise<ToolResult> {
   const phrase = arg(args, "goal", 200);
   let taskId = arg(args, "taskId", 40);
   let runId: string | undefined;
@@ -330,7 +408,10 @@ async function goalStatus(args: Record<string, unknown>, ctx: GoalToolContext): 
         taskId: task.taskId,
         taskState: task.state,
         found: false,
-        say: describeGoal(task.goal.progress ?? { done: 0, total: 0 }, TERMINAL.has(task.state) ? undefined : liveOf(ctx, task)),
+        say: describeGoal(
+          task.goal.progress ?? { done: 0, total: 0 },
+          TERMINAL.has(task.state) ? undefined : liveOf(ctx, task),
+        ),
       });
     }
     return good(runView({ project, run }, task, ctx));
@@ -343,7 +424,11 @@ async function goalStatus(args: Record<string, unknown>, ctx: GoalToolContext): 
   }
   const active = found.filter((f) => !FINISHED_RUN.has(f.run.status));
   const pick = pickRun(phrase ? found : active.length ? active : found.slice(0, 1), phrase);
-  if (!pick) return good({ found: false, say: phrase ? "No goal by that name in your projects." : "There are no goals in progress." });
+  if (!pick)
+    return good({
+      found: false,
+      say: phrase ? "No goal by that name in your projects." : "There are no goals in progress.",
+    });
   if ("ok" in pick) return pick;
   return good(runView(pick, taskForRun(ctx.store, pick.run.id), ctx));
 }
@@ -372,22 +457,29 @@ async function listGoals(args: Record<string, unknown>, ctx: GoalToolContext): P
   });
 }
 
-async function resumeGoal(args: Record<string, unknown>, ctx: GoalToolContext): Promise<ToolResult> {
+async function resumeGoal(
+  args: Record<string, unknown>,
+  ctx: GoalToolContext,
+): Promise<ToolResult> {
   const phrase = arg(args, "goal", 200);
   if (!phrase) return fail("goal is required.");
   const projects = await projectsFor(ctx, arg(args, "project", 100));
   if (!Array.isArray(projects)) return projects;
   const ref = ctx.focusResolve?.(phrase);
   const found = (await registryRuns(ctx, projects)).filter((f) => !FINISHED_RUN.has(f.run.status));
-  const pick = (ref?.runId ? found.find((f) => f.run.id === ref.runId) : undefined) ?? pickRun(found, phrase);
-  if (!pick) return good({ resumed: false, say: "No unfinished goal by that name in your projects." });
+  const pick =
+    (ref?.runId ? found.find((f) => f.run.id === ref.runId) : undefined) ?? pickRun(found, phrase);
+  if (!pick)
+    return good({ resumed: false, say: "No unfinished goal by that name in your projects." });
   if ("ok" in pick) return pick;
   const { project, run } = pick;
   const holder = taskForRun(ctx.store, run.id);
   if (holder) return good({ resumed: false, duplicate: true, task: ctx.taskView(holder) });
-  if (!ctx.usableProviders().includes(EZCODER)) return fail("EZ Coder isn't available on the computer, and goals need it.");
+  if (!ctx.usableProviders().includes(EZCODER))
+    return fail("EZ Coder isn't available on the computer, and goals need it.");
   const subject = `resume_goal:${project.projectId}:${run.id}`;
-  const confirmed = args.userConfirmed === true && ctx.confirm.redeem(arg(args, "confirmToken", 40), subject);
+  const confirmed =
+    args.userConfirmed === true && ctx.confirm.redeem(arg(args, "confirmToken", 40), subject);
   const title = speakable(run.title, 80);
   if (!confirmed) {
     return good({
@@ -423,8 +515,15 @@ function answerQuestion(args: Record<string, unknown>, ctx: GoalToolContext): To
     if (open.length === 0) return fail("No agent is waiting on a question.");
     return good({
       needsClarification: true,
-      question: `Which one: ${open.slice(0, 3).map((t) => t.title).join(" or ")}?`,
-      candidates: open.map((t) => ({ taskId: t.taskId, title: t.title, question: t.question?.text })),
+      question: `Which one: ${open
+        .slice(0, 3)
+        .map((t) => t.title)
+        .join(" or ")}?`,
+      candidates: open.map((t) => ({
+        taskId: t.taskId,
+        title: t.title,
+        question: t.question?.text,
+      })),
     });
   }
   const requestId = arg(args, "requestId", 80) ?? task.question?.requestId;
@@ -434,7 +533,11 @@ function answerQuestion(args: Record<string, unknown>, ctx: GoalToolContext): To
 }
 
 /** Run one goal tool. Errors become results, like every other voice tool. */
-export async function runGoalTool(name: string, args: Record<string, unknown>, ctx: GoalToolContext): Promise<ToolResult> {
+export async function runGoalTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: GoalToolContext,
+): Promise<ToolResult> {
   try {
     switch (name) {
       case "start_goal":

@@ -45,17 +45,15 @@ const optStr = z
 
 /** An array where a malformed item is dropped, never fatal. */
 function lenientArray<T extends z.ZodTypeAny>(item: T) {
-  return z
-    .unknown()
-    .transform((value): z.output<T>[] => {
-      if (!Array.isArray(value)) return [];
-      const out: z.output<T>[] = [];
-      for (const entry of value) {
-        const parsed = item.safeParse(entry);
-        if (parsed.success) out.push(parsed.data);
-      }
-      return out;
-    });
+  return z.unknown().transform((value): z.output<T>[] => {
+    if (!Array.isArray(value)) return [];
+    const out: z.output<T>[] = [];
+    for (const entry of value) {
+      const parsed = item.safeParse(entry);
+      if (parsed.success) out.push(parsed.data);
+    }
+    return out;
+  });
 }
 
 const Verification = z
@@ -100,7 +98,9 @@ const GoalTask = z
   .object({
     id: str,
     title: z.string().catch("Goal task"),
-    status: z.enum(["pending", "running", "verifying", "done", "failed", "blocked"]).catch("pending"),
+    status: z
+      .enum(["pending", "running", "verifying", "done", "failed", "blocked"])
+      .catch("pending"),
     attempts: z.number().nonnegative().catch(0),
     workerId: optStr,
   })
@@ -110,7 +110,16 @@ const Evidence = z
   .object({ label: z.string().catch("Evidence"), content: optStr, path: optStr, createdAt: str })
   .passthrough();
 
-const RUN_STATUSES = ["draft", "blocked", "ready", "running", "verifying", "passed", "failed", "paused"] as const;
+const RUN_STATUSES = [
+  "draft",
+  "blocked",
+  "ready",
+  "running",
+  "verifying",
+  "passed",
+  "failed",
+  "paused",
+] as const;
 export type GoalRunStatus = (typeof RUN_STATUSES)[number];
 
 /** Lenient: every field defaulted the way ezcoder's `normalizeRun` does. Only a run without an id is unusable. */
@@ -130,12 +139,22 @@ export const GoalRunSchema = z
     tasks: lenientArray(GoalTask),
     evidence: lenientArray(Evidence),
     verifier: z
-      .object({ description: str, command: optStr, lastResult: Verification.optional().catch(undefined) })
+      .object({
+        description: str,
+        command: optStr,
+        lastResult: Verification.optional().catch(undefined),
+      })
       .passthrough()
       .optional()
       .catch(undefined),
     completionAudit: z
-      .object({ status: z.enum(["pass", "fail", "unknown"]).catch("unknown"), summary: str, checkedAt: str, verifierCheckedAt: optStr, outputPath: optStr })
+      .object({
+        status: z.enum(["pass", "fail", "unknown"]).catch("unknown"),
+        summary: str,
+        checkedAt: str,
+        verifierCheckedAt: optStr,
+        outputPath: optStr,
+      })
       .passthrough()
       .optional()
       .catch(undefined),
@@ -149,7 +168,10 @@ export const GoalRunSchema = z
     goal: run.goal || run.title,
     updatedAt: run.updatedAt || run.createdAt,
     // ezcoder's deriveRunnableStatus: a blocking prerequisite blocks anything not finished or paused.
-    status: (run.status !== "passed" && run.status !== "failed" && run.status !== "paused" && run.prerequisites.some(isBlockingPrerequisite)
+    status: (run.status !== "passed" &&
+    run.status !== "failed" &&
+    run.status !== "paused" &&
+    run.prerequisites.some(isBlockingPrerequisite)
       ? "blocked"
       : run.status) as GoalRunStatus,
   }));
@@ -179,7 +201,11 @@ export function parseGoalRuns(text: string): GoalRun[] {
 }
 
 /** The project's runs, newest first. Missing, oversized or corrupt reads as none. */
-export async function readGoalRuns(base: string, cwd: string, signal?: AbortSignal): Promise<GoalRun[]> {
+export async function readGoalRuns(
+  base: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<GoalRun[]> {
   const file = goalRunsFile(base, cwd);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -230,7 +256,11 @@ function latestEvidence(run: GoalRun, predicate: (item: GoalRun["evidence"][numb
 function workerEvidenceAfterVerifier(run: GoalRun) {
   const at = run.verifier?.lastResult?.checkedAt;
   if (!at) return undefined;
-  return latestEvidence(run, (e) => e.createdAt > at && e.label.startsWith("Worker ") && !isAuditWorkerEvidence(run, e.label));
+  return latestEvidence(
+    run,
+    (e) =>
+      e.createdAt > at && e.label.startsWith("Worker ") && !isAuditWorkerEvidence(run, e.label),
+  );
 }
 
 /** Port of `hasFreshGoalCompletionAudit`. */
@@ -247,7 +277,8 @@ export function hasFreshCompletionAudit(run: GoalRun): boolean {
   if (audit.checkedAt < verifier.checkedAt) return false;
   const newer = latestEvidence(run, (e) => {
     if (e.createdAt <= verifier.checkedAt) return false;
-    if (isAuditWorkerEvidence(run, e.label) || e.label === "Goal decision: completion_audit") return false;
+    if (isAuditWorkerEvidence(run, e.label) || e.label === "Goal decision: completion_audit")
+      return false;
     if (e.label.startsWith("Verifier ")) return false;
     return e.label.startsWith("Worker ") || e.label.startsWith("Goal decision:");
   });
@@ -275,7 +306,8 @@ function unsatisfiedEvidence(run: GoalRun) {
 
 /** Port of `canCompleteGoalRun`: true only when ezcoder itself would let the run pass. */
 export function canCompleteGoalRun(run: GoalRun): boolean {
-  if (run.status === "draft" || run.successCriteria.length === 0 || run.evidencePlan.length === 0) return false;
+  if (run.status === "draft" || run.successCriteria.length === 0 || run.evidencePlan.length === 0)
+    return false;
   if (!run.verifier?.command) return false;
   if (run.prerequisites.some(isBlockingPrerequisite)) return false;
   if (run.tasks.some((t) => t.status !== "done")) return false;
@@ -295,7 +327,8 @@ function needsYouOf(run: GoalRun): string | undefined {
     if (isBlockingPrerequisite(p) && p.instructions) lines.push(`${p.label} — ${p.instructions}`);
   }
   for (const item of run.evidencePlan) {
-    if (item.status === "blocked") lines.push(`${item.label} — ${item.instructions ?? "this proof needs you"}`);
+    if (item.status === "blocked")
+      lines.push(`${item.label} — ${item.instructions ?? "this proof needs you"}`);
   }
   if (run.status !== "passed") lines.push(...run.blockers);
   const said = [...new Set(lines.map((l) => speakable(l, 160)).filter(Boolean))];
@@ -349,17 +382,27 @@ export function nextStep(run: GoalRun): NextStep {
   if (run.activeWorkerId) return step("wait", "a worker is already on it");
   const pending = run.tasks.find((t) => t.status === "pending" || t.status === "failed");
   if (pending) {
-    return pending.attempts + 1 > 5 ? step("pause", `${pending.title} has run out of attempts`) : step("milestone", `next is ${pending.title}`);
+    return pending.attempts + 1 > 5
+      ? step("pause", `${pending.title} has run out of attempts`)
+      : step("milestone", `next is ${pending.title}`);
   }
   const blockedEvidence = run.evidencePlan.find((item) => item.status === "blocked");
   if (blockedEvidence) return step("needs_you", `it needs you for ${blockedEvidence.label}`);
   if (unsatisfiedEvidence(run).some((item) => item.status === "planned")) {
-    return step("evidence", verifierPass ? "reconciling the evidence after the verifier passed" : "building a way to prove it works");
+    return step(
+      "evidence",
+      verifierPass
+        ? "reconciling the evidence after the verifier passed"
+        : "building a way to prove it works",
+    );
   }
-  if (run.harness.some((h) => !h.command && !h.path)) return step("harness", "building the test harness");
-  if (run.verifier?.lastResult?.status === "fail") return step("fix_verifier", "fixing what the verifier caught");
+  if (run.harness.some((h) => !h.command && !h.path))
+    return step("harness", "building the test harness");
+  if (run.verifier?.lastResult?.status === "fail")
+    return step("fix_verifier", "fixing what the verifier caught");
   if (verifierPass) {
-    if (workerEvidenceAfterVerifier(run) && run.verifier?.command) return step("verify", "re-running the verifier");
+    if (workerEvidenceAfterVerifier(run) && run.verifier?.command)
+      return step("verify", "re-running the verifier");
     return step("audit", "the final completion audit");
   }
   if (run.verifier?.command) return step("verify", "running the verifier");
@@ -371,7 +414,11 @@ export function goalProgress(run: GoalRun): VoiceGoalProgress {
   const complete = canCompleteGoalRun(run);
   const verifierStatus = run.verifier?.lastResult?.status;
   const verified: VoiceGoalProgress["verified"] =
-    verifierStatus === "pass" && hasFreshCompletionAudit(run) ? "pass" : verifierStatus === "fail" ? "fail" : "none";
+    verifierStatus === "pass" && hasFreshCompletionAudit(run)
+      ? "pass"
+      : verifierStatus === "fail"
+        ? "fail"
+        : "none";
   let done: number;
   let total: number;
   if (run.tasks.length > 0) {
@@ -428,10 +475,14 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 function countSentence({ done, total, unit }: VoiceGoalProgress): string {
   if (unit === "criteria") {
     const noun = total === 1 ? "success criterion" : "success criteria";
-    if (done >= total) return total === 1 ? "Its success criterion is met." : `All ${total} ${noun} are met.`;
-    return total === 1 ? "It has one success criterion to meet." : `It has ${total} ${noun} to meet.`;
+    if (done >= total)
+      return total === 1 ? "Its success criterion is met." : `All ${total} ${noun} are met.`;
+    return total === 1
+      ? "It has one success criterion to meet."
+      : `It has ${total} ${noun} to meet.`;
   }
-  if (total === 1) return done >= 1 ? "Its one milestone is done." : "Its one milestone is not done yet.";
+  if (total === 1)
+    return done >= 1 ? "Its one milestone is done." : "Its one milestone is not done yet.";
   if (done >= total) return `All ${plural(total, "milestone")} are done.`;
   return `${done} of ${plural(total, "milestone")} ${done === 1 ? "is" : "are"} done.`;
 }
@@ -440,9 +491,16 @@ function countSentence({ done, total, unit }: VoiceGoalProgress): string {
  * The spoken summary: where it stands, what is happening, and whether the
  * user is needed. Deterministic and speakable.
  */
-export function describeGoal(progress: VoiceGoalProgress, live?: GoalLive, evidenceCount = 0): string {
+export function describeGoal(
+  progress: VoiceGoalProgress,
+  live?: GoalLive,
+  evidenceCount = 0,
+): string {
   const parts: string[] = [];
-  if (progress.status === "passed" || (progress.verified === "pass" && progress.done >= progress.total && progress.total > 0)) {
+  if (
+    progress.status === "passed" ||
+    (progress.verified === "pass" && progress.done >= progress.total && progress.total > 0)
+  ) {
     parts.push("The goal reports passed, with the verifier and final audit recorded.");
   } else if (progress.status === "failed") {
     parts.push("The goal run failed.");
@@ -455,7 +513,8 @@ export function describeGoal(progress: VoiceGoalProgress, live?: GoalLive, evide
   if (progress.verified === "fail") parts.push("The verifier last failed.");
   if (progress.active) parts.push(`Now on: ${progress.active}.`);
   // With something waiting on the user, the next step *is* that thing: say it once, below.
-  else if (progress.next && progress.status !== "passed" && !progress.needsYou) parts.push(sentenceEnd(capital(progress.next)));
+  else if (progress.next && progress.status !== "passed" && !progress.needsYou)
+    parts.push(sentenceEnd(capital(progress.next)));
   if (live?.question) parts.push(`${live.agentName} is asking: ${live.question}`);
   else if (live && live.approvals > 0) parts.push(`${live.agentName} is waiting for an approval.`);
   else if (live?.working) parts.push(`${live.agentName} is working on that now.`);
@@ -466,7 +525,10 @@ export function describeGoal(progress: VoiceGoalProgress, live?: GoalLive, evide
 }
 
 /** What changed between two readings of one run, in a fixed order. */
-export function progressChanges(prev: VoiceGoalProgress | undefined, next: VoiceGoalProgress): VoiceGoalChange[] {
+export function progressChanges(
+  prev: VoiceGoalProgress | undefined,
+  next: VoiceGoalProgress,
+): VoiceGoalChange[] {
   const changes: VoiceGoalChange[] = [];
   if (!prev?.runId && next.runId) changes.push("setup");
   if (prev && next.done > prev.done && next.total > 0) changes.push("milestone_done");
@@ -479,7 +541,8 @@ export function progressChanges(prev: VoiceGoalProgress | undefined, next: Voice
 }
 
 const CHANGE_TEXT: Record<VoiceGoalChange, (p: VoiceGoalProgress) => string> = {
-  setup: (p) => `Goal set up: ${p.title ?? "the goal"}${p.total ? `, ${plural(p.total, "milestone")}` : ""}.`,
+  setup: (p) =>
+    `Goal set up: ${p.title ?? "the goal"}${p.total ? `, ${plural(p.total, "milestone")}` : ""}.`,
   milestone_done: (p) => `Goal milestone done: ${p.done} of ${p.total}.`,
   milestone_failed: () => "A goal milestone failed.",
   verifier_pass: () => "The goal's verifier passed and the final audit is recorded.",
@@ -502,7 +565,9 @@ export function continuePrompt(runId: string, title: string): string {
 
 /** The run a goal task belongs to: by id once known, otherwise the newest made after it was asked for. */
 export function runOf(goal: StoredGoal, runs: readonly GoalRun[]): GoalRun | undefined {
-  return goal.runId ? runs.find((r) => r.id === goal.runId) : findRunForTask(runs, goal.requestedAt);
+  return goal.runId
+    ? runs.find((r) => r.id === goal.runId)
+    : findRunForTask(runs, goal.requestedAt);
 }
 
 // ---- tracker ---------------------------------------------------------------
@@ -568,7 +633,14 @@ export function applyRun(store: VoiceStore, task: StoredTask, run: GoalRun): num
     // claiming "failed" or "completed" would contradict it, and the urgent
     // announcement belongs to the transition `goalHooks.afterTurn` makes when
     // the turn ends. Announcing here too would ring the phone twice.
-    store.transition(task.taskId, task.state, "task.progress", changeText(change, progress), { goal: updated }, { goal: { runId: run.id, change } });
+    store.transition(
+      task.taskId,
+      task.state,
+      "task.progress",
+      changeText(change, progress),
+      { goal: updated },
+      { goal: { runId: run.id, change } },
+    );
   }
   return changes.length;
 }
@@ -597,7 +669,12 @@ export function goalHooks(options: GoalHookOptions): GoalHooks {
       const run = runOf(goal, await read(options.base, task.cwd));
       if (!run) return { kind: "ordinary" };
       const progress = goalProgress(run);
-      const updated: StoredGoal = { ...goal, runId: run.id, progress, lastRunUpdatedAt: run.updatedAt };
+      const updated: StoredGoal = {
+        ...goal,
+        runId: run.id,
+        progress,
+        lastRunUpdatedAt: run.updatedAt,
+      };
       const step = nextStep(run);
       // Only ezcoder marking the run passed is "complete" (its `complete`
       // action refuses unless the verifier and final audit pass). A run that
@@ -608,13 +685,30 @@ export function goalHooks(options: GoalHookOptions): GoalHooks {
         return { kind: "needs_you", say: progress.needsYou ?? step.say, goal: updated };
       }
       if (step.kind === "terminal" || step.kind === "pause") {
-        if (run.status === "failed") return { kind: "failed", say: speakable(`The goal run failed: ${step.say}`, 200), goal: updated };
+        if (run.status === "failed")
+          return {
+            kind: "failed",
+            say: speakable(`The goal run failed: ${step.say}`, 200),
+            goal: updated,
+          };
         return { kind: "needs_you", say: step.say, goal: updated };
       }
-      if (goal.continues > 0 && goal.lastRunUpdatedAt !== undefined && goal.lastRunUpdatedAt === run.updatedAt) {
-        return { kind: "stalled", say: "The goal run made no progress on the last turn.", goal: updated };
+      if (
+        goal.continues > 0 &&
+        goal.lastRunUpdatedAt !== undefined &&
+        goal.lastRunUpdatedAt === run.updatedAt
+      ) {
+        return {
+          kind: "stalled",
+          say: "The goal run made no progress on the last turn.",
+          goal: updated,
+        };
       }
-      return { kind: "continue", prompt: continuePrompt(run.id, speakable(run.title, 80)), goal: updated };
+      return {
+        kind: "continue",
+        prompt: continuePrompt(run.id, speakable(run.title, 80)),
+        goal: updated,
+      };
     },
   };
 }

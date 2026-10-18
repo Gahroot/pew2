@@ -35,7 +35,19 @@ export interface CheckinInput {
   now: number;
 }
 
-const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+const WORDS = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+];
 const num = (n: number): string => WORDS[n] ?? String(n);
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 
@@ -71,9 +83,12 @@ export function buildCheckin(input: CheckinInput): Checkin {
   let milestones = 0;
   const passed = new Set<string>();
   const goalsNeedYou = new Set<string>();
-  const events = [...input.events].filter((e) => e.eventId > heard).sort((a, b) => a.eventId - b.eventId);
+  const events = [...input.events]
+    .filter((e) => e.eventId > heard)
+    .sort((a, b) => a.eventId - b.eventId);
   for (const e of events) {
-    if (e.kind === "task.completed" || e.kind === "task.verified") outcome.set(e.taskId, "finished");
+    if (e.kind === "task.completed" || e.kind === "task.verified")
+      outcome.set(e.taskId, "finished");
     else if (e.kind === "task.failed") outcome.set(e.taskId, "failed");
     const change = e.goal?.change;
     if (change === "milestone_done") milestones++;
@@ -85,7 +100,8 @@ export function buildCheckin(input: CheckinInput): Checkin {
     else if (c.change === "needs_you") goalsNeedYou.add(c.taskId);
   }
   const live = new Set(input.tasks.filter((t) => !TERMINAL.has(t.state)).map((t) => t.taskId));
-  for (const t of input.tasks) if (live.has(t.taskId) && t.goal?.progress?.needsYou) goalsNeedYou.add(t.taskId);
+  for (const t of input.tasks)
+    if (live.has(t.taskId) && t.goal?.progress?.needsYou) goalsNeedYou.add(t.taskId);
   // A goal-change needs_you for a task that has since stopped is history, not a request.
   for (const id of [...goalsNeedYou]) if (!live.has(id)) goalsNeedYou.delete(id);
 
@@ -103,15 +119,23 @@ export function buildCheckin(input: CheckinInput): Checkin {
   const parts: string[] = [];
   if (finished) parts.push(`${num(finished)} ${plural(finished, "agent", "agents")} finished`);
   if (failed)
-    parts.push(finished ? `${num(failed)} failed` : `${num(failed)} ${plural(failed, "agent", "agents")} failed`);
+    parts.push(
+      finished
+        ? `${num(failed)} failed`
+        : `${num(failed)} ${plural(failed, "agent", "agents")} failed`,
+    );
   if (approvals)
     parts.push(
       `${num(approvals)} ${plural(approvals, "is blocked by an approval", "are blocked by approvals")}`,
     );
   if (questions)
-    parts.push(`${num(questions)} ${plural(questions, "has a question for you", "have questions for you")}`);
+    parts.push(
+      `${num(questions)} ${plural(questions, "has a question for you", "have questions for you")}`,
+    );
   if (goalsNeedYou.size)
-    parts.push(`${num(goalsNeedYou.size)} ${plural(goalsNeedYou.size, "goal needs you", "goals need you")}`);
+    parts.push(
+      `${num(goalsNeedYou.size)} ${plural(goalsNeedYou.size, "goal needs you", "goals need you")}`,
+    );
   if (desk)
     parts.push(
       `${num(desk)} ${plural(desk, "session at the computer needs you", "sessions at the computer need you")}`,
@@ -120,7 +144,8 @@ export function buildCheckin(input: CheckinInput): Checkin {
     parts.push(
       `${num(milestones)} goal ${plural(milestones, "milestone is done", "milestones are done")}`,
     );
-  if (passed.size) parts.push(`${num(passed.size)} ${plural(passed.size, "goal passed", "goals passed")}`);
+  if (passed.size)
+    parts.push(`${num(passed.size)} ${plural(passed.size, "goal passed", "goals passed")}`);
   const daveText = daveClause(dave);
   if (daveText) parts.push(daveText);
 

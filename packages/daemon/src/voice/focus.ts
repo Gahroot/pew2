@@ -101,8 +101,15 @@ function isOpenQuestion(ref: FocusRef, tasks: readonly FocusTask[]): boolean {
 }
 
 /** Decayed salience in [0, 1]; a corrected ref and a closed question are 0. */
-export function salience(ref: FocusRef, refs: readonly FocusRef[], tasks: readonly FocusTask[], now: number): number {
-  const corrected = refs.some((r) => r.corrects === ref.id && r.kind === ref.kind && r.at >= ref.at);
+export function salience(
+  ref: FocusRef,
+  refs: readonly FocusRef[],
+  tasks: readonly FocusTask[],
+  now: number,
+): number {
+  const corrected = refs.some(
+    (r) => r.corrects === ref.id && r.kind === ref.kind && r.at >= ref.at,
+  );
   if (corrected) return 0;
   if (ref.kind === "question") return isOpenQuestion(ref, tasks) ? 1 : 0;
   const age = Math.max(0, now - ref.at);
@@ -170,7 +177,11 @@ function asksFirst(args: Record<string, unknown>): boolean {
 }
 
 /** Record what a tool call talked about. A failed call changes nothing. */
-export function noteToolCall(refs: readonly FocusRef[], call: ToolCallNote, ctx: NoteContext): FocusRef[] {
+export function noteToolCall(
+  refs: readonly FocusRef[],
+  call: ToolCallNote,
+  ctx: NoteContext,
+): FocusRef[] {
   if (!call.ok) return [...refs];
   const list = sources(call);
   const via = ctx.via ?? "tool";
@@ -224,8 +235,10 @@ export function noteToolCall(refs: readonly FocusRef[], call: ToolCallNote, ctx:
         kind: "goal",
         id: runId,
         label: label(title),
-        ...(goal?.projectId ?? projectId ? { projectId: goal?.projectId ?? projectId } : {}),
-        ...(goal?.projectName ?? projectName ? { projectName: goal?.projectName ?? projectName } : {}),
+        ...((goal?.projectId ?? projectId) ? { projectId: goal?.projectId ?? projectId } : {}),
+        ...((goal?.projectName ?? projectName)
+          ? { projectName: goal?.projectName ?? projectName }
+          : {}),
         at: ctx.now,
         via,
       });
@@ -247,7 +260,11 @@ export function noteToolCall(refs: readonly FocusRef[], call: ToolCallNote, ctx:
 }
 
 /** Record what an event means for "that". Approvals are live state, not refs. */
-export function noteEvent(refs: readonly FocusRef[], event: VoiceEvent, task: FocusTask | undefined): FocusRef[] {
+export function noteEvent(
+  refs: readonly FocusRef[],
+  event: VoiceEvent,
+  task: FocusTask | undefined,
+): FocusRef[] {
   const base = {
     id: event.taskId,
     label: label(task?.title ?? event.text),
@@ -256,12 +273,17 @@ export function noteEvent(refs: readonly FocusRef[], event: VoiceEvent, task: Fo
     at: event.at,
     via: "event" as const,
   };
-  if (event.kind === "task.completed" || event.kind === "task.failed" || event.kind === "task.verified") {
+  if (
+    event.kind === "task.completed" ||
+    event.kind === "task.failed" ||
+    event.kind === "task.verified"
+  ) {
     return upsert(refs, { ...base, kind: "result" });
   }
   const isQuestion =
     event.goal?.change === "needs_you" ||
-    (event.kind === "task.blocked" && (task?.question !== undefined || /^question\b/i.test(event.text)));
+    (event.kind === "task.blocked" &&
+      (task?.question !== undefined || /^question\b/i.test(event.text)));
   if (isQuestion) return upsert(refs, { ...base, kind: "question" });
   return [...refs];
 }
@@ -320,9 +342,12 @@ interface Window {
 function timeWindow(phrase: string, now: number, tzOffsetMinutes: number): Window | undefined {
   const offset = tzOffsetMinutes * MINUTE;
   const dayStart = Math.floor((now + offset) / DAY) * DAY - offset;
-  if (/\byesterday\b/.test(phrase)) return { from: dayStart - DAY, to: dayStart, name: "yesterday" };
-  if (/\blast week\b/.test(phrase)) return { from: dayStart - 7 * DAY, to: dayStart, name: "last week" };
-  if (/\bthis morning\b/.test(phrase)) return { from: dayStart, to: dayStart + 12 * HOUR, name: "this morning" };
+  if (/\byesterday\b/.test(phrase))
+    return { from: dayStart - DAY, to: dayStart, name: "yesterday" };
+  if (/\blast week\b/.test(phrase))
+    return { from: dayStart - 7 * DAY, to: dayStart, name: "last week" };
+  if (/\bthis morning\b/.test(phrase))
+    return { from: dayStart, to: dayStart + 12 * HOUR, name: "this morning" };
   if (/\b(earlier|today)\b/.test(phrase)) return { from: dayStart, to: now, name: "earlier today" };
   return undefined;
 }
@@ -332,7 +357,9 @@ function byRecency(a: FocusTask, b: FocusTask): number {
 }
 
 function resolveTime(phrase: string, win: Window, ctx: ResolveContext): ResolveResult {
-  const inWindow = ctx.tasks.filter((t) => t.updatedAt >= win.from && t.updatedAt < win.to).sort(byRecency);
+  const inWindow = ctx.tasks
+    .filter((t) => t.updatedAt >= win.from && t.updatedAt < win.to)
+    .sort(byRecency);
   const problems = inWindow.filter((t) => PROBLEM_STATES.has(t.state) || t.question !== undefined);
   let pool = problems.length > 0 ? problems : inWindow;
   const words = tokens(phrase);
@@ -343,7 +370,8 @@ function resolveTime(phrase: string, win: Window, ctx: ResolveContext): ResolveR
   }
   const alternatives = pool.map((t) => taskMatch(t, `updated ${win.name}`));
   const only = pool.length === 1 ? pool[0] : undefined;
-  if (!only) return clarify(alternatives, `I can't find a task from ${win.name}. Which one do you mean?`);
+  if (!only)
+    return clarify(alternatives, `I can't find a task from ${win.name}. Which one do you mean?`);
   const later = ctx.tasks
     .filter(
       (t) =>
@@ -353,7 +381,10 @@ function resolveTime(phrase: string, win: Window, ctx: ResolveContext): ResolveR
         t.updatedAt > only.updatedAt &&
         (t.state === "completed" || t.state === "verified"),
     )
-    .sort((a, b) => (a.state === "verified" ? 0 : 1) - (b.state === "verified" ? 0 : 1) || byRecency(a, b))[0];
+    .sort(
+      (a, b) =>
+        (a.state === "verified" ? 0 : 1) - (b.state === "verified" ? 0 : 1) || byRecency(a, b),
+    )[0];
   return {
     match: alternatives[0] ?? taskMatch(only, `updated ${win.name}`),
     alternatives: [],
@@ -379,7 +410,8 @@ function resolveOther(ctx: ResolveContext, rank: Ranked[]): ResolveResult {
   for (const r of rank) {
     const id = r.ref.projectId;
     if (!id || id === current || r.score < MIN_SALIENCE || seen.has(id)) continue;
-    const name = ctx.projects.find((p) => p.projectId === id)?.name ?? r.ref.projectName ?? r.ref.label;
+    const name =
+      ctx.projects.find((p) => p.projectId === id)?.name ?? r.ref.projectName ?? r.ref.label;
     seen.set(id, { name, score: r.score });
   }
   const alternatives = [...seen.entries()].map(([projectId, v]) => ({
@@ -404,17 +436,27 @@ function resolveDeictic(phrase: string, ctx: ResolveContext, rank: Ranked[]): Re
   const candidates: { task: FocusTask; score: number }[] = [];
   for (const r of rank) {
     const task = taskOf(r);
-    if (!task || r.score < MIN_SALIENCE || candidates.some((c) => c.task.taskId === task.taskId)) continue;
+    if (!task || r.score < MIN_SALIENCE || candidates.some((c) => c.task.taskId === task.taskId))
+      continue;
     candidates.push({ task, score: r.score });
   }
   const active0 = candidates.filter((c) => ACTIVE_STATES.has(c.task.state));
   const pool = addressing && active0.length > 0 ? active0 : candidates;
   const top = pool[0];
-  if (top) return { match: taskMatch(top.task, addressing ? "the agent you were just working with" : "the task just discussed"), alternatives: [] };
+  if (top)
+    return {
+      match: taskMatch(
+        top.task,
+        addressing ? "the agent you were just working with" : "the task just discussed",
+      ),
+      alternatives: [],
+    };
   const active = ctx.tasks.filter((t) => ACTIVE_STATES.has(t.state)).sort(byRecency);
   const only = active.length === 1 ? active[0] : undefined;
   if (only) return { match: taskMatch(only, "the only active task"), alternatives: [] };
-  const alts = (active.length > 0 ? active : [...ctx.tasks].sort(byRecency)).map((t) => taskMatch(t, "recent task"));
+  const alts = (active.length > 0 ? active : [...ctx.tasks].sort(byRecency)).map((t) =>
+    taskMatch(t, "recent task"),
+  );
   return clarify(alts, "Which task do you mean?");
 }
 
@@ -429,19 +471,30 @@ function resolveNamed(words: string[], ctx: ResolveContext): ResolveResult | und
     const s = overlap(words, `${g.title} ${g.objective ?? ""}`);
     if (s > 0)
       scored.push({
-        m: { runId: g.runId, projectId: g.projectId, label: `${label(g.title)} in ${label(g.projectName)}`, why: "goal name matches" },
+        m: {
+          runId: g.runId,
+          projectId: g.projectId,
+          label: `${label(g.title)} in ${label(g.projectName)}`,
+          why: "goal name matches",
+        },
         s,
         at: g.updatedAt ?? 0,
       });
   }
   for (const p of ctx.projects) {
     const s = overlap(words, [p.name, ...p.aliases].join(" "));
-    if (s > 0) scored.push({ m: { projectId: p.projectId, label: label(p.name), why: "project name matches" }, s, at: 0 });
+    if (s > 0)
+      scored.push({
+        m: { projectId: p.projectId, label: label(p.name), why: "project name matches" },
+        s,
+        at: 0,
+      });
   }
   if (scored.length === 0) return undefined;
   scored.sort((a, b) => b.s - a.s || b.at - a.at || a.m.label.localeCompare(b.m.label));
   const [best, second] = scored;
-  if (best && best.s >= 0.5 && (!second || second.s < best.s)) return { match: best.m, alternatives: [] };
+  if (best && best.s >= 0.5 && (!second || second.s < best.s))
+    return { match: best.m, alternatives: [] };
   return clarify(
     scored.map((x) => x.m),
     "Which one do you mean?",
@@ -460,12 +513,18 @@ export function resolveReference(phrase: string, ctx: ResolveContext): ResolveRe
 }
 
 /** Up to five "Working memory" lines for the model's instructions. Ids only in brackets. */
-export function focusContext(refs: readonly FocusRef[], tasks: readonly FocusTask[], now: number): string {
+export function focusContext(
+  refs: readonly FocusRef[],
+  tasks: readonly FocusTask[],
+  now: number,
+): string {
   const rank = ranked(refs, tasks, now).filter((r) => r.score >= MIN_SALIENCE);
-  const top = (kind: FocusRef["kind"]): FocusRef | undefined => rank.find((r) => r.ref.kind === kind)?.ref;
+  const top = (kind: FocusRef["kind"]): FocusRef | undefined =>
+    rank.find((r) => r.ref.kind === kind)?.ref;
   const lines: string[] = [];
   const project = top("project");
-  if (project) lines.push(`Working memory: current project ${speakable(project.label, 80)} [${project.id}]`);
+  if (project)
+    lines.push(`Working memory: current project ${speakable(project.label, 80)} [${project.id}]`);
   const task = top("task");
   if (task) lines.push(`Working memory: current task ${speakable(task.label, 80)} [${task.id}]`);
   const goal = top("goal");
@@ -473,10 +532,15 @@ export function focusContext(refs: readonly FocusRef[], tasks: readonly FocusTas
   const result = top("result");
   if (result) {
     const state = tasks.find((t) => t.taskId === result.id)?.state ?? "finished";
-    lines.push(`Working memory: last result ${speakable(result.label, 80)}, ${state} [${result.id}]`);
+    lines.push(
+      `Working memory: last result ${speakable(result.label, 80)}, ${state} [${result.id}]`,
+    );
   }
   const question = top("question");
-  if (question) lines.push(`Working memory: open question on ${speakable(question.label, 80)} [${question.id}]`);
+  if (question)
+    lines.push(
+      `Working memory: open question on ${speakable(question.label, 80)} [${question.id}]`,
+    );
   return lines.slice(0, 5).join("\n");
 }
 
@@ -489,7 +553,10 @@ export const REFERENCE_TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        phrase: { type: "string", description: "The user's words containing the reference, verbatim." },
+        phrase: {
+          type: "string",
+          description: "The user's words containing the reference, verbatim.",
+        },
       },
       required: ["phrase"],
     },
@@ -503,8 +570,14 @@ export function runReferenceTool(
   args: Record<string, unknown>,
   ctx: ReferenceToolContext,
 ): Promise<ToolResult> {
-  if (name !== "resolve_reference") return Promise.resolve({ ok: false, output: null, error: `Unknown tool '${name}'.` });
+  if (name !== "resolve_reference")
+    return Promise.resolve({ ok: false, output: null, error: `Unknown tool '${name}'.` });
   const phrase = str(args.phrase);
-  if (!phrase) return Promise.resolve({ ok: false, output: null, error: "Say which words to resolve (phrase)." });
+  if (!phrase)
+    return Promise.resolve({
+      ok: false,
+      output: null,
+      error: "Say which words to resolve (phrase).",
+    });
   return Promise.resolve({ ok: true, output: resolveReference(phrase, ctx) });
 }

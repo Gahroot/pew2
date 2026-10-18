@@ -4,7 +4,12 @@ import type { VoiceEvent } from "./types.js";
 
 const NOW = Date.parse("2026-10-18T09:00:00Z");
 
-function ev(eventId: number, taskId: string, kind: VoiceEvent["kind"], goal?: VoiceEvent["goal"]): VoiceEvent {
+function ev(
+  eventId: number,
+  taskId: string,
+  kind: VoiceEvent["kind"],
+  goal?: VoiceEvent["goal"],
+): VoiceEvent {
   return {
     eventId,
     taskId,
@@ -31,7 +36,11 @@ const base = (extra: Partial<CheckinInput> = {}): CheckinInput => ({
 test("the user's example sentence, verbatim", () => {
   const c = buildCheckin(
     base({
-      events: [ev(1, "a", "task.completed"), ev(2, "b", "task.completed"), ev(3, "a", "task.verified")],
+      events: [
+        ev(1, "a", "task.completed"),
+        ev(2, "b", "task.completed"),
+        ev(3, "a", "task.verified"),
+      ],
       pendingApprovals: 1,
       dave: ["Triten"],
     }),
@@ -50,7 +59,9 @@ test("nothing meaningful says nothing", () => {
 
 test("tool and progress chatter is ignored, goal milestones are not", () => {
   const chatter = buildCheckin(
-    base({ events: [ev(1, "a", "task.tool"), ev(2, "a", "task.progress"), ev(3, "a", "task.started")] }),
+    base({
+      events: [ev(1, "a", "task.tool"), ev(2, "a", "task.progress"), ev(3, "a", "task.started")],
+    }),
   );
   expect(chatter.say).toBeUndefined();
   const goal = buildCheckin(
@@ -83,7 +94,18 @@ test("pluralisation and fixed order", () => {
         ev(5, "g", "task.progress", { change: "milestone_done" }),
         ev(6, "h", "task.completed", { change: "passed" }),
       ],
-      tasks: [{ taskId: "g", state: "running", goal: { objective: "o", requestedAt: 0, continues: 0, progress: { done: 1, total: 3, needsYou: "Add a key" } } }],
+      tasks: [
+        {
+          taskId: "g",
+          state: "running",
+          goal: {
+            objective: "o",
+            requestedAt: 0,
+            continues: 0,
+            progress: { done: 1, total: 3, needsYou: "Add a key" },
+          },
+        },
+      ],
       pendingApprovals: 2,
       openQuestions: 1,
       deskNeedsYou: 3,
@@ -100,6 +122,8 @@ test("pluralisation and fixed order", () => {
 });
 
 test("a task that failed then finished counts once, as finished", () => {
-  const c = buildCheckin(base({ events: [ev(1, "a", "task.failed"), ev(2, "a", "task.completed")] }));
+  const c = buildCheckin(
+    base({ events: [ev(1, "a", "task.failed"), ev(2, "a", "task.completed")] }),
+  );
   expect(c.say).toBe("One agent finished. Want the details?");
 });
