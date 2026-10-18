@@ -29,6 +29,7 @@ function harness(
       answered.push(option);
       return true;
     },
+    answerAsk: () => true,
     hasSession: () => true,
     lastText: () => undefined,
   };
@@ -129,12 +130,73 @@ test("follow_up, status, list and priority work on current state", async () => {
   expect((await h.call("task_status", { taskId: secondId })).output).toMatchObject({
     task: { state: "queued", waiting: expect.stringContaining("t_1") },
   });
-  // Two active tasks: status without an id asks which.
+  // Two active tasks: status without an id means the one just talked about...
+  expect((await h.call("task_status")).output).toMatchObject({ task: { taskId: secondId }, resolvedFrom: "conversation" });
+  // ...and asks which when the conversation has not been about either.
+  h.store.setFocusRefs([]);
   expect((await h.call("task_status")).output).toMatchObject({ needsClarification: true });
   expect((await h.call("reprioritize_task", { taskId: secondId, priority: 9 })).ok).toBe(true);
   expect((await h.call("follow_up", { taskId: "t_1", instruction: "more" })).ok).toBe(true);
   expect(((await h.call("list_tasks", { limit: 1 })).output as { tasks: unknown[] }).tasks).toHaveLength(1);
   expect((await h.call("follow_up", { taskId: "t_99", instruction: "x" })).ok).toBe(false);
+});
+
+test("goal and reference tools are offered, with end_session still last", () => {
+  for (const name of ["start_goal", "goal_status", "list_goals", "resume_goal", "answer_question", "resolve_reference"]) {
+    expect(TOOL_NAMES).toContain(name);
+  }
+  expect(TOOL_NAMES[TOOL_NAMES.length - 1]).toBe("end_session");
+  expect(VOICE_INSTRUCTIONS).toContain("a goal is done only when goal_status says passed");
+  expect(VOICE_INSTRUCTIONS).toContain("call resolve_reference");
+  expect(VOICE_INSTRUCTIONS).toContain("'Check-in:' line");
+});
+
+test("start_goal routes through the executor: a yes, then /goal on EZ Coder in the resolved project", async () => {
+  const h = harness(undefined, undefined, undefined, { usableProviders: () => ["ezcoder"], goalRunsBase: scratch() });
+  const ask = await h.call("start_goal", { project: "pew2", objective: "make login work end to end" });
+  const { confirmToken, question } = ask.output as { confirmToken: string; question: string };
+  expect(question).toContain("Start a goal in pew2");
+  expect(h.store.tasks()).toHaveLength(0);
+  const go = await h.call("start_goal", { project: "pew2", objective: "make login work end to end", confirmToken, userConfirmed: true });
+  expect(go.output).toMatchObject({ started: true, task: { project: "pew2", goal: { note: "The goal run has not been found yet." } } });
+  const task = h.store.tasks()[0];
+  expect(task).toMatchObject({ providerId: "ezcoder", cwd: "/code/pew2", prompt: "/goal make login work end to end" });
+  expect(task?.goal).toMatchObject({ objective: "make login work end to end", continues: 0 });
+  // A spoken billing is still ambiguous here: ask, never guess.
+  expect((await h.call("start_goal", { project: "billing", objective: "x" })).output).toMatchObject({ needsClarification: true });
+});
+
+test("goal tools that read runs need a goal-runs base; answer_question does not", async () => {
+  const h = harness();
+  const status = await h.call("goal_status");
+  expect(status.ok).toBe(false);
+  expect(status.error).toContain("Goals aren't available");
+  const answer = await h.call("answer_question", { answer: "yes" });
+  expect(answer.error).toBe("No agent is waiting on a question.");
+});
+
+test("resolve_reference and follow_up use what the conversation was about, never a guess", async () => {
+  let clock = 1_000_000;
+  const h = harness(undefined, undefined, undefined, { now: () => clock, tzOffsetMinutes: () => 0 });
+  const a = await h.call("start_task", { project: "pew2", instruction: "fix the login screen" });
+  clock += 1_000;
+  const b = await h.call("start_task", { project: "billing-api", instruction: "add invoices" });
+  const aId = (a.output as { task: { taskId: string } }).task.taskId;
+  const bId = (b.output as { task: { taskId: string } }).task.taskId;
+  clock += 1_000;
+  await h.call("task_status", { taskId: aId });
+  clock += 1_000;
+
+  const ref = await h.call("resolve_reference", { phrase: "have it fix that" });
+  expect(ref.output).toMatchObject({ match: { taskId: aId } });
+  const sent = await h.call("follow_up", { instruction: "try a different approach" });
+  expect(sent.output).toMatchObject({ task: { taskId: aId }, resolvedFrom: "conversation" });
+  expect(h.store.getTask(bId)?.prompt).toBe("add invoices");
+  // Ids stay in their fields: the label the model may say has none.
+  expect((ref.output as { match: { label: string } }).match.label).not.toContain(aId);
+
+  h.store.setFocusRefs([]);
+  expect((await h.call("follow_up", { instruction: "x" })).output).toMatchObject({ needsClarification: true });
 });
 
 test("cancelling running work takes a confirmation round trip; a model cannot skip it", async () => {

@@ -35,9 +35,9 @@ import { dirname } from "node:path";
 import type { wire } from "@pew2/protocol";
 import { DaemonConnectSession } from "./daemon/connect-session.js";
 import {
-  GG_GOALS_ID,
-  GG_PROVIDER_ID,
+  GOALS_BACKENDS,
   REPLAY_BATCH_SIZE,
+  goalsBackend,
   goalsProviderFrom,
   queuedForWire,
   rememberTurnText,
@@ -47,7 +47,10 @@ import {
 export {
   GG_GOALS_ID,
   GG_PROVIDER_ID,
+  GOALS_BACKENDS,
+  goalsBackend,
   goalsRoot,
+  isGoalsId,
   withStoredPrefs,
   type PromptOutcome,
   type ProviderCapabilities,
@@ -213,10 +216,13 @@ export class Daemon extends DaemonConnectSession {
    *  added manifest show up on the phone without a restart. */
   async refreshProviders(): Promise<{ errors: { source: string; message: string }[] }> {
     const { providers, errors } = await loadProviders();
-    const gg = providers.findIndex((p) => p.manifest.id === GG_PROVIDER_ID);
-    const ggProvider = providers[gg];
-    if (ggProvider && !providers.some((p) => p.manifest.id === GG_GOALS_ID)) {
-      providers.splice(gg + 1, 0, goalsProviderFrom(ggProvider));
+    // Each goals provider is synthesised right after its agent.
+    for (const backend of GOALS_BACKENDS) {
+      const at = providers.findIndex((p) => p.manifest.id === backend.agentId);
+      const agent = providers[at];
+      if (agent && !providers.some((p) => p.manifest.id === backend.goalsId)) {
+        providers.splice(at + 1, 0, goalsProviderFrom(agent, backend));
+      }
     }
     this.providers = providers;
     // Re-read every refresh, so `pew2 providers disable` takes effect without
@@ -269,8 +275,11 @@ export class Daemon extends DaemonConnectSession {
         // Turned off by the user. Filtered here rather than in the app, so the
         // phone is never even told about an agent it should not offer.
         .filter((p) => this.isEnabled(p.manifest.id))
-        // GG Goals rides ggcoder: never announced without it.
-        .filter((p) => p.manifest.id !== GG_GOALS_ID || this.isEnabled(GG_PROVIDER_ID))
+        // A goals provider rides its agent: never announced without it.
+        .filter((p) => {
+          const backend = goalsBackend(p.manifest.id);
+          return backend?.goalsId !== p.manifest.id || this.isEnabled(backend.agentId);
+        })
         // Not on this machine at all. Nothing about it can be acted on from a
         // phone \u2014 you cannot install a CLI from there \u2014 so a dimmed row for it
         // is a permanent piece of furniture that never becomes useful.
@@ -867,6 +876,14 @@ export class Daemon extends DaemonConnectSession {
       cancel: (sessionId) => this.cancel(sessionId),
       answerPermission: (sessionId, requestId, optionId) =>
         this.answerPermissionQuietly(sessionId, requestId, optionId),
+      // Logs `ask_user_closed`, which closes the card on every screen.
+      answerAsk: (sessionId, requestId, result) => {
+        try {
+          return this.answerAsk(sessionId, requestId, result);
+        } catch {
+          return false; // the session is gone: nothing is waiting on that answer
+        }
+      },
       hasSession: (sessionId) => this.sessions.has(sessionId),
       lastText: (sessionId) => this.sessions.get(sessionId)?.turnText,
     };

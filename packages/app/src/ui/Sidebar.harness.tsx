@@ -9,8 +9,9 @@
  * and it runs on web (`npx expo start --web`) — which is why anything iOS-only
  * inside the tree has to be optional-called rather than assumed.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform, StyleSheet, Text, View } from "react-native";
+import * as SplashScreen from "expo-splash-screen";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { ConnectionSheet } from "./ConnectionSheet";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -24,6 +25,9 @@ const PROVIDERS: Provider[] = [
   { id: "claude-code", name: "Claude Code", description: "", available: true, color: "#d97757" },
   { id: "codex", name: "Codex", description: "", available: true, color: "#10a37f" },
   { id: "ggcoder", name: "GG Coder", description: "", available: true, color: "#3d9bf5" },
+  // Listed apart on purpose: the chip row must still put EZ Goals right after EZ Coder.
+  { id: "ez-goals", name: "EZ Goals", description: "", available: true, color: "#a78bfa" },
+  { id: "ezcoder", name: "EZ Coder", description: "", available: true, color: "#f5a623" },
 ];
 
 const PROJECTS: Project[] = [
@@ -94,6 +98,11 @@ function Drawer({
 }
 
 function NativeDrawer() {
+  // index.ts holds the native splash until the app hides it; a harness replaces
+  // the app, so it has to do that itself or the drawer sits behind the splash.
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => undefined);
+  }, []);
   const [open, setOpen] = useState(false);
   const [provider, setProvider] = useState("claude-code");
   const [unpaired, setUnpaired] = useState(false);

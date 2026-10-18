@@ -140,8 +140,44 @@ export function taskTimeline(store: VoiceStore, taskId: string, now: number, lim
     .map((e) => ({ eventId: e.eventId, text: e.text, tone: EVENT_TONE[e.kind], when: ago(now, e.at) }));
 }
 
-/** The latest line saying what the task is doing: its `activity`, else its newest event. */
+type GoalProgress = NonNullable<VoiceTask["goal"]>;
+
+const VERIFIED_WORDS: Record<NonNullable<GoalProgress["verified"]>, string | undefined> = {
+  pass: "verifier passed",
+  fail: "verifier failed",
+  none: undefined,
+};
+
+/**
+ * A goal's one line: the daemon's own summary when it sent one, else the
+ * milestone count. With no milestones yet nothing is claimed done, and a run
+ * counted in success criteria (met together) is never shown part-met.
+ */
+export function goalLine(goal: GoalProgress): string {
+  if (goal.say) return goal.say;
+  const parts: string[] = [];
+  if (goal.total > 0 && goal.unit === "criteria") {
+    const noun = goal.total === 1 ? "success criterion" : "success criteria";
+    parts.push(goal.done >= goal.total ? `${goal.total} ${noun} met` : `${goal.total} ${noun} to meet`);
+  } else if (goal.total > 0) {
+    parts.push(`${goal.done} of ${goal.total} ${goal.total === 1 ? "milestone" : "milestones"}`);
+  } else {
+    parts.push("Setting up the goal");
+  }
+  const verified = goal.verified ? VERIFIED_WORDS[goal.verified] : undefined;
+  if (verified) parts.push(verified);
+  if (goal.needsYou) parts.push(`needs you: ${goal.needsYou}`);
+  else if (goal.active) parts.push(goal.active);
+  return parts.join(" · ");
+}
+
+/**
+ * The latest line saying what the task is doing: an open question first, then
+ * a goal's progress, then its `activity`, else its newest event.
+ */
 export function currentLine(store: VoiceStore, task: VoiceTask): string | undefined {
+  if (task.question) return `Waiting for your answer: ${task.question.text}`;
+  if (task.goal) return goalLine(task.goal);
   if (task.activity) return task.activity;
   for (let i = store.recent.length - 1; i >= 0; i--) {
     const e = store.recent[i];

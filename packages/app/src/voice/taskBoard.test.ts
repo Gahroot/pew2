@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { currentLine, formatAge, groupTasks, summarize, taskStatus, taskTimeline } from "./taskBoard";
+import { currentLine, formatAge, goalLine, groupTasks, summarize, taskStatus, taskTimeline } from "./taskBoard";
 import { emptyStore, type VoiceStore } from "./voiceStore";
 import type { VoiceEvent, VoiceTask } from "./types";
 
@@ -100,5 +100,31 @@ describe("taskTimeline / currentLine", () => {
     expect(currentLine(store([], events), task({ taskId: "t1", activity: "linting" }))).toBe("linting");
     expect(currentLine(store([], events), task({ taskId: "t1" }))).toBe("running tests");
     expect(currentLine(store([], events), task({ taskId: "zzz" }))).toBeUndefined();
+  });
+});
+
+describe("goalLine / goal and question lines", () => {
+  test("say wins", () => {
+    expect(goalLine({ done: 1, total: 3, say: "The API is finished." })).toBe("The API is finished.");
+  });
+  test("milestones and verifier", () => {
+    expect(goalLine({ done: 2, total: 3, verified: "pass" })).toBe("2 of 3 milestones · verifier passed");
+    expect(goalLine({ done: 0, total: 1, verified: "none", active: "Write tests" })).toBe("0 of 1 milestone · Write tests");
+  });
+  test("success criteria are met together, never shown part-met", () => {
+    expect(goalLine({ done: 0, total: 8, unit: "criteria" })).toBe("8 success criteria to meet");
+    expect(goalLine({ done: 1, total: 1, unit: "criteria", verified: "pass" })).toBe("1 success criterion met · verifier passed");
+  });
+  test("no milestones never claims done", () => {
+    expect(goalLine({ done: 0, total: 0 })).toBe("Setting up the goal");
+    expect(goalLine({ done: 0, total: 0, needsYou: "add the API key" })).toBe("Setting up the goal · needs you: add the API key");
+  });
+  test("question beats goal beats activity", () => {
+    const s = store([], []);
+    const goal = { done: 1, total: 2 };
+    expect(currentLine(s, task({ taskId: "t1", activity: "x", goal }))).toBe("1 of 2 milestones");
+    expect(currentLine(s, task({ taskId: "t1", activity: "x", goal, question: { requestId: "q", text: "Which port?" } }))).toBe(
+      "Waiting for your answer: Which port?",
+    );
   });
 });

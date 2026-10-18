@@ -9,6 +9,8 @@
 import { coalesce } from "./classify.js";
 import { BACKLOG_TOOLS, runBacklogTool, backlogToolName, type DaveClient } from "./dave.js";
 import { isDaveProject, routeDave } from "./daveIntent.js";
+import { noteToolCall, REFERENCE_TOOLS, resolveReference, runReferenceTool, type FocusGoal, type ResolveContext } from "./focus.js";
+import { GOAL_TOOLS, isGoalTool, runGoalTool, type GoalToolContext } from "./goalTools.js";
 import { placeFields, placeSpoken } from "./place.js";
 import type { Orchestrator } from "./dispatcher.js";
 import { branchName, chooseProvider, groupByRepo, projectIdFor, repoOf, resolveProject, worktreesOf } from "./registry.js";
@@ -35,7 +37,7 @@ interface ToolDef {
   type: "function";
   name: string;
   description: string;
-  parameters: { type: "object"; properties: Record<string, unknown>; required: string[] };
+  parameters: { type: "object"; properties: Record<string, unknown>; required: readonly string[] };
 }
 
 const str = (description: string) => ({ type: "string", description });
@@ -46,7 +48,7 @@ const def = (
   required: string[] = [],
 ): ToolDef => ({ type: "function", name, description, parameters: { type: "object", properties, required } });
 
-export const VOICE_TOOLS: readonly ToolDef[] = [
+const CORE_TOOLS: readonly ToolDef[] = [
   def("list_projects", "List projects the user can name."),
   def("resolve_project", "Match a spoken project name (partial, misheard or any case is fine). One clear match: use it, don't ask. Ambiguous: ask one short 'did you mean A or B?'. Not for the backlog ('check the backlog', 'checking Dave'): that is check_backlog.", { query: str("What the user said.") }, ["query"]),
   def(
@@ -72,8 +74,12 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
   def(
     "follow_up",
     "Send another instruction to an existing task, including a debrief's followUp once the user accepts its nextStep.",
-    { taskId: str("Task id."), instruction: str("The instruction."), attachmentIds: { type: "array", items: { type: "string" }, description: "Screenshots to send with it, by attachmentId from list_screenshots." } },
-    ["taskId", "instruction"],
+    {
+      taskId: str("Task id. Optional when the conversation makes the task clear; the result names the one it went to."),
+      instruction: str("The instruction."),
+      attachmentIds: { type: "array", items: { type: "string" }, description: "Screenshots to send with it, by attachmentId from list_screenshots." },
+    },
+    ["instruction"],
   ),
   def("task_status", "Fresh status of one task. Omit taskId when only one task is active.", { taskId: str("Task id.") }),
   def(
@@ -167,6 +173,13 @@ export const VOICE_TOOLS: readonly ToolDef[] = [
       note: str("Anything the user added, e.g. a message to use. Optional."),
     },
   ),
+];
+
+/** Core tools, then goals and references, with `end_session` last. */
+export const VOICE_TOOLS: readonly ToolDef[] = [
+  ...CORE_TOOLS,
+  ...GOAL_TOOLS,
+  ...REFERENCE_TOOLS,
   def("end_session", "End the voice session when the user is done."),
 ];
 
@@ -190,10 +203,14 @@ export const VOICE_INSTRUCTIONS = [
   "Screenshots: the user can share pictures, typically a partner's fix or an error, from the phone. You never see the picture; you get its attachmentId and name. When they offer one, call request_screenshot. When one arrives, say you have it in a few words, then ask which project or task it is for unless they already said. Send it with start_task or follow_up attachmentIds, or attach_screenshot for a task already running, together with what they want done ('apply this fix'). Never describe what is in it, and never claim the agent applied it until a result says so.",
   "When asked what is running or how things are going, call whats_running, not just list_tasks: it also shows conversations the user started at the desk or in the app. 'needs_you' means an agent is blocked on an approval; mention that first. For what one of them is doing, call peek_session with its sessionRef.",
   "Call task_status before acting on a task you have not checked this session; state changes while you talk.",
+  "Goals: when the user says 'start a goal' or 'keep at it until it works', or describes an outcome to reach rather than one change, call start_goal; it always needs a yes. A goal runs turn after turn until EZ Coder's verifier and final audit pass, so a finished turn is not a finished goal: a goal is done only when goal_status says passed, and even then it is the agent's report. For 'how's X coming along' about a goal, call goal_status and say its 'say' sentence, putting anything that needs the user first. list_goals lists goals in progress; resume_goal picks one up again.",
+  "Questions: when a task shows a question (its agent asked the user something and is waiting), put it to the user plainly with its options, then send their answer with answer_question, never follow_up.",
+  "References: whenever the user points at something without naming it ('that', 'it', 'this', 'the agent', 'the other project', 'yesterday's issue'), call resolve_reference with their words before acting, and use the ids it returns, never ids from memory. If it says needsClarification, ask its question and wait. If it has laterOutcome, a later task in that project finished; say so as the agent's report. 'Working memory:' lines in the context are what the conversation was last about.",
   "Approvals: when an agent is waiting, read the 'say' sentence from pending_approvals in plain words and ask 'Approve or deny?'. Safe means read-only; risky means writes outside the project, deletes, network, installs or git push, so name the risk in a few words. Only call answer_approval after an explicit answer. 'Approve all safe ones' means approve_safe; 'stop asking about safe ones' means set_approval_policy. Risky approvals are never auto-approved. For merge, deploy and destructive actions, and cancelling running work, call once to get a confirmToken, ask 'Are you sure?', and call again with userConfirmed true only after they say yes. Never reuse or invent tokens.",
-  "Start by briefly stating what changed from the opening context, if anything, offering the next step on anything that finished. Say nothing about what the user already heard.",
-  "The backlog is the user's to-do list, kept by DAVE, their portfolio and priorities assistant. Check it with check_backlog only when the user asks, in any words ('check the backlog', 'what's on the backlog', 'check in with Dave', 'checking Dave', 'what does Dave think I should do', 'what's next on my to-do list', 'what did I promise Acme'); never on your own, at the start of a session or to fill silence.",
+  "Opening: if the context has a 'Check-in:' line, start by saying it in those words, then wait. If the user wants the details, give them from the context and tools, what needs them first, offering the next step on anything that finished. With no Check-in line, say nothing about status until asked. Say nothing about what the user already heard.",
+  "The backlog is the user's to-do list, kept by DAVE, their portfolio and priorities assistant. Check it with check_backlog only when the user asks, in any words ('check the backlog', 'what's on the backlog', 'check in with Dave', 'checking Dave', 'what does Dave think I should do', 'what's next on my to-do list', 'what did I promise Acme'); never on your own, at the start of a session or to fill silence. A Check-in line may say DAVE has a new recommendation for a project; call check_backlog only if the user then wants the details.",
   "Summarise what DAVE says in two or three sentences, and present its ranking as DAVE's recommendation, not a fact. If DAVE isn't available, say so plainly. You may offer to hand one of its coding objectives to EZ Coder as a single yes/no question; call delegate_backlog_item's second step only after an explicit yes, and never for a step DAVE marks as the user's own.",
+  "For 'what should I do next', use check_backlog with about 'next': say DAVE's one recommendation and ask a single yes/no, without lecturing; mention an alternative only if asked. For 'what moved' or 'how's progress', use about 'progress' and name the window it gives you ('since you last asked', 'in the last day' or a date). On a yes, act_on_backlog changes only DAVE's own records (do it, skip, defer); a hand-off to EZ Coder is delegate_backlog_item, never act_on_backlog. clean_up_backlog previews first, then clears exactly the previewed keys after a spoken yes; undo_backlog_clean_up brings them back. Every second step needs an explicit yes; if a result says stale, check the backlog again.",
   "The backlog is not the project named dave. Saying backlog ('check the backlog', 'next on the backlog'), talking to or about Dave as a person ('checking Dave', 'ask Dave', 'Dave says', 'Dave's list'), or asking for the next items on their to-do list or their priorities, means check_backlog with about 'priorities', never start_task, list_tasks or resolve_project. Only words about the code mean the project: opening or working on it ('open the dave project', 'work on dave', 'the dave repo', 'in dave') or a coding instruction aimed at it; then use the project tools as for any project. If a result says meantBacklog, do what its next says; if it asks which, put the question to the user.",
   "When the user says they are done or to stop, call end_session, then say a very short goodbye.",
 ].join("\n");
@@ -305,6 +322,10 @@ export interface ToolDeps {
   createWorktree?: (root: string, branch?: string) => Promise<Result<CreatedWorktree>>;
   /** Linked worktrees git has on record for a main checkout. */
   registeredWorktrees?: (root: string) => Promise<RegisteredWorktree[]>;
+  /** Where EZ Coder keeps goal runs (`goalRunsBase`); absent means the goal tools cannot read them. */
+  goalRunsBase?: string;
+  /** Local time minus UTC in minutes, for "yesterday" and "this morning"; defaults to the host's zone. */
+  tzOffsetMinutes?: () => number;
   now?: () => number;
 }
 
@@ -339,7 +360,44 @@ export function taskView(store: VoiceStore, t: StoredTask) {
     ...(t.debrief && t.state === "completed" ? { debrief: t.debrief } : null),
     ...(t.attachmentIds?.length ? { screenshots: t.attachmentIds.length } : null),
     ...(t.pendingAttachmentIds?.length ? { screenshotsWaiting: t.pendingAttachmentIds.length } : null),
+    // A goal is not one turn: its progress, not the task state, says how far it got.
+    ...(t.goal ? { goal: goalView(t) } : null),
+    ...(t.question ? { question: { requestId: t.question.requestId, text: t.question.text, ...(t.question.options?.length ? { options: t.question.options } : null) } } : null),
   };
+}
+
+function goalView(t: StoredTask) {
+  const p = t.goal?.progress;
+  if (!p) return { note: "The goal run has not been found yet." };
+  return {
+    done: p.done,
+    total: p.total,
+    ...(p.unit ? { unit: p.unit } : null),
+    ...(p.status ? { status: p.status } : null),
+    ...(p.verified ? { verified: p.verified } : null),
+    ...(p.needsYou ? { needsYou: p.needsYou } : null),
+    ...(p.say ? { say: p.say } : null),
+    ...(p.status === "passed" ? null : { note: "Not done until goal_status says passed." }),
+  };
+}
+
+/** Goal runs the conversation can name, from goal tasks only: no file read per reference. */
+function focusGoals(tasks: readonly StoredTask[]): FocusGoal[] {
+  return tasks.flatMap((t) =>
+    t.goal?.runId
+      ? [
+          {
+            runId: t.goal.runId,
+            title: t.goal.progress?.title ?? t.title,
+            objective: t.goal.objective,
+            projectId: t.projectId,
+            projectName: t.projectName,
+            ...(t.goal.progress?.status ? { status: t.goal.progress.status } : null),
+            updatedAt: t.updatedAt,
+          },
+        ]
+      : [],
+  );
 }
 
 /** A screenshot as the model sees it: never a path. */
@@ -508,7 +566,84 @@ export class ToolExecutor {
       result = fail(speakable(error instanceof Error ? error.message : String(error), 160));
     }
     store.journalFinish(call.callId, result);
+    await this.noteFocus(call, result);
     return result;
+  }
+
+  /**
+   * Remember what a call was about, so the next "that" or "the other project"
+   * resolves (`focus.ts`). Only for a call that ran now: a replayed answer was
+   * noted the first time. Never fails the tool.
+   */
+  private async noteFocus(call: ToolCall, result: ToolResult): Promise<void> {
+    if (!result.ok) return;
+    try {
+      const { store } = this.deps;
+      const tasks = store.tasks();
+      const before = store.focusRefs();
+      const next = noteToolCall(
+        before,
+        { name: call.name, args: call.args, output: result.output, ok: result.ok },
+        { now: (this.deps.now ?? Date.now)(), tasks, projects: await this.deps.projects(), goals: focusGoals(tasks) },
+      );
+      const same = next.length === before.length && next.every((ref, i) => ref === before[i]);
+      if (!same) store.setFocusRefs(next);
+    } catch {
+      // Focus is a convenience; a reference just resolves less well.
+    }
+  }
+
+  /** What reference resolution reads: the conversation's focus and the live tasks. */
+  private async referenceContext(): Promise<ResolveContext> {
+    const { store } = this.deps;
+    const now = (this.deps.now ?? Date.now)();
+    const tasks = store.tasks();
+    return {
+      refs: store.focusRefs(),
+      tasks,
+      projects: await this.deps.projects().catch(() => [] as VoiceProject[]),
+      goals: focusGoals(tasks),
+      now,
+      tzOffsetMinutes: this.deps.tzOffsetMinutes?.() ?? -new Date(now).getTimezoneOffset(),
+    };
+  }
+
+  /** The one task a reference means, or undefined when the conversation leaves it unclear. */
+  private focusedTask(phrase: string, ctx: ResolveContext): StoredTask | undefined {
+    const r = resolveReference(phrase, ctx);
+    const id = r.needsClarification ? undefined : r.match?.taskId;
+    return id ? this.deps.store.getTask(id) : undefined;
+  }
+
+  /** The executor's own helpers, handed to the goal tools (which must not import this module). */
+  private goalContext(refs: ResolveContext): GoalToolContext {
+    const { store, orchestrator } = this.deps;
+    return {
+      store,
+      orchestrator,
+      projects: this.deps.projects,
+      usableProviders: this.deps.usableProviders,
+      confirm: this.confirm,
+      now: this.deps.now ?? Date.now,
+      goalRunsBase: this.deps.goalRunsBase ?? "",
+      resolveProject,
+      daveGuard: (query, r, instruction, extra) => this.daveGuard(query, r, instruction, extra),
+      clarify: (r) => this.clarify(r),
+      place: async (project, projects, want) => {
+        const placed = await this.placeTask(project, projects, { ...want, readOnly: false, dependsOn: [] });
+        if (typeof placed === "string") return placed;
+        const { target, made } = placed;
+        return made ? { target, note: worktreeNote(made), newWorktree: { project: made.repo, branch: made.branch } } : { target };
+      },
+      focusResolve: (phrase) => {
+        const r = resolveReference(phrase, refs);
+        const m = r.needsClarification ? undefined : r.match;
+        if (!m) return undefined;
+        return { ...(m.taskId ? { taskId: m.taskId } : null), ...(m.projectId ? { projectId: m.projectId } : null), ...(m.runId ? { runId: m.runId } : null) };
+      },
+      taskView: (task) => taskView(store, task),
+      attachments: (args) => attachmentsOf(store, args),
+    };
   }
 
   /**
@@ -665,6 +800,21 @@ export class ToolExecutor {
       });
     }
 
+    if (name === "resolve_reference") return runReferenceTool(name, args, await this.referenceContext());
+
+    if (isGoalTool(name)) {
+      // answer_question is about any agent's question; the rest read goal runs.
+      if (name !== "answer_question" && !this.deps.goalRunsBase) return fail("Goals aren't available on this computer's pew2.");
+      const refs = await this.referenceContext();
+      let goalArgs = args;
+      if (name === "goal_status" && !text(args, "taskId", 40) && !text(args, "goal", 200) && !text(args, "project", 100)) {
+        // "How's it coming along?" right after talking about a goal means that goal.
+        const meant = this.focusedTask("that", refs);
+        if (meant?.goal) goalArgs = { ...args, taskId: meant.taskId };
+      }
+      return runGoalTool(name, goalArgs, this.goalContext(refs));
+    }
+
     switch (name) {
       case "list_projects": {
         // One entry per repository, its worktrees as branches under it: a repo
@@ -768,14 +918,26 @@ export class ToolExecutor {
         });
       }
       case "follow_up": {
-        const t = taskOf();
-        if (typeof t === "string") return fail(t);
         const instruction = text(args, "instruction");
         if (!instruction) return fail("instruction is required.");
+        let t: StoredTask | string;
+        let fromConversation = false;
+        if (text(args, "taskId", 40)) t = taskOf();
+        else {
+          // "Tell the agent to try a different approach": the agent just talked about.
+          const meant = this.focusedTask("tell the agent", await this.referenceContext());
+          if (!meant) {
+            const active = store.tasks().filter((x) => !TERMINAL.has(x.state));
+            return good({ needsClarification: true, reason: "Say which task.", active: active.slice(0, 8).map((x) => taskView(store, x)) });
+          }
+          t = meant;
+          fromConversation = true;
+        }
+        if (typeof t === "string") return fail(t);
         const shots = attachmentsOf(store, args);
         if (typeof shots === "string") return fail(shots);
         const r = orchestrator.followUp(t.taskId, instruction, shots);
-        return r.ok ? good({ task: taskView(store, r.value) }) : fail(r.error);
+        return r.ok ? good({ task: taskView(store, r.value), ...(fromConversation ? { resolvedFrom: "conversation" } : null) }) : fail(r.error);
       }
       case "request_screenshot": {
         const reason = text(args, "reason", 120);
@@ -815,13 +977,18 @@ export class ToolExecutor {
       }
       case "task_status": {
         let t: StoredTask | string;
+        let fromConversation = false;
         if (text(args, "taskId", 40)) t = taskOf();
         else {
           const active = store.tasks().filter((x) => !TERMINAL.has(x.state));
+          const meant = active.length === 1 ? undefined : this.focusedTask("that", await this.referenceContext());
           if (active.length === 1 && active[0]) t = active[0];
-          else return good({ needsClarification: true, active: active.slice(0, 8).map((x) => taskView(store, x)) });
+          else if (meant) {
+            t = meant;
+            fromConversation = true;
+          } else return good({ needsClarification: true, active: active.slice(0, 8).map((x) => taskView(store, x)) });
         }
-        return typeof t === "string" ? fail(t) : good({ task: taskView(store, t) });
+        return typeof t === "string" ? fail(t) : good({ task: taskView(store, t), ...(fromConversation ? { resolvedFrom: "conversation" } : null) });
       }
       case "whats_running": {
         const live = this.deps.runningSessions?.() ?? [];

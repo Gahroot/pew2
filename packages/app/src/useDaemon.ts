@@ -12,7 +12,7 @@
  * `daemonFrame.ts` + `daemonReducer.ts` (each decrypted frame), and
  * `daemonActions.ts` (everything the phone sends).
  */
-import { GOALS_PROVIDER_ID } from "./goalsAgent";
+import { goalProviderOf, isGoalsProvider } from "./goalsAgent";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RestoreTarget } from "./restoreState";
 import { SecureChannel, envelopeHeader } from "@pew2/protocol";
@@ -531,7 +531,7 @@ export function useDaemon(
    */
   const openGoal = useCallback(
     (goal: GoalSummary) => {
-      const providerId = GOALS_PROVIDER_ID;
+      const providerId = goalProviderOf(goal);
       const rows = sessionsRef.current;
       if (goal.sessionId && rows.some((row) => row.id === goal.sessionId) &&
           (liveSessions.current === undefined || liveSessions.current.has(goal.sessionId))) {
@@ -556,8 +556,16 @@ export function useDaemon(
   // Goals live on the desktop and change there too: ask whenever the socket
   // comes up with GG Coder available. An older daemon answers with an error
   // the reducer records, and the drawer simply says nothing about goals.
-  const hasGgCoder = state.providers.some((provider) => provider.id === GOALS_PROVIDER_ID && provider.available);
-  const refreshGoals = actions.refreshGoals;
+  const goalsKey = state.providers
+    .filter((provider) => isGoalsProvider(provider.id) && provider.available)
+    .map((provider) => provider.id)
+    .join(",");
+  // The announced, available goals backends (stable while the set is).
+  const goalsProviders = useMemo(() => (goalsKey ? goalsKey.split(",") : []), [goalsKey]);
+  /** @deprecated alias: any goals backend is available. */
+  const hasGgCoder = goalsProviders.length > 0;
+  const refreshGoalsAction = actions.refreshGoals;
+  const refreshGoals = useCallback(() => refreshGoalsAction(goalsProviders), [refreshGoalsAction, goalsProviders]);
   useEffect(() => {
     if (state.status === "online" && hasGgCoder) refreshGoals();
   }, [state.status, hasGgCoder, refreshGoals]);
@@ -701,6 +709,8 @@ export function useDaemon(
     images,
     gg,
     hasGgCoder,
+    goalsProviders,
+    refreshGoals,
     openGoal,
   };
 }

@@ -69,3 +69,16 @@ test("GG Coder and GG Goals always lead, in that order, whatever was used last",
     "claude-code",
   ]);
 });
+
+test("a goals provider follows its agent wherever that agent lands", () => {
+  const ordered = orderProvidersByRecency(
+    [provider("ggcoder"), provider("gg-goals"), provider("claude"), provider("ez-goals"), provider("ezcoder")],
+    [session("ezcoder", 9), session("claude", 5)],
+  );
+  expect(ordered.map((p) => p.id)).toEqual(["ggcoder", "gg-goals", "ezcoder", "ez-goals", "claude"]);
+});
+
+test("a goals provider without its agent keeps its place", () => {
+  const ordered = orderProvidersByRecency([provider("claude"), provider("ez-goals")], []);
+  expect(ordered.map((p) => p.id)).toEqual(["claude", "ez-goals"]);
+});

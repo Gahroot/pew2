@@ -84,3 +84,13 @@ test("goal lookup and labels", () => {
   expect(workerElapsed({ id: "w", name: "w", state: "running", startedAt: 1000 }, 4000)).toBe(3000);
   expect(workerElapsed({ id: "w", name: "w", state: "completed", startedAt: 1000, elapsedMs: 7 }, 4000)).toBe(7);
 });
+
+test("a goals list replaces only the backends it names", () => {
+  let gg = applyGoalMessage(EMPTY_GG, { t: "goals", goals: [goal("g1")] });
+  gg = applyGoalMessage(gg, { t: "goals", providerIds: ["ez-goals"], goals: [goal("e1", { providerId: "ez-goals" })] });
+  expect(gg.goals?.map((g) => g.id)).toEqual(["g1", "e1"]);
+  gg = applyGoalMessage(gg, { t: "goals", goals: [goal("g2")] });
+  expect(gg.goals?.map((g) => g.id)).toEqual(["e1", "g2"]);
+  gg = applyGoalMessage(gg, { t: "goals", providerIds: ["gg-goals", "ez-goals"], goals: [] });
+  expect(gg.goals).toEqual([]);
+});

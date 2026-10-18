@@ -8,6 +8,7 @@ import { ApprovalSheet } from "./ApprovalSheet";
 import { AskUserSheet } from "./AskUserSheet";
 import { ChecklistSheet, PlanReviewSheet } from "./GgReview";
 import type { useDaemon } from "../useDaemon";
+import { GOALS_AGENT_OF } from "../goalsAgent";
 import type { useGoalControls } from "../useGoalControls";
 
 export function GoalSheets({
@@ -27,6 +28,7 @@ export function GoalSheets({
 }) {
   const {
     gg,
+    activeGoalsId,
     createGoal,
     goalAction,
     browseWorkspaces,
@@ -67,7 +69,7 @@ export function GoalSheets({
         state={goalState}
         onAction={goalAction}
         results={gg.goalResults}
-        modelOption={daemon.providerConfigs.ggcoder?.find((option) => option.id === "model")}
+        modelOption={daemon.providerConfigs[GOALS_AGENT_OF[activeGoalsId ?? "gg-goals"] ?? "ggcoder"]?.find((option) => option.id === "model")}
         onClose={closeGoalSettings}
         browse={daemon.browse}
         onBrowse={browseWorkspaces}

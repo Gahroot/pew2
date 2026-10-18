@@ -2,8 +2,10 @@
  * The empty state: Pew, the greeting or the reason there is none, and the
  * agent's recent chats. Centred in what the keyboard leaves of the screen.
  */
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { Keyboard, Pressable } from "react-native";
+import { theme } from "../theme";
+import { homeMaxHeight } from "../homeFit";
 import Reanimated, { FadeIn } from "react-native-reanimated";
 import { styles } from "../appStyles";
 import type { Provider, useDaemon } from "../useDaemon";
@@ -23,6 +25,7 @@ export function HomeView({
   openSession,
   greeting,
   emptyReason,
+  bottomClearance,
 }: {
   daemon: ReturnType<typeof useDaemon>;
   keyboard: ReturnType<typeof useKeyboardLift>;
@@ -36,7 +39,16 @@ export function HomeView({
   openSession: (id: string) => void;
   greeting: string;
   emptyReason: (providerCount: number) => string;
+  /**
+   * How much of this view's bottom the composer covers with the keyboard down.
+   * The resting height only: the decision must not change while you type, or
+   * the block would re-centre under the keyboard's animation.
+   */
+  bottomClearance: number;
 }) {
+  // The body the greeting is centred in. The keyboard moves it by a transform,
+  // never a resize, so this holds still while typing.
+  const [bodyHeight, setBodyHeight] = useState(0);
   return (
           // Cancels half the pane's lift, so the greeting settles in the middle
           // of the shrunken screen instead of riding the composer all the way up.
@@ -49,6 +61,10 @@ export function HomeView({
               accessibilityRole="button"
               accessibilityLabel="Dismiss keyboard"
               onPress={Keyboard.dismiss}
+              onLayout={(e) => {
+                const height = Math.round(e.nativeEvent.layout.height);
+                setBodyHeight((prev) => (prev === height ? prev : height));
+              }}
             >
               {/* Not scaled as a whole any more: HomeGreeting dissolves its text
                   away and shrinks only Pew while the keyboard is up.
@@ -73,6 +89,7 @@ export function HomeView({
                   smiling={pewSmiling}
                   chats={homeChats}
                   onOpenChat={openSession}
+                  maxHeight={homeMaxHeight(bodyHeight, bottomClearance, theme.space(2))}
                   /* A refusal the daemon explained outranks the connecting
                     state: reconnecting cannot fix a rotated key or a version
                     mismatch, so "Connecting..." would loop forever while

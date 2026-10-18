@@ -11,7 +11,7 @@
  * client, which is the point of the daemon owning the log: a phone and a
  * desktop watching one session both need the update.
  */
-import { GG_GOALS_ID, type Daemon, type PromptOutcome } from "./index.js";
+import { GG_GOALS_ID, isGoalsId, type Daemon, type PromptOutcome } from "./index.js";
 import { humanError } from "./errors.js";
 import { loadImage } from "./images.js";
 import { workspaceStatus } from "./git.js";
@@ -209,7 +209,7 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
         // conversation comes first — it is the authority on where its own
         // session lives, it needs no client to be up to date, and it is right
         // even for an older app that sends no `cwd` at all.
-        if (message.providerId === GG_GOALS_ID && !(message.cwd && daemon.isGoalFolder(message.cwd))) {
+        if (isGoalsId(message.providerId) && !(message.cwd && daemon.isGoalFolder(message.cwd, message.providerId))) {
           reply({ t: "error", code: "not_a_goal", message: NOT_A_GOAL });
           break;
         }
@@ -231,7 +231,7 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
       }
 
       case "session.start": {
-        if (message.providerId === GG_GOALS_ID && !(message.cwd && daemon.isGoalFolder(message.cwd))) {
+        if (isGoalsId(message.providerId) && !(message.cwd && daemon.isGoalFolder(message.cwd, message.providerId))) {
           reply({ t: "error", code: "not_a_goal", message: NOT_A_GOAL });
           break;
         }
@@ -483,7 +483,7 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
       }
 
       case "plan.decide": {
-        if (daemon.sessionProvider(message.sessionId) === GG_GOALS_ID) {
+        if (isGoalsId(daemon.sessionProvider(message.sessionId))) {
           reply({ t: "error", code: "unsupported", message: "Plans are for GG Coder conversations." });
           break;
         }
@@ -522,10 +522,12 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
 
       case "goals": {
         // A missing or too-old GG Coder is an answer, not a failure.
+        // No `providerIds` (an older app) gets exactly today's gg-only frame.
+        const named = message.providerIds ? { providerIds: message.providerIds } : {};
         try {
-          reply({ t: "goals", requestId: message.requestId, goals: await daemon.listGoals() });
+          reply({ t: "goals", requestId: message.requestId, goals: await daemon.listGoals(message.providerIds), ...named });
         } catch (error) {
-          reply({ t: "goals", requestId: message.requestId, goals: [], error: humanError(error) });
+          reply({ t: "goals", requestId: message.requestId, goals: [], error: humanError(error), ...named });
         }
         break;
       }
@@ -540,9 +542,9 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
             goal: message.goal,
             context: [...message.context, ...filePaths],
             instructions: message.instructions,
-          });
+          }, message.providerId ?? GG_GOALS_ID);
           reply({ t: "goal.result", requestId: message.requestId, ok: true, goal, files: filePaths.length });
-          await broadcastGoals(ctx);
+          await broadcastGoals(ctx, goal.providerId ?? GG_GOALS_ID);
         } catch (error) {
           reply({ t: "goal.result", requestId: message.requestId, ok: false, error: humanError(error) });
         }
@@ -551,21 +553,30 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
 
       case "goal.action": {
         try {
+          // An older app names no backend: the goal's own (gg-goals first) is
+          // where it acts and which list is broadcast after.
+          const goalsId =
+            message.providerId ?? (await daemon.findGoal(message.goalId)).providerId ?? GG_GOALS_ID;
           const goal =
             message.action === "resume"
-              ? await resumeGoal(ctx, message.goalId)
-              : await daemon.goalAction(message.goalId, message.action, {
-                  context: message.context,
-                  instructions: message.instructions,
-                  model: message.model,
-                });
+              ? await resumeGoal(ctx, message.goalId, goalsId)
+              : await daemon.goalAction(
+                  message.goalId,
+                  message.action,
+                  {
+                    context: message.context,
+                    instructions: message.instructions,
+                    model: message.model,
+                  },
+                  goalsId,
+                );
           reply({
             t: "goal.result",
             requestId: message.requestId,
             ok: true,
             ...(goal ? { goal } : {}),
           });
-          await broadcastGoals(ctx);
+          await broadcastGoals(ctx, goalsId);
         } catch (error) {
           reply({ t: "goal.result", requestId: message.requestId, ok: false, error: humanError(error) });
         }
@@ -726,10 +737,10 @@ function openResumed(
   return { sessionId: pending.sessionId, ready: opened };
 }
 
-/** Every client's goal list moves after a change. Best effort. */
-async function broadcastGoals(ctx: HandlerContext) {
+/** Every client's goal list for one backend moves after a change. Best effort. */
+async function broadcastGoals(ctx: HandlerContext, goalsId: string) {
   try {
-    ctx.broadcast({ t: "goals", goals: await ctx.daemon.listGoals() });
+    ctx.broadcast({ t: "goals", goals: await ctx.daemon.listGoals([goalsId]), providerIds: [goalsId] });
   } catch {
     // The reply already said what happened; a failed refresh changes nothing.
   }
@@ -740,21 +751,22 @@ async function broadcastGoals(ctx: HandlerContext) {
  * turn on the goal's open session — opening one first through the ordinary
  * start/resume flows when none is.
  */
-async function resumeGoal(ctx: HandlerContext, goalId: string): Promise<wire.GoalSummary> {
+async function resumeGoal(ctx: HandlerContext, goalId: string, goalsId?: string): Promise<wire.GoalSummary> {
   const { daemon } = ctx;
-  const goal = await daemon.findGoal(goalId);
+  const goal = await daemon.findGoal(goalId, goalsId);
+  const providerId = goal.providerId ?? GG_GOALS_ID;
   let sessionId = goal.sessionId;
   if (!sessionId) {
     // The folder is a known project: listing the goal published it.
     const opened = goal.agentSessionId
-      ? openResumed(ctx, GG_GOALS_ID, goal.agentSessionId, goal.path)
-      : await openStarted(ctx, GG_GOALS_ID, goal.path);
+      ? openResumed(ctx, providerId, goal.agentSessionId, goal.path)
+      : await openStarted(ctx, providerId, goal.path);
     const kickedOff = "ready" in opened ? await opened.ready : opened.kickedOff;
     sessionId = opened.sessionId;
     // Its kickoff turn is already carrying it on.
-    if (kickedOff) return daemon.findGoal(goalId);
+    if (kickedOff) return daemon.findGoal(goalId, providerId);
     if (!daemon.sessionCwd(sessionId)) throw new Error("Could not open the goal.");
   }
   runTurn(ctx, sessionId, daemon.prompt(sessionId, "", [], { goalTurn: "resume" }));
-  return daemon.findGoal(goalId);
+  return daemon.findGoal(goalId, providerId);
 }

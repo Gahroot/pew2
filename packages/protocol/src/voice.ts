@@ -115,6 +115,53 @@ export const VoiceAttachment = z.object({
 });
 export type VoiceAttachment = z.output<typeof VoiceAttachment>;
 
+/**
+ * How far an EZ Coder goal run has got, read from ezcoder's own durable goal
+ * state (`~/.ezcoder/goals/projects/<hash>/goals.json`). A goal is not one
+ * agent turn: it keeps going across turns until its verifier and final audit
+ * pass, so a finished turn says nothing about whether the goal is done.
+ *
+ * Every string is already speakable (no paths, ids or code). Evidence, not a
+ * verdict: `status: "passed"` is what the agent recorded.
+ */
+export const VoiceGoalProgress = z.object({
+  /** ezcoder's goal run id, once the run exists. */
+  runId: z.string().optional(),
+  title: z.string().optional(),
+  /** The run's own status: draft, blocked, ready, running, verifying, passed, failed, paused. */
+  status: z.string().optional(),
+  /** Milestones finished (or criteria with evidence, when the run has no milestones). */
+  done: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  /**
+   * What `done`/`total` count. Absent (an older daemon) means milestones.
+   * "criteria" is a run with no milestones: its success criteria are met all
+   * together or not yet, so a partial count is never claimed.
+   */
+  unit: z.enum(["milestones", "criteria"]).optional(),
+  /** The milestone being worked now, when one is. */
+  active: z.string().optional(),
+  /** The verifier's last result, when fresh. */
+  verified: z.enum(["pass", "fail", "none"]).optional(),
+  /** What the user has to do or supply, when anything. */
+  needsYou: z.string().optional(),
+  /** The next step, as ezcoder's own goal controller would pick it. */
+  next: z.string().optional(),
+  /** One spoken paragraph covering all of the above. */
+  say: z.string().optional(),
+});
+export type VoiceGoalProgress = z.output<typeof VoiceGoalProgress>;
+
+/** An open question the agent asked (its `ask_user` tool), waiting on the user. */
+export const VoiceQuestion = z.object({
+  requestId: z.string(),
+  /** Speakable question text. */
+  text: z.string(),
+  /** Option labels, when it offered choices. */
+  options: z.array(z.string()).optional(),
+});
+export type VoiceQuestion = z.output<typeof VoiceQuestion>;
+
 export const VoiceTask = z.object({
   taskId: z.string(),
   projectId: z.string(),
@@ -144,6 +191,10 @@ export const VoiceTask = z.object({
    * project of its own. Absent for an ordinary checkout and from older daemons.
    */
   repo: VoiceRepo.optional(),
+  /** Set on a task that runs an EZ Coder goal. Absent for an ordinary task and from older daemons. */
+  goal: VoiceGoalProgress.optional(),
+  /** An open question from the agent. Absent when none, and from older daemons. */
+  question: VoiceQuestion.optional(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
@@ -204,8 +255,26 @@ export const VoiceEvent = z.object({
   at: z.number().int(),
   /** The task's repository when it runs on a worktree branch; see `VoiceRepo`. */
   repo: VoiceRepo.optional(),
+  /** What changed in a goal run, on events a goal task emits. Absent otherwise and from older daemons. */
+  goal: z
+    .object({
+      runId: z.string().optional(),
+      change: z.enum([
+        "setup",
+        "milestone_done",
+        "milestone_failed",
+        "verifier_pass",
+        "verifier_fail",
+        "needs_you",
+        "passed",
+        "failed",
+        "stalled",
+      ]),
+    })
+    .optional(),
 });
 export type VoiceEvent = z.output<typeof VoiceEvent>;
+export type VoiceGoalChange = NonNullable<VoiceEvent["goal"]>["change"];
 
 /** Compact state the model starts a fresh session with. Keep it small. */
 export const VoiceSnapshot = z.object({
@@ -217,6 +286,22 @@ export const VoiceSnapshot = z.object({
   unheard: z.array(VoiceEvent).default([]),
   /** A line about why this session started, e.g. "Opened from a notification: pew2 finished". */
   opening: z.string().optional(),
+  /**
+   * What happened since the user last listened, counted, plus the sentence the
+   * model opens with. `say` is absent when nothing is worth saying. The whole
+   * field is absent from older daemons.
+   */
+  checkin: z
+    .object({
+      say: z.string().optional(),
+      finished: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      needsYou: z.number().int().nonnegative(),
+      milestones: z.number().int().nonnegative(),
+      /** DAVE projects with a new top recommendation, by name only. */
+      dave: z.array(z.string()),
+    })
+    .optional(),
 });
 export type VoiceSnapshot = z.output<typeof VoiceSnapshot>;
 

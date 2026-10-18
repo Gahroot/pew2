@@ -10,13 +10,16 @@
  * touches DAVE.
  *
  * Three rules:
- *  - GET only, loopback only. DAVE holds private client and meeting data, so a
- *    non-local `PEW2_DAVE_URL` fails closed rather than being followed.
+ *  - Loopback only. DAVE holds private client and meeting data, so a
+ *    non-local `PEW2_DAVE_URL` fails closed rather than being followed. Reads
+ *    are GETs; the only POSTs are an allow-list of DAVE's own records
+ *    (clean-up, undo, its prepared next action), each behind a spoken yes.
  *  - The model sees summaries, never DAVE's raw JSON: quotes, emails, links and
  *    provenance stay behind, and every string passes `speakable()`.
  *  - Delegation always asks first (a single-use confirm token) and only ever
  *    starts EZ Coder. DAVE itself never launches anything.
  */
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Orchestrator } from "./dispatcher.js";
 import { repoOf, resolveProject } from "./registry.js";
@@ -57,30 +60,107 @@ export function daveConfig(env: NodeJS.ProcessEnv): DaveConfig {
 // ---- client ----------------------------------------------------------------
 
 export type DaveGet<T> =
-  { ok: true; value: T } | { ok: false; say: string; unavailable?: true; notFound?: true };
+  | { ok: true; value: T }
+  | { ok: false; say: string; unavailable?: true; notFound?: true; stale?: true };
 
 const UNAVAILABLE = "DAVE isn't running on the computer.";
 
-/** Read-only, bounded GETs against DAVE's loopback API. */
+/**
+ * The only paths voice may POST to: DAVE's own records (clean-up, its prepared
+ * next action, a review suggestion). Nothing here can start work.
+ */
+const POST_PATHS = [
+  /^\/api\/triage\/(?:preview|apply|undo)$/,
+  /^\/api\/intel\/next\/[a-f0-9]{16}\/act$/,
+  /^\/api\/intel\/recommendations\/suggestions\/apply$/,
+];
+export const davePostAllowed = (path: string): boolean => POST_PATHS.some((re) => re.test(path));
+const CSRF_PATH = "/api/security/csrf";
+const CSRF_HEADER = "x-dave-csrf";
+const CsrfSchema = z.object({ token: z.string().min(1).max(512) }).passthrough();
+
+type Schema<T> = z.ZodType<T, z.ZodTypeDef, unknown>;
+type Sent = { ok: true; response: Response } | { ok: false; say: string; unavailable?: true };
+
+/** Bounded GETs against DAVE's loopback API, and POSTs only to an allow-list of DAVE's own records. */
 export class DaveClient {
+  /** DAVE's CSRF token for this origin, fetched on the first POST. */
+  private csrf: string | undefined;
+
   constructor(
     private readonly config: Exclude<DaveConfig, { off: true }>,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly timeoutMs = TIMEOUT_MS,
   ) {}
 
-  async get<T>(path: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<DaveGet<T>> {
+  async get<T>(
+    path: string,
+    schema: Schema<T>,
+    options: { timeoutMs?: number } = {},
+  ): Promise<DaveGet<T>> {
+    if ("refused" in this.config) return { ok: false, say: this.config.refused };
+    const sent = await this.send("GET", path, undefined, options.timeoutMs);
+    return sent.ok ? this.parse(sent.response, schema) : sent;
+  }
+
+  /**
+   * A JSON POST to one of `POST_PATHS`, with DAVE's exact Origin and its CSRF
+   * token (fetched once per client, fetched again once after a 403).
+   */
+  async post<T>(path: string, body: unknown, schema: Schema<T>): Promise<DaveGet<T>> {
+    if ("refused" in this.config) return { ok: false, say: this.config.refused };
+    if (!davePostAllowed(path)) return { ok: false, say: "Voice can't change that in DAVE." };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!this.csrf) {
+        const token = await this.get(CSRF_PATH, CsrfSchema);
+        if (!token.ok) return token;
+        this.csrf = token.value.token;
+      }
+      const sent = await this.send("POST", path, { body: JSON.stringify(body), csrf: this.csrf });
+      if (!sent.ok) return sent;
+      if (sent.response.status === 403 && attempt === 0) {
+        await sent.response.body?.cancel().catch(() => undefined);
+        this.csrf = undefined;
+        continue;
+      }
+      if (sent.response.status === 409) {
+        await sent.response.body?.cancel().catch(() => undefined);
+        return { ok: false, stale: true, say: "That changed in DAVE since; check the backlog again." };
+      }
+      if (sent.response.status === 400) {
+        await sent.response.body?.cancel().catch(() => undefined);
+        return { ok: false, say: "DAVE said that change isn't valid." };
+      }
+      return this.parse(sent.response, schema);
+    }
+    return { ok: false, say: "DAVE refused the request." };
+  }
+
+  private async send(
+    method: "GET" | "POST",
+    path: string,
+    post?: { body: string; csrf: string },
+    timeoutMs?: number,
+  ): Promise<Sent> {
     if ("refused" in this.config) return { ok: false, say: this.config.refused };
     const { origin } = this.config;
-    let response: Response;
     try {
-      response = await this.fetchImpl(`${origin}${path}`, {
-        method: "GET",
-        // DAVE's guard lets a non-browser read through only with its exact origin.
-        headers: { Origin: origin, Accept: "application/json" },
+      const response = await this.fetchImpl(`${origin}${path}`, {
+        method,
+        // DAVE's guard lets a non-browser client through only with its exact origin.
+        headers: post
+          ? {
+              Origin: origin,
+              Accept: "application/json",
+              "content-type": "application/json",
+              [CSRF_HEADER]: post.csrf,
+            }
+          : { Origin: origin, Accept: "application/json" },
+        ...(post ? { body: post.body } : null),
         redirect: "error",
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs ?? this.timeoutMs),
       });
+      return { ok: true, response };
     } catch (error) {
       const timedOut =
         error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
@@ -88,6 +168,9 @@ export class DaveClient {
         ? { ok: false, say: "DAVE didn't answer in time." }
         : { ok: false, say: UNAVAILABLE, unavailable: true };
     }
+  }
+
+  private async parse<T>(response: Response, schema: Schema<T>): Promise<DaveGet<T>> {
     if (response.status === 403) return { ok: false, say: "DAVE refused the request." };
     if (response.status === 404)
       return { ok: false, say: "DAVE doesn't know that one.", notFound: true };
@@ -322,6 +405,7 @@ export function overview(
   focus: Focus,
   meetings: z.output<typeof MeetingItemsSchema> | undefined,
   now: number,
+  briefing?: Briefing,
 ) {
   const dueSoon = [
     ...(meetings?.promises.filter((p) => p.status === "open").filter(soon(now)) ?? []).map((p) => ({
@@ -334,8 +418,17 @@ export function overview(
   ];
   const sources = degraded(focus);
   const queue = queueOf(focus);
+  const latest = briefing?.progress[0];
   return {
     available: true,
+    ...(briefing?.next ? { next: actionView(briefing.next) } : null),
+    ...(briefing
+      ? {
+          progress: latest
+            ? `${progressWindow(briefing)}: ${clean(latest.headline)}${briefing.progress.length > 1 ? ` (and ${briefing.progress.length - 1} more)` : ""}`
+            : `Nothing moved ${progressWindow(briefing)}.`,
+        }
+      : null),
     top: queue.slice(0, 3).map((o) => objectiveView(o, now)),
     ...(queue.length === 0 ? { note: "DAVE has no next actions yet." } : null),
     commitmentsDueSoon: byUrgency(dueSoon, now)
@@ -395,13 +488,227 @@ export function projectView(intel: z.output<typeof ProjectIntelSchema>, focus: F
   };
 }
 
+// ---- prepared actions, progress and review (DAVE's closed loop) -------------
+
+const OpSchema = z.object({ op: z.string() }).passthrough();
+
+export const PreparedActionSchema = z
+  .object({
+    id: z.string(),
+    projectId: z.string(),
+    projectName: z.string(),
+    kind: z.string(),
+    title: z.string(),
+    whyNow: z.string().nullish(),
+    effort: z.string().nullish(),
+    primary: z.object({ label: z.string(), op: OpSchema }).passthrough(),
+    secondary: z.array(z.object({ label: z.string(), op: OpSchema }).passthrough()).default([]),
+    draft: z
+      .object({ kind: z.string(), to: nstr, subject: nstr, text: z.string() })
+      .passthrough()
+      .nullish(),
+    doneWhen: z.array(z.string()).default([]),
+    missing: z.array(z.string()).default([]),
+    objectiveId: nstr,
+    uncertain: nstr,
+  })
+  .passthrough();
+type PreparedAction = z.output<typeof PreparedActionSchema>;
+
+export const NextStateSchema = z
+  .object({
+    action: PreparedActionSchema.nullish(),
+    queue: z.array(PreparedActionSchema).default([]),
+    skipped: z.number().default(0),
+  })
+  .passthrough();
+
+const ProgressSchema = z
+  .object({
+    projectName: z.string(),
+    at: z.string(),
+    headline: z.string(),
+    verdict: z.string(),
+    advanced: z.array(z.object({ title: z.string() }).passthrough()).default([]),
+    stillMissing: z.array(z.object({ title: z.string() }).passthrough()).default([]),
+    finishLine: z.object({ percentDone: z.number() }).passthrough().nullish(),
+  })
+  .passthrough();
+
+export const BriefingSchema = z
+  .object({
+    since: z.string(),
+    sinceSource: z.enum(["explicit", "last_asked", "default_24h"]),
+    next: PreparedActionSchema.nullish(),
+    alsoReady: z.array(PreparedActionSchema).default([]),
+    progress: z.array(ProgressSchema).default([]),
+    decisionsWaiting: z.number().default(0),
+    changedSince: z
+      .object({ objectiveChanges: z.number(), workEvents: z.number() })
+      .passthrough()
+      .nullish(),
+  })
+  .passthrough();
+type Briefing = z.output<typeof BriefingSchema>;
+
+export const ReviewSchema = z
+  .object({
+    days: z.number(),
+    totals: z.record(z.number()).default({}),
+    agreementRate: z.number().nullish(),
+    patterns: z.array(z.string()).default([]),
+    suggestions: z.array(z.object({ id: z.string(), text: z.string() }).passthrough()).default([]),
+  })
+  .passthrough();
+
+export const TriagePreviewSchema = z
+  .object({
+    entries: z
+      .array(
+        z
+          .object({
+            key: z.string(),
+            bucket: z.string(),
+            title: z.string(),
+            projectName: nstr,
+            meetingTitle: nstr,
+          })
+          .passthrough(),
+      )
+      .default([]),
+    total: z.number(),
+  })
+  .passthrough();
+export const TriageResultSchema = z
+  .object({ batchId: z.string().nullable(), changed: z.number(), summary: z.string() })
+  .passthrough();
+export const TriageUndoSchema = z
+  .object({ restored: z.number(), skipped: z.number() })
+  .passthrough();
+const BatchesSchema = z
+  .object({
+    batches: z
+      .array(
+        z
+          .object({ id: z.string(), summary: z.string(), undoneAt: z.string().nullable() })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** How Pew names the window DAVE chose: the cursor lives in DAVE, never here. */
+export function progressWindow(b: Pick<Briefing, "since" | "sinceSource">): string {
+  if (b.sinceSource === "last_asked") return "since you last asked";
+  if (b.sinceSource === "default_24h") return "in the last day";
+  const t = Date.parse(b.since);
+  if (Number.isNaN(t)) return "recently";
+  const d = new Date(t);
+  return `since ${MONTHS[d.getUTCMonth()] ?? ""} ${d.getUTCDate()}`;
+}
+
+export function actionView(a: PreparedAction) {
+  const handOff = a.primary.op.op === "hand_to_ezcoder";
+  return {
+    actionId: a.id,
+    project: clean(a.projectName, 60),
+    action: clean(a.title),
+    ...(a.whyNow ? { why: clean(a.whyNow) } : null),
+    yes: clean(a.primary.label, 80),
+    ...(handOff
+      ? { handOff: true, ...(a.objectiveId ? { objectiveId: a.objectiveId } : null) }
+      : null),
+    // The yes step is a copy the user makes on DAVE's screen; voice cannot do it.
+    ...(a.primary.op.op === "copy" ? { copyInDave: true } : null),
+    ...(a.draft ? { draftReady: clean(a.draft.kind, 20) } : null),
+    ...(a.doneWhen.length ? { doneWhen: a.doneWhen.slice(0, 3).map((d) => clean(d, 120)) } : null),
+    ...(a.missing.length ? { notConfirmed: a.missing.slice(0, 2).map((d) => clean(d, 120)) } : null),
+    ...(a.uncertain ? { uncertain: clean(a.uncertain, 120) } : null),
+  };
+}
+
+function progressItem(r: z.output<typeof ProgressSchema>) {
+  return {
+    project: clean(r.projectName, 60),
+    what: clean(r.headline),
+    ...(r.advanced.length ? { moved: r.advanced.slice(0, 3).map((x) => clean(x.title, 100)) } : null),
+    ...(r.stillMissing.length
+      ? { stillMissing: r.stillMissing.slice(0, 3).map((x) => clean(x.title, 100)) }
+      : null),
+    ...(r.finishLine ? { percentDone: Math.round(r.finishLine.percentDone) } : null),
+  };
+}
+
+export function nextView(state: z.output<typeof NextStateSchema>) {
+  const first = state.action ?? state.queue[0];
+  if (!first)
+    return { available: true, note: "DAVE has nothing prepared right now." };
+  const others = state.queue.filter((a) => a.id !== first.id).slice(0, 2);
+  return {
+    available: true,
+    recommendation: actionView(first),
+    ...(others.length ? { alternatives: others.map(actionView) } : null),
+    ...(state.skipped ? { skipped: state.skipped } : null),
+    note: "DAVE's recommendation. Ask one yes or no; act_on_backlog makes the change.",
+  };
+}
+
+export function progressView(b: Briefing) {
+  const window = progressWindow(b);
+  return {
+    available: true,
+    window,
+    ...(b.progress.length
+      ? { moved: b.progress.slice(0, 5).map(progressItem) }
+      : { note: `Nothing moved ${window}.` }),
+    ...(b.progress.length > 5 ? { more: b.progress.length - 5 } : null),
+    ...(b.next ? { next: actionView(b.next) } : null),
+    decisionsWaiting: b.decisionsWaiting,
+  };
+}
+
+export function reviewView(r: z.output<typeof ReviewSchema>) {
+  return {
+    available: true,
+    days: r.days,
+    agreement:
+      r.agreementRate === null || r.agreementRate === undefined
+        ? "not enough yet"
+        : `${Math.round(r.agreementRate * 100)} percent followed`,
+    totals: Object.fromEntries(Object.keys(r.totals).sort().map((k) => [k, r.totals[k] ?? 0])),
+    patterns: r.patterns.slice(0, 3).map((p) => clean(p)),
+    suggestions: r.suggestions.slice(0, 3).map((x) => clean(x.text)),
+  };
+}
+
 // ---- tools -----------------------------------------------------------------
 //
 // Named for what they do, the user's to-do list, never "dave": `~/dave` is
 // also a project in the registry, and a tool called check_with_dave sat right
 // beside start_task's "dave" for the model to confuse.
 
-export const BACKLOG_TOOL_NAMES = ["check_backlog", "delegate_backlog_item"] as const;
+/** DAVE's clean-up buckets (src/triage/types.ts). */
+const TRIAGE_BUCKETS = [
+  "overdue_promises",
+  "stale_promises",
+  "looks_done",
+  "old_asks",
+  "meeting_decisions",
+  "ideas",
+] as const;
+
+export const BACKLOG_TOOL_NAMES = [
+  "check_backlog",
+  "delegate_backlog_item",
+  "act_on_backlog",
+  "clean_up_backlog",
+  "undo_backlog_clean_up",
+] as const;
 
 /**
  * The names these tools had before, mapped to today's. A Realtime session
@@ -435,9 +742,9 @@ export const BACKLOG_TOOLS = [
       properties: {
         about: {
           type: "string",
-          enum: ["overview", "priorities", "commitments", "project"],
+          enum: ["overview", "next", "progress", "priorities", "commitments", "project", "review"],
           description:
-            "overview (default), ranked priorities (the backlog: the to-do list and what's next), meeting commitments, or one project.",
+            "overview (default), next (DAVE's one prepared next action plus two alternatives; use for 'what should I do next'), progress (what moved and what's still missing since the user last asked), ranked priorities (the to-do list), meeting commitments, one project, or review (how often DAVE's recommendations were followed).",
         },
         project: { type: "string", description: "Spoken project name, for about=project." },
       },
@@ -465,6 +772,77 @@ export const BACKLOG_TOOLS = [
         },
       },
       required: ["objectiveId"],
+    },
+  },
+  {
+    type: "function",
+    name: "act_on_backlog",
+    description:
+      "Change DAVE's own records for one prepared action from check_backlog (next): do its yes step, skip it, or defer it. Never starts coding work: a hand-off to EZ Coder is delegate_backlog_item. A copy step (copyInDave) is done on DAVE's own screen: this says where the draft is and changes nothing, so never say it was copied. Every other change needs a yes: call once to get a confirmToken and question, ask it, and call again with confirmToken and userConfirmed true only after the user says yes.",
+    parameters: {
+      type: "object",
+      properties: {
+        actionId: { type: "string", description: "actionId from check_backlog." },
+        choice: { type: "string", enum: ["primary", "skip", "defer"] },
+        reason: { type: "string", description: "Why, for skip or defer, in the user's words." },
+        until: { type: "string", description: "YYYY-MM-DD, required for defer." },
+        confirmToken: { type: "string", description: "Token from the first call." },
+        userConfirmed: {
+          type: "boolean",
+          description: "True only if the user just said yes out loud.",
+        },
+      },
+      required: ["actionId", "choice"],
+    },
+  },
+  {
+    type: "function",
+    name: "clean_up_backlog",
+    description:
+      "Clear (or mark done) noise in DAVE: overdue or stale meeting promises, items that look done, old client asks, drafted decisions and ideas that never became promises. Only when the user asks. First call previews and returns keys, a confirmToken and a question; ask it, then call again with the same keys, confirmToken and userConfirmed true only after a yes. Exactly the previewed items change; it can be undone.",
+    parameters: {
+      type: "object",
+      properties: {
+        buckets: {
+          type: "array",
+          items: { type: "string", enum: [...TRIAGE_BUCKETS] },
+          description: "Kinds of noise; all when omitted.",
+        },
+        project: { type: "string", description: "Spoken project name." },
+        meeting: { type: "string", description: "Words from the meeting's title." },
+        olderThanDays: { type: "integer", minimum: 0, maximum: 3650 },
+        text: { type: "string", description: "Only items containing these words." },
+        action: { type: "string", enum: ["clear", "done"] },
+        keys: {
+          type: "array",
+          items: { type: "string" },
+          description: "Second call only: the keys from the preview, unchanged.",
+        },
+        confirmToken: { type: "string", description: "Token from the first call." },
+        userConfirmed: {
+          type: "boolean",
+          description: "True only if the user just said yes out loud.",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    type: "function",
+    name: "undo_backlog_clean_up",
+    description:
+      "Undo a clean-up in DAVE (the latest when no batchId). Needs a yes: call once for a confirmToken and question, then again with userConfirmed true after the user says yes.",
+    parameters: {
+      type: "object",
+      properties: {
+        batchId: { type: "string", description: "batchId from clean_up_backlog." },
+        confirmToken: { type: "string", description: "Token from the first call." },
+        userConfirmed: {
+          type: "boolean",
+          description: "True only if the user just said yes out loud.",
+        },
+      },
+      required: [],
     },
   },
 ] as const;
@@ -502,18 +880,44 @@ function daveProjects(focus: Focus): VoiceProject[] {
 /** Pinned by DAVE's routes: only these ids are ever put in a path. */
 const PROJECT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const OBJECTIVE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const ACTION_ID = /^[a-f0-9]{16}$/;
+const BATCH_ID = /^tb-[0-9a-f]{24}$/;
+const TRIAGE_KEY = /^(?:m:[A-Za-z0-9_-]{8,128}|p:[A-Za-z0-9_-]{8,128})$/;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+/** DAVE keeps "when Pew last asked" itself, so Pew holds no timestamp. */
+const BRIEFING_PATH = "/api/intel/briefing?caller=pew";
 
 async function check(args: Record<string, unknown>, ctx: BacklogToolContext): Promise<ToolResult> {
   const about = arg(args, "about", 20) ?? "overview";
   const now = ctx.now();
   switch (about) {
     case "overview": {
-      const [focus, meetings] = await Promise.all([
+      const [focus, meetings, briefing] = await Promise.all([
         ctx.client.get("/api/intel/focus", FocusSchema),
         ctx.client.get("/api/meetings/items", MeetingItemsSchema),
+        ctx.client.get(BRIEFING_PATH, BriefingSchema),
       ]);
       if (!focus.ok) return unavailable(focus.say);
-      return good(overview(focus.value, meetings.ok ? meetings.value : undefined, now));
+      return good(
+        overview(
+          focus.value,
+          meetings.ok ? meetings.value : undefined,
+          now,
+          briefing.ok ? briefing.value : undefined,
+        ),
+      );
+    }
+    case "next": {
+      const next = await ctx.client.get("/api/intel/next", NextStateSchema);
+      return next.ok ? good(nextView(next.value)) : unavailable(next.say);
+    }
+    case "progress": {
+      const briefing = await ctx.client.get(BRIEFING_PATH, BriefingSchema);
+      return briefing.ok ? good(progressView(briefing.value)) : unavailable(briefing.say);
+    }
+    case "review": {
+      const review = await ctx.client.get("/api/intel/recommendations/review?days=30", ReviewSchema);
+      return review.ok ? good(reviewView(review.value)) : unavailable(review.say);
     }
     case "priorities": {
       const focus = await ctx.client.get("/api/intel/focus", FocusSchema);
@@ -559,7 +963,7 @@ async function check(args: Record<string, unknown>, ctx: BacklogToolContext): Pr
       return intel.ok ? good(projectView(intel.value, focus.value, now)) : unavailable(intel.say);
     }
     default:
-      return fail("about must be overview, priorities, commitments or project.");
+      return fail("about must be overview, next, progress, priorities, commitments, project or review.");
   }
 }
 
@@ -676,6 +1080,195 @@ async function delegate(
   return good({ delegated: true, task: taskView(ctx.store, task) });
 }
 
+/** Ask first; true only for a redeemed token on a spoken yes. */
+function confirmed(args: Record<string, unknown>, ctx: BacklogToolContext, subject: string): boolean {
+  return args.userConfirmed === true && ctx.confirm.redeem(arg(args, "confirmToken", 40), subject);
+}
+
+/** Pew asks, DAVE records. Never enqueues anything: a hand-off is delegate_backlog_item. */
+async function act(args: Record<string, unknown>, ctx: BacklogToolContext): Promise<ToolResult> {
+  const actionId = arg(args, "actionId", 20);
+  if (!actionId || !ACTION_ID.test(actionId))
+    return fail("That is not one of DAVE's prepared actions. Check the backlog again.");
+  const choice = arg(args, "choice", 10);
+  if (choice !== "primary" && choice !== "skip" && choice !== "defer")
+    return fail("choice must be primary, skip or defer.");
+  const until = arg(args, "until", 10);
+  if (choice === "defer" && (!until || !DATE_ONLY.test(until) || Number.isNaN(Date.parse(until))))
+    return fail("Defer needs a date (YYYY-MM-DD).");
+  const reason = arg(args, "reason", 300);
+  const next = await ctx.client.get("/api/intel/next", NextStateSchema);
+  if (!next.ok) return unavailable(next.say);
+  const all = [...(next.value.action ? [next.value.action] : []), ...next.value.queue];
+  const action = all.find((a) => a.id === actionId);
+  if (!action)
+    return good({ acted: false, stale: true, say: "DAVE's recommendation changed; check the backlog again." });
+  const title = clean(action.title);
+  if (choice === "primary" && action.primary.op.op === "hand_to_ezcoder")
+    return good({
+      acted: false,
+      handOff: true,
+      ...(action.objectiveId ? { objectiveId: action.objectiveId } : null),
+      say: "That one is coding work for EZ Coder; offer delegate_backlog_item instead.",
+    });
+  // A copy happens on DAVE's own screen and DAVE records nothing for it, so there
+  // is no yes to ask for and nothing to post. Saying where the draft is keeps the
+  // model from telling the user it was copied. Its text never comes through here.
+  if (choice === "primary" && action.primary.op.op === "copy")
+    return good({
+      acted: false,
+      copyInDave: true,
+      say: action.draft
+        ? `The ${clean(action.draft.kind, 20)} is ready to copy in DAVE; nothing was copied.`
+        : "It's ready to copy in DAVE; nothing was copied.",
+    });
+  const subject = `dave-act:${actionId}:${choice}`;
+  if (!confirmed(args, ctx, subject)) {
+    const question =
+      choice === "primary"
+        ? `${clean(action.primary.label, 80)} for ${clean(action.projectName, 60)}: ${title}?`
+        : choice === "skip"
+          ? `Skip DAVE's recommendation for now: ${title}?`
+          : `Put off until ${until}: ${title}?`;
+    return good({ needsConfirmation: true, confirmToken: ctx.confirm.issue(subject), question });
+  }
+  const body =
+    choice === "primary"
+      ? { op: action.primary.op.op }
+      : choice === "skip"
+        ? { op: "skip", ...(reason ? { note: reason } : null) }
+        : { op: "defer", date: until, ...(reason ? { note: reason } : null) };
+  const r = await ctx.client.post(
+    `/api/intel/next/${actionId}/act`,
+    body,
+    z.object({ summary: z.string().default("") }).passthrough(),
+  );
+  if (!r.ok)
+    return r.stale
+      ? good({ acted: false, stale: true, say: "That's out of date in DAVE; check the backlog again." })
+      : unavailable(r.say);
+  return good({ acted: true, say: clean(r.value.summary) || `Done: ${title}.` });
+}
+
+function countBy(values: readonly string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const v of [...values].sort()) out[v] = (out[v] ?? 0) + 1;
+  return out;
+}
+
+const cleanSubject = (keys: readonly string[], action: string) =>
+  `dave-clean:${createHash("sha256").update([...keys].sort().join("\n")).digest("hex")}:${action}`;
+
+async function cleanUp(args: Record<string, unknown>, ctx: BacklogToolContext): Promise<ToolResult> {
+  const action = arg(args, "action", 10) ?? "clear";
+  if (action !== "clear" && action !== "done") return fail("action must be clear or done.");
+
+  // Step 2: exactly the keys the user heard about, bound to the token by their hash.
+  if (args.confirmToken !== undefined) {
+    const raw = args.keys;
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 1000)
+      return fail("Send back the keys from the preview.");
+    const keys = raw.filter((k): k is string => typeof k === "string" && TRIAGE_KEY.test(k));
+    if (keys.length !== raw.length) return fail("Those keys are not from DAVE's preview.");
+    if (!confirmed(args, ctx, cleanSubject(keys, action)))
+      return good({ cleaned: false, say: "That needs a fresh yes; preview it again." });
+    const r = await ctx.client.post("/api/triage/apply", { keys, action }, TriageResultSchema);
+    if (!r.ok)
+      return r.stale ? good({ cleaned: false, stale: true, say: r.say }) : unavailable(r.say);
+    return good({
+      cleaned: r.value.changed > 0,
+      ...(r.value.batchId ? { batchId: r.value.batchId } : null),
+      say: `${clean(r.value.summary)}${r.value.batchId ? " It can be undone." : ""}`,
+    });
+  }
+
+  const filter: Record<string, unknown> = {};
+  if (args.buckets !== undefined) {
+    const list = Array.isArray(args.buckets) ? args.buckets : [];
+    const buckets = TRIAGE_BUCKETS.filter((b) => list.includes(b));
+    if (buckets.length !== list.length || !buckets.length) return fail("Unknown kind of noise.");
+    filter.buckets = buckets;
+  }
+  if (args.olderThanDays !== undefined) {
+    const d = args.olderThanDays;
+    if (typeof d !== "number" || !Number.isInteger(d) || d < 0 || d > 3650)
+      return fail("olderThanDays should be a whole number of days.");
+    filter.olderThanDays = d;
+  }
+  const words = arg(args, "text", 200);
+  if (words) filter.text = words;
+  const projectQuery = arg(args, "project", 100);
+  if (projectQuery) {
+    const focus = await ctx.client.get("/api/intel/focus", FocusSchema);
+    if (!focus.ok) return unavailable(focus.say);
+    const r = resolveProject(projectQuery, daveProjects(focus.value));
+    if (!r.best)
+      return good({
+        needsClarification: true,
+        reason: r.candidates.length ? "Several of DAVE's projects match." : "DAVE has no project by that name.",
+        ...(r.candidates.length ? { question: didYouMean(r.candidates.map((c) => c.project.name)) } : null),
+      });
+    filter.projectId = r.best.projectId;
+  }
+  const preview = await ctx.client.post("/api/triage/preview", { filter }, TriagePreviewSchema);
+  if (!preview.ok) return unavailable(preview.say);
+  let entries = preview.value.entries;
+  const meeting = arg(args, "meeting", 100)?.toLowerCase();
+  if (meeting) {
+    entries = entries.filter((e) => e.meetingTitle?.toLowerCase().includes(meeting));
+    const titles = [...new Set(entries.map((e) => clean(e.meetingTitle, 60)))].sort();
+    if (titles.length > 1)
+      return good({ needsClarification: true, reason: "Several meetings match.", question: didYouMean(titles) });
+  }
+  entries = entries.filter((e) => TRIAGE_KEY.test(e.key)).slice(0, 1000);
+  if (!entries.length) return good({ cleaned: false, say: "Nothing matches that, so there is nothing to clean up." });
+  const keys = entries.map((e) => e.key);
+  const n = keys.length;
+  const examples = entries.slice(0, 3).map((e) => clean(e.title, 100));
+  return good({
+    needsConfirmation: true,
+    confirmToken: ctx.confirm.issue(cleanSubject(keys, action)),
+    question: `${action === "clear" ? "Clear" : "Mark done"} ${n} item${n === 1 ? "" : "s"} in DAVE, for example ${examples.slice(0, 2).join(" and ")}? It can be undone.`,
+    total: n,
+    byBucket: countBy(entries.map((e) => e.bucket)),
+    byProject: countBy(entries.map((e) => clean(e.projectName, 60) || "no project")),
+    examples,
+    keys,
+    action,
+  });
+}
+
+async function undoCleanUp(
+  args: Record<string, unknown>,
+  ctx: BacklogToolContext,
+): Promise<ToolResult> {
+  let batchId = arg(args, "batchId", 40);
+  let summary: string | undefined;
+  if (batchId && !BATCH_ID.test(batchId)) return fail("That is not one of DAVE's clean-ups.");
+  if (!batchId) {
+    const list = await ctx.client.get("/api/triage/batches", BatchesSchema);
+    if (!list.ok) return unavailable(list.say);
+    const latest = list.value.batches.find((b) => b.undoneAt === null && BATCH_ID.test(b.id));
+    if (!latest) return good({ undone: false, say: "There is no clean-up to undo." });
+    batchId = latest.id;
+    summary = clean(latest.summary);
+  }
+  const subject = `dave-undo:${batchId}`;
+  if (!confirmed(args, ctx, subject))
+    return good({
+      needsConfirmation: true,
+      confirmToken: ctx.confirm.issue(subject),
+      batchId,
+      question: summary ? `Undo the clean-up: ${summary}?` : "Undo that clean-up in DAVE?",
+    });
+  const r = await ctx.client.post("/api/triage/undo", { batchId }, TriageUndoSchema);
+  if (!r.ok) return r.notFound ? good({ undone: false, say: "DAVE has no such clean-up." }) : unavailable(r.say);
+  return good({
+    undone: true,
+    say: `Restored ${r.value.restored} item${r.value.restored === 1 ? "" : "s"}.${r.value.skipped ? ` ${r.value.skipped} had changed since, so DAVE left them.` : ""}`,
+  });
+}
+
 /** Run one backlog tool, under its current or legacy name. Errors become results, like every other voice tool. */
 export function runBacklogTool(
   name: string,
@@ -685,5 +1278,73 @@ export function runBacklogTool(
   const tool = backlogToolName(name);
   if (tool === "check_backlog") return check(args, ctx);
   if (tool === "delegate_backlog_item") return delegate(args, ctx);
+  if (tool === "act_on_backlog") return act(args, ctx);
+  if (tool === "clean_up_backlog") return cleanUp(args, ctx);
+  if (tool === "undo_backlog_clean_up") return undoCleanUp(args, ctx);
   return Promise.resolve(fail(`Unknown tool '${name}'.`));
+}
+
+// ---- opening check-in --------------------------------------------------------
+//
+// The one unprompted contact with DAVE: a single read-only GET of the focus
+// list when a voice session opens, so the check-in can say "DAVE has a new
+// recommendation for X". Project names only; objective text never leaves here.
+
+/** `PEW2_DAVE_CHECKIN=off` keeps DAVE out of the opening check-in; `PEW2_DAVE=off` still removes everything. */
+export function daveCheckinEnabled(env: NodeJS.ProcessEnv): boolean {
+  const flag = env.PEW2_DAVE_CHECKIN?.trim().toLowerCase();
+  return !(flag === "off" || flag === "0" || flag === "false");
+}
+
+/** Per DAVE projectId, its current top objective and the project's display name. */
+export type DaveDigest = Record<string, { topObjectiveId: string; projectName: string }>;
+
+/**
+ * Exactly one GET to `/api/intel/focus` with a short timeout. A project's top
+ * objective is the first of its objectives in DAVE's ranked queue (`top` first).
+ * Undefined on any failure: the check-in just says nothing about DAVE.
+ */
+export async function daveDigest(
+  client: DaveClient,
+  timeoutMs = 1_500,
+): Promise<DaveDigest | undefined> {
+  try {
+    const focus = await client.get("/api/intel/focus", FocusSchema, { timeoutMs });
+    if (!focus.ok) return undefined;
+    const digest: DaveDigest = {};
+    for (const o of queueOf(focus.value)) {
+      if (Object.hasOwn(digest, o.projectId)) continue;
+      digest[o.projectId] = { topObjectiveId: o.id, projectName: o.projectName };
+    }
+    return digest;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Which DAVE projects have a new top recommendation since `prevSeen`
+ * (projectId → objectiveId, as stored in `CheckinState.daveSeen`), and the map
+ * to store next. First sight (no `prevSeen`) records silently. A project new
+ * to DAVE, or whose top changed, is named; names are cleaned and sorted.
+ * Without a digest the previous map is kept as it was.
+ */
+export function daveChanges(
+  prevSeen: Readonly<Record<string, string>> | undefined,
+  digest: DaveDigest | undefined,
+): { projects: string[]; seen: Record<string, string> | undefined } {
+  if (!digest) return { projects: [], seen: prevSeen ? { ...prevSeen } : undefined };
+  const seen: Record<string, string> = {};
+  const names = new Set<string>();
+  for (const id of Object.keys(digest).sort()) {
+    const entry = digest[id];
+    if (!entry) continue;
+    seen[id] = entry.topObjectiveId;
+    if (!prevSeen) continue;
+    const before = Object.hasOwn(prevSeen, id) ? prevSeen[id] : undefined;
+    if (before === entry.topObjectiveId) continue;
+    const name = clean(entry.projectName, 60);
+    if (name) names.add(name);
+  }
+  return { projects: [...names].sort((a, b) => a.localeCompare(b)), seen };
 }

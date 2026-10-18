@@ -10,7 +10,7 @@ import { readConfigPrefs, type ConfigPrefs } from "../config-prefs.js";
 import { readSessionPrefs, writeSessionPrefs } from "../session-prefs.js";
 import { readCommandDirs } from "../commands/from-disk.js";
 import { DaemonPromptQueue } from "./prompt-queue.js";
-import { GG_GOALS_ID, type ActiveSession } from "./types.js";
+import { isGoalsId, type ActiveSession } from "./types.js";
 
 export abstract class DaemonConnectSession extends DaemonPromptQueue {
   /**
@@ -134,17 +134,17 @@ export abstract class DaemonConnectSession extends DaemonPromptQueue {
         onQueueUpdate: (params: unknown) => this.applyAgentQueueUpdate(session, params),
         onGoalState: (params: unknown) => this.applyGoalState(session, params),
         onPlanState: (params: unknown) => {
-          if (session.providerId !== GG_GOALS_ID) this.applyPlanState(session, params);
+          if (!isGoalsId(session.providerId)) this.applyPlanState(session, params);
         },
         onSessionReset: (params: unknown) => this.applySessionReset(session, params),
         onAutopilotState: (params: unknown) => {
-          if (session.providerId !== GG_GOALS_ID) this.applyAutopilotState(session, params);
+          if (!isGoalsId(session.providerId)) this.applyAutopilotState(session, params);
         },
         onAutopilotEvent: (params: unknown) => {
-          if (session.providerId !== GG_GOALS_ID) this.applyAutopilotEvent(session, params);
+          if (!isGoalsId(session.providerId)) this.applyAutopilotEvent(session, params);
         },
         onChecklistChanged: () => {
-          if (session.live && session.providerId !== GG_GOALS_ID) this.send({ t: "checklist", sessionId: session.log.sessionId, changed: true });
+          if (session.live && !isGoalsId(session.providerId)) this.send({ t: "checklist", sessionId: session.log.sessionId, changed: true });
         },
       },
       onConfigOptions: (configOptions: ConfigOption[]) =>

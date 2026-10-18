@@ -929,12 +929,23 @@ export const GoalSummary = z.object({
   sessionId: z.string().optional(),
   /** Standing instructions for the goal's workers. Absent = none (or an older GG Coder). */
   instructions: z.string().optional(),
+  /**
+   * The goals provider this goal belongs to (`"gg-goals"` | `"ez-goals"`): GG
+   * Coder and EZ Coder each keep their own goals, in their own folder. Absent
+   * means `"gg-goals"` (an older daemon knew of no other).
+   */
+  providerId: z.string().optional(),
 });
 
 /** App -> daemon. List the goals on this machine. */
 export const GoalsRequest = z.object({
   t: z.literal("goals"),
   requestId: z.string(),
+  /**
+   * Which goals backends to list. Absent means `["gg-goals"]`, exactly what an
+   * older app has always been answered with.
+   */
+  providerIds: z.array(z.string().min(1).max(40)).max(10).optional(),
 });
 
 /** Daemon -> app. Answer to `goals`; also broadcast unprompted after any change. */
@@ -945,6 +956,11 @@ export const Goals = z.object({
   goals: z.array(GoalSummary),
   /** Why there are none to show: GG Coder missing, too old, or failed. Absent on success. */
   error: z.string().optional(),
+  /**
+   * The backends this list covers, so a client replaces only those backends'
+   * goals. Absent means `["gg-goals"]` (an older daemon, or an unchanged frame).
+   */
+  providerIds: z.array(z.string()).optional(),
 });
 
 /** App -> daemon. Create a goal (briefing phase). Context paths are desktop paths. */
@@ -963,6 +979,8 @@ export const GoalCreate = z.object({
    * older daemon drops the field, which is why `GoalResult.files` exists.
    */
   files: z.array(PromptAttachment).optional(),
+  /** Which goals backend creates it. Absent means `"gg-goals"`. */
+  providerId: z.string().min(1).max(40).optional(),
 });
 
 /**
@@ -984,6 +1002,11 @@ export const GoalAction = z.object({
   context: z.array(z.string()).optional(),
   instructions: z.string().optional(),
   model: z.string().nullable().optional(),
+  /**
+   * The backend the goal belongs to. Absent (an older app) searches
+   * `gg-goals` first, then `ez-goals`.
+   */
+  providerId: z.string().min(1).max(40).optional(),
 });
 
 /** Daemon -> app. Result of `goal.create` / `goal.action`. */

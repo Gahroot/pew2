@@ -21,7 +21,11 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 
 const old = process.env.PEW2_TEST_GG_OLD === "1";
-const goalsRoot = process.env.PEW2_TEST_GOALS_ROOT ?? join(tmpdir(), "pew2-test-goals");
+// `--ez` plays ezcoder: same `_gg/goals/*` contract, goals under the EZ root.
+const asEz = process.argv.includes("--ez");
+const goalsRoot = asEz
+  ? (process.env.PEW2_TEST_EZ_GOALS_ROOT ?? join(tmpdir(), "pew2-test-ez-goals"))
+  : (process.env.PEW2_TEST_GOALS_ROOT ?? join(tmpdir(), "pew2-test-goals"));
 
 interface Goal {
   id: string;
@@ -113,7 +117,15 @@ const app = agent({ name: "pew2-gg-test" })
   })
   .onRequest("session/list", async () => ({
     // With GG_AGENT_DIR set: one goal-folder session and one normal session.
-    sessions: process.env.GG_AGENT_DIR
+    // As ezcoder: a goal-folder session, one in the goal-runs store
+    // (`<root>/projects`, never a goal) and one normal session.
+    sessions: asEz
+      ? [
+          { sessionId: "ez_goal_1", cwd: `${goalsRoot}/ship-it`, title: "coordinator" },
+          { sessionId: "ez_runs_1", cwd: `${goalsRoot}/projects`, title: "runs" },
+          { sessionId: "ez_plain_1", cwd: process.env.PEW2_WORKSPACE ?? tmpdir(), title: "plain" },
+        ]
+      : process.env.GG_AGENT_DIR
       ? [
           { sessionId: "goal_1", cwd: `${process.env.GG_AGENT_DIR}/goals/ship-it`, title: "coordinator" },
           { sessionId: "plain_1", cwd: process.env.GG_AGENT_DIR, title: "plain" },

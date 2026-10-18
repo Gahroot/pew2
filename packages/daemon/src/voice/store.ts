@@ -12,7 +12,7 @@
  */
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { TaskState, VoiceDebrief, VoiceEvent, VoiceTask } from "./types.js";
+import type { TaskState, VoiceDebrief, VoiceEvent, VoiceGoalProgress, VoiceQuestion, VoiceTask } from "./types.js";
 import { writeFileAtomic } from "../atomic-file.js";
 import { classifyKind, type EventKind } from "./classify.js";
 
@@ -20,6 +20,53 @@ export interface HistoryEntry {
   at: number;
   state: TaskState;
   note?: string;
+}
+
+/**
+ * What makes a task an EZ Coder goal run rather than one turn. The run itself
+ * lives in ezcoder's own goal state on disk; this is how the task finds it and
+ * how far the loop that keeps it going has got.
+ */
+export interface StoredGoal {
+  /** The objective as the user gave it. */
+  objective: string;
+  /** Epoch ms the goal was asked for; the run is the newest created after it. */
+  requestedAt: number;
+  /** ezcoder's run id, once the run is found. */
+  runId?: string;
+  /** "Continue this run" turns sent since the user last spoke to it. */
+  continues: number;
+  /** The run's `updatedAt` when last read, for stall detection. */
+  lastRunUpdatedAt?: string;
+  progress?: VoiceGoalProgress;
+}
+
+/**
+ * Something the conversation has been about, so "that" and "the other
+ * project" resolve to real ids. Persisted so it survives a new voice session.
+ */
+export interface FocusRef {
+  kind: "project" | "task" | "goal" | "result" | "question";
+  id: string;
+  /** Speakable name for it. */
+  label: string;
+  projectId?: string;
+  projectName?: string;
+  /** Epoch ms it was last mentioned. */
+  at: number;
+  via: "user" | "tool" | "event";
+  /** The id of a ref this one overrides ("actually, the other one"). */
+  corrects?: string;
+}
+
+/** What the last opening check-in already covered. */
+export interface CheckinState {
+  /** DAVE project name -> its top objective id when last seen. */
+  daveSeen?: Record<string, string>;
+  /** Epoch ms of the last check-in. */
+  at?: number;
+  /** Highest eventId the last check-in covered. */
+  eventId?: number;
 }
 
 export interface StoredTask {
@@ -55,6 +102,10 @@ export interface StoredTask {
   pendingAttachmentIds?: string[];
   /** Screenshots already handed to this task's agent, oldest first. */
   attachmentIds?: string[];
+  /** Set on a task that runs an EZ Coder goal; see `StoredGoal`. */
+  goal?: StoredGoal;
+  /** An open question from the agent; cleared when it closes or the task stops. */
+  question?: VoiceQuestion;
   /**
    * Set when the user cleared this finished task off their screens. It stays
    * on disk (the model can still be asked about it) but leaves snapshots, and
@@ -105,11 +156,16 @@ interface Document {
   /** Absent from a file written before screenshots existed; `open` fills it in. */
   screenshots: Record<string, StoredScreenshot>;
   nextScreenshot: number;
+  /** Absent from a file written before references existed. */
+  focus?: FocusRef[];
+  /** Absent from a file written before the opening check-in existed. */
+  checkin?: CheckinState;
 }
 
 export const MAX_EVENTS = 2000;
 export const MAX_JOURNAL = 500;
 export const MAX_DECISIONS = 100;
+export const MAX_FOCUS = 50;
 const MAX_HISTORY = 50;
 
 /** Task states that no longer need a worker. */
@@ -120,6 +176,11 @@ export const ACTIVE: ReadonlySet<TaskState> = new Set(["running", "blocked"]);
 const DEP_MET: ReadonlySet<TaskState> = new Set(["completed", "verified"]);
 
 export type Listener = (event: VoiceEvent, task: StoredTask) => void;
+
+/** Optional fields an event carries beyond the task's own. */
+export interface EventExtra {
+  goal?: VoiceEvent["goal"];
+}
 
 export interface NewTask {
   projectId: string;
@@ -135,6 +196,7 @@ export interface NewTask {
   readOnly?: boolean;
   dependsOn?: string[];
   maxAttempts?: number;
+  goal?: StoredGoal;
 }
 
 export type JournalBegin =
@@ -171,6 +233,9 @@ export function toVoiceTask(task: StoredTask): VoiceTask {
     ...(task.approval ? { approval: task.approval } : null),
     ...(task.debrief ? { debrief: task.debrief } : null),
     ...(task.attachmentIds?.length ? { attachmentIds: [...task.attachmentIds] } : null),
+    // A goal task says so even before its run is found: it is not one turn.
+    ...(task.goal ? { goal: task.goal.progress ? { ...task.goal.progress } : { done: 0, total: 0 } } : null),
+    ...(task.question ? { question: { ...task.question, ...(task.question.options ? { options: [...task.question.options] } : null) } } : null),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
@@ -280,6 +345,7 @@ export class VoiceStore {
       readOnly: input.readOnly ?? false,
       dependsOn: [...(input.dependsOn ?? [])],
       ...(input.attachmentIds?.length ? { pendingAttachmentIds: [...input.attachmentIds] } : null),
+      ...(input.goal ? { goal: { ...input.goal } } : null),
       attempts: 0,
       maxAttempts: input.maxAttempts ?? 2,
       history: [{ at: now, state: "queued" }],
@@ -302,6 +368,7 @@ export class VoiceStore {
     kind: EventKind,
     text: string,
     patch: Partial<StoredTask> = {},
+    eventExtra: EventExtra = {},
   ): { event: VoiceEvent; task: StoredTask } | undefined {
     const task = this.doc.tasks[taskId];
     if (!task) return undefined;
@@ -315,8 +382,10 @@ export class VoiceStore {
       if (task.history.length > MAX_HISTORY) task.history.splice(0, task.history.length - MAX_HISTORY);
     }
     if (TERMINAL.has(state) || state === "paused" || state === "queued") delete task.approval;
+    // Nobody is waiting on an answer from a task that stopped.
+    if (TERMINAL.has(state) || state === "paused") delete task.question;
     task.updatedAt = now;
-    const event = this.emit(task, kind, text);
+    const event = this.emit(task, kind, text, eventExtra);
     return { event, task };
   }
 
@@ -516,7 +585,7 @@ export class VoiceStore {
 
   // ---- events --------------------------------------------------------------
 
-  private emit(task: StoredTask, kind: EventKind, text: string): VoiceEvent {
+  private emit(task: StoredTask, kind: EventKind, text: string, extra: EventExtra = {}): VoiceEvent {
     const event: VoiceEvent = {
       eventId: this.doc.nextEventId++,
       taskId: task.taskId,
@@ -528,6 +597,7 @@ export class VoiceStore {
       at: this.now(),
       // Every report of this event can then name the repository, not the checkout.
       ...(task.repo ? { repo: task.repo } : null),
+      ...(extra.goal ? { goal: { ...extra.goal } } : null),
     };
     this.doc.events.push(event);
     if (this.doc.events.length > MAX_EVENTS) this.doc.events.splice(0, this.doc.events.length - MAX_EVENTS);
@@ -580,6 +650,31 @@ export class VoiceStore {
 
   decisions(): readonly Decision[] {
     return this.doc.decisions;
+  }
+
+  // ---- conversational focus + check-in ------------------------------------
+
+  /** What the conversation has been about, oldest first. Empty for an old file. */
+  focusRefs(): readonly FocusRef[] {
+    return this.doc.focus ?? [];
+  }
+
+  /** Replace the focus list, keeping the newest `MAX_FOCUS`. */
+  setFocusRefs(refs: readonly FocusRef[]): void {
+    const kept = refs.slice(-MAX_FOCUS).map((ref) => ({ ...ref }));
+    this.doc.focus = kept;
+    this.persist();
+  }
+
+  /** What the last opening check-in covered. Empty for an old file. */
+  checkinState(): CheckinState {
+    const state = this.doc.checkin ?? {};
+    return { ...state, ...(state.daveSeen ? { daveSeen: { ...state.daveSeen } } : null) };
+  }
+
+  setCheckinState(state: CheckinState): void {
+    this.doc.checkin = { ...state, ...(state.daveSeen ? { daveSeen: { ...state.daveSeen } } : null) };
+    this.persist();
   }
 
   // ---- command journal -----------------------------------------------------

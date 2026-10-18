@@ -6,9 +6,14 @@
  * the tool executor. `handler.ts` talks only to this, so both transports get
  * identical behaviour.
  */
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { buildCheckin, type Checkin } from "./checkin.js";
 import { EventBatcher } from "./classify.js";
 import { buildSnapshot } from "./context.js";
+import { daveChanges, daveCheckinEnabled, daveDigest, type DaveDigest } from "./dave.js";
+import { focusContext, noteEvent } from "./focus.js";
+import { GoalTracker, goalHooks, goalRunsBase } from "./goalRuns.js";
 import { Orchestrator, type PromptImage, type VoiceHost } from "./dispatcher.js";
 import { subscriptionToken } from "./codexAuth.js";
 import {
@@ -17,10 +22,11 @@ import {
   mintRealtimeSecret,
   readVoicePrefs,
   resolveApiKey,
+  type VoicePrefs,
 } from "./mint.js";
 import { addAlias, buildRegistry, readAliases, repoForPath, repoOf } from "./registry.js";
 import { DEFAULT_APPROVAL_POLICY, speakable, type ApprovalPolicy } from "./safety.js";
-import { toVoiceTask, VoiceStore, type StoredScreenshot, type StoredTask } from "./store.js";
+import { MAX_EVENTS, TERMINAL, toVoiceTask, VoiceStore, type CheckinState, type StoredScreenshot, type StoredTask } from "./store.js";
 import { projectForPath, realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS } from "./tools.js";
 import type { RunningSession, VoiceAttachment, VoiceEvent, VoiceProject, VoiceSnapshot } from "./types.js";
 import { detectWorktree, privacyGuarded, registeredWorktrees, type RegisteredWorktree, type WorktreeInfo } from "../worktree.js";
@@ -59,8 +65,14 @@ export interface VoiceServiceDeps {
   /** Send a push for an event that is worth one. Never awaited by the service. */
   push?: (event: VoiceEvent) => void | Promise<void>;
   fetch?: typeof fetch;
-  /** DAVE, consulted only from its tools; absent when turned off. */
+  /**
+   * DAVE: asked from its tools, plus one read of its focus list when a voice
+   * session opens, for the check-in (`PEW2_DAVE_CHECKIN=off` stops that read).
+   * Absent when turned off.
+   */
   dave?: import("./dave.js").DaveClient;
+  /** Where EZ Coder keeps goal runs; defaults to `goalRunsBase(env, homedir())`. */
+  goalRunsBase?: string;
   now?: () => number;
   /** Background tick interval; 0 disables it (tests). */
   tickMs?: number;
@@ -76,6 +88,10 @@ export interface OpenRequest {
 }
 
 const PROJECT_TTL_MS = 30_000;
+/** Check-ins held for sessions not yet closed. */
+const MAX_PENDING_CHECKINS = 8;
+/** Events that change what "that" means: results and questions, never chatter. */
+const FOCUS_EVENTS: ReadonlySet<VoiceEvent["kind"]> = new Set(["task.completed", "task.failed", "task.verified", "task.blocked"]);
 
 export class VoiceService {
   readonly store: VoiceStore;
@@ -88,6 +104,12 @@ export class VoiceService {
   private readonly now: () => number;
   /** Applies while a voice session is open; reset to the default each time one opens. */
   private approvalPolicy: ApprovalPolicy = DEFAULT_APPROVAL_POLICY;
+  /** Where goal runs are read from; nothing in voice ever writes there. */
+  private readonly goalBase: string;
+  private readonly goalTracker = new GoalTracker();
+  private readonly stopping = new AbortController();
+  /** What each open session's check-in covered, saved once the user has heard it (`close`). */
+  private readonly checkins = new Map<string, CheckinState>();
 
   private constructor(
     private readonly deps: VoiceServiceDeps,
@@ -95,9 +117,11 @@ export class VoiceService {
   ) {
     this.now = deps.now ?? Date.now;
     this.store = store;
+    this.goalBase = deps.goalRunsBase ?? goalRunsBase(deps.env, homedir());
     this.orchestrator = new Orchestrator(store, deps.host, {
       now: this.now,
       readAttachments: (ids) => this.readScreenshots(ids),
+      goals: goalHooks({ base: this.goalBase, now: this.now }),
     });
     this.tools = new ToolExecutor({
       store,
@@ -108,6 +132,7 @@ export class VoiceService {
       peekSession: deps.peekSession,
       lastUsedProvider: deps.lastUsedProvider,
       dave: deps.dave,
+      goalRunsBase: this.goalBase,
       now: this.now,
       approvalPolicy: { get: () => this.approvalPolicy, set: (p) => void (this.approvalPolicy = p) },
       registeredWorktrees: deps.registeredWorktrees ?? registeredWorktrees,
@@ -148,11 +173,21 @@ export class VoiceService {
   dispose() {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.stopping.abort();
   }
 
   tick() {
     this.orchestrator.tick();
+    // Goal milestones land in goals.json mid-turn; a stat per live goal task
+    // until the file moves. Its events go through the batcher like any other.
+    void this.pollGoals();
     for (const event of this.batcher.due(this.now())) this.pushIfIdle(event);
+  }
+
+  /** Read live goal tasks' runs once (never overlapping). Resolves with the events emitted; never throws. */
+  pollGoals(): Promise<number> {
+    if (this.stopping.signal.aborted) return Promise.resolve(0);
+    return this.goalTracker.poll(this.store, this.goalBase, this.stopping.signal).catch(() => 0);
   }
 
   /**
@@ -236,6 +271,10 @@ export class VoiceService {
 
   private onEvent(event: VoiceEvent, task: StoredTask) {
     this.deps.emit({ t: "voice.event", event, task: toVoiceTask(task) });
+    // A result or a question is what "that" means next; chatter is not.
+    if (FOCUS_EVENTS.has(event.kind) || event.goal?.change === "needs_you") {
+      this.store.setFocusRefs(noteEvent(this.store.focusRefs(), event, task));
+    }
     for (const ready of this.batcher.add(event, this.now())) this.pushIfIdle(ready);
   }
 
@@ -275,35 +314,81 @@ export class VoiceService {
     if (prefs.enabled === false) {
       return { t: "voice.unavailable", voiceSessionId: request.voiceSessionId, code: "disabled", message: "Voice is turned off on this computer." };
     }
-    // Fresh registry and state before the model speaks.
-    const projects = await this.projects(true);
-    const desk = deskContext(this.deps.runningSessions?.() ?? [], projects);
+    // The one unprompted contact with DAVE: a single read of its focus list for
+    // the check-in, started first so it overlaps everything below. Loopback,
+    // GET-only, 1.5 s, project names only, and silent on any failure.
+    const dave =
+      this.deps.dave && daveCheckinEnabled(this.deps.env) ? daveDigest(this.deps.dave) : Promise.resolve(undefined);
+    // Fresh registry, and goal runs as they are on disk, before the model speaks.
+    const [projects] = await Promise.all([this.projects(true), this.pollGoals()]);
+    const live = this.deps.runningSessions?.() ?? [];
+    const desk = deskContext(live, projects);
     const snapshot = await this.snapshot(request);
     const voice = prefs.voice ?? DEFAULT_VOICE;
-    const session = realtimeSession({
-      voice,
-      clientVad: request.clientVad === true,
-      backlogTools: !!this.deps.dave,
-      instructions: `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}${desk ? `\n\n${desk}` : ""}`,
-    });
-    // Subscription login first, API key as the fallback.
-    const subscription = await subscriptionToken(this.deps.env, this.deps.fetch);
-    const mintWith = (apiKey: string | undefined) =>
-      mintRealtimeSecret({ apiKey, model: prefs.model ?? DEFAULT_MODEL, session, fetch: this.deps.fetch });
-    let minted = await mintWith(subscription);
-    const apiKey = resolveApiKey(this.deps.env, prefs);
-    if (!minted.ok && apiKey && apiKey !== subscription) minted = await mintWith(apiKey);
+    const context = `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}${desk ? `\n\n${desk}` : ""}`;
+    const config = (instructions: string) =>
+      realtimeSession({ voice, clientVad: request.clientVad === true, backlogTools: !!this.deps.dave, instructions });
+    // The secret is minted while DAVE answers, so the check-in adds no wait.
+    // The app applies the returned `session` verbatim with `session.update`
+    // (every app since voice shipped), which is what carries the check-in.
+    const [minted, digest] = await Promise.all([this.mint(prefs, config(context)), dave]);
     if (!minted.ok) {
       return { t: "voice.unavailable", voiceSessionId: request.voiceSessionId, code: minted.code, message: minted.message };
     }
+    const { checkin, covered } = this.checkin(snapshot.eventId, live, digest);
+    const memory = focusContext(this.store.focusRefs(), this.store.tasks(), this.now());
+    const session = config([context, checkin.say ? `Check-in: ${checkin.say}` : "", memory].filter(Boolean).join("\n\n"));
     if (this.open_.size === 0) this.approvalPolicy = DEFAULT_APPROVAL_POLICY;
     this.open_.add(request.voiceSessionId);
+    this.checkins.set(request.voiceSessionId, covered);
+    // A session that never closed (the app died) must not pin its entry for ever.
+    for (const id of this.checkins.keys()) if (this.checkins.size > MAX_PENDING_CHECKINS) this.checkins.delete(id);
     return {
       t: "voice.ready",
       voiceSessionId: request.voiceSessionId,
       realtime: { secret: minted.secret, expiresAt: minted.expiresAt, model: minted.model, voice, session },
-      snapshot,
+      snapshot: { ...snapshot, checkin },
     };
+  }
+
+  /** Subscription login first, API key as the fallback. */
+  private async mint(prefs: VoicePrefs, session: Record<string, unknown>) {
+    const subscription = await subscriptionToken(this.deps.env, this.deps.fetch);
+    const mintWith = (apiKey: string | undefined) =>
+      mintRealtimeSecret({ apiKey, model: prefs.model ?? DEFAULT_MODEL, session, fetch: this.deps.fetch });
+    const minted = await mintWith(subscription);
+    const apiKey = resolveApiKey(this.deps.env, prefs);
+    return !minted.ok && apiKey && apiKey !== subscription ? mintWith(apiKey) : minted;
+  }
+
+  /**
+   * The opening check-in: what happened since the user last listened, counted
+   * from the store and live state, plus DAVE's changed top picks. `covered` is
+   * saved at `close`, so the next session does not repeat it.
+   */
+  private checkin(
+    eventId: number,
+    live: readonly RunningSession[],
+    digest: DaveDigest | undefined,
+  ): { checkin: Checkin; covered: CheckinState } {
+    const prev = this.store.checkinState();
+    const heard = Math.max(this.store.heardEventId, prev.eventId ?? 0);
+    const tasks = this.store.tasks().filter((t) => t.dismissedAt === undefined);
+    const shown = new Set(tasks.map((t) => t.taskId));
+    // Voice tasks' own sessions are counted through their approvals and questions.
+    const owned = new Set(this.store.tasks().flatMap((t) => (t.sessionId && !TERMINAL.has(t.state) ? [t.sessionId] : [])));
+    const dave = daveChanges(prev.daveSeen, digest);
+    const checkin = buildCheckin({
+      events: this.store.eventsSince(heard, MAX_EVENTS).filter((e) => shown.has(e.taskId)),
+      heardEventId: heard,
+      tasks,
+      pendingApprovals: this.orchestrator.pendingApprovals().filter((t) => shown.has(t.taskId)).length,
+      openQuestions: tasks.filter((t) => t.question && !TERMINAL.has(t.state)).length,
+      deskNeedsYou: live.filter((s) => s.state === "needs_you" && !owned.has(s.sessionId)).length,
+      dave: dave.projects,
+      now: this.now(),
+    });
+    return { checkin, covered: { ...(dave.seen ? { daveSeen: dave.seen } : null), at: this.now(), eventId } };
   }
 
   async tool(message: { voiceSessionId: string; callId: string; name: string; args: Record<string, unknown> }) {
@@ -410,6 +495,11 @@ export class VoiceService {
 
   close(message: { voiceSessionId: string; heardEventId?: number }) {
     this.open_.delete(message.voiceSessionId);
+    const covered = this.checkins.get(message.voiceSessionId);
+    if (covered) {
+      this.checkins.delete(message.voiceSessionId);
+      this.store.setCheckinState({ ...this.store.checkinState(), ...covered });
+    }
     if (message.heardEventId !== undefined) this.store.markHeard(message.heardEventId);
     return this.store.flush();
   }
@@ -439,6 +529,11 @@ export function contextText(snapshot: VoiceSnapshot): string {
   for (const t of snapshot.tasks) {
     lines.push(`Task ${t.taskId} ${placeSpoken(t)}: ${t.title} - ${t.state}${t.activity ? ` (${t.activity})` : ""}${t.approval ? ` awaiting ${t.approval.risk} approval ${t.approval.requestId}` : ""}`);
     if (t.state === "completed" && t.debrief) lines.push(`  Debrief: ${JSON.stringify(t.debrief)}`);
+    if (t.goal) lines.push(`  Goal: ${goalLine(t.goal)}`);
+    if (t.question) {
+      const options = t.question.options?.length ? ` (options: ${t.question.options.map((o) => speakable(o, 40)).join(", ")})` : "";
+      lines.push(`  Question ${t.question.requestId}: ${speakable(t.question.text, 200)}${options}`);
+    }
   }
   if (snapshot.unheard.length) {
     lines.push("Not yet heard:");
@@ -446,6 +541,16 @@ export function contextText(snapshot: VoiceSnapshot): string {
   }
   if (lines.length === (snapshot.opening ? 1 : 0)) lines.push("No tasks yet.");
   return lines.join("\n");
+}
+
+/** One line on how far a goal got. A goal is not one turn, so its task state alone says little. */
+function goalLine(goal: NonNullable<VoiceSnapshot["tasks"][number]["goal"]>): string {
+  if (goal.say) return speakable(goal.say, 240);
+  const parts = [goal.total ? `${goal.done} of ${goal.total} milestones` : "run not found yet"];
+  if (goal.status) parts.push(`run ${goal.status}`);
+  if (goal.verified && goal.verified !== "none") parts.push(`verifier ${goal.verified === "pass" ? "passed" : "failed"}`);
+  if (goal.needsYou) parts.push(`needs you: ${speakable(goal.needsYou, 120)}`);
+  return parts.join(", ");
 }
 
 /**

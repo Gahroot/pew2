@@ -12,7 +12,12 @@
  *  - `idle`: not connected yet, so the footer offers Talk;
  *  - `projects`: the Projects sheet over the `busy` store, the other tall sheet;
  *  - `screenshots`: one active task, and a screenshot in each state: uploading,
- *    waiting to be sent (with its "Send to …" button), sent, and refused.
+ *    waiting to be sent (with its "Send to …" button), sent, and refused;
+ *  - `goals`: a goal still setting up (criteria, no milestones), a goal that
+ *    needs you (an unmet prerequisite), and a task waiting on a question.
+ *    `EXPO_PUBLIC_VOICE_TASK=g1|g2|g3` keeps just that one, because only the
+ *    first card fits above the fold on a phone and a simulator can't scroll
+ *    from the command line.
  *
  *   EXPO_PUBLIC_HARNESS=VoiceSheet EXPO_PUBLIC_VOICE=busy bun run harness
  *
@@ -35,6 +40,8 @@ import type { VoiceTask } from "../voice/types";
 import type { ScreenshotCard } from "../voice/screenshots";
 
 const SCENE = process.env.EXPO_PUBLIC_VOICE ?? "empty";
+/** Optional: show only this task of the `goals` scene. */
+const ONLY_TASK = process.env.EXPO_PUBLIC_VOICE_TASK;
 /** Fixture clock: a fixed point so ages read the same on every launch. */
 const NOW = Date.now();
 
@@ -62,9 +69,36 @@ const BUSY_TASKS: VoiceTask[] = [
   task("t4", "notes", "Summarise yesterday's meeting notes", "verified", 90),
 ];
 
+const GOAL_TASKS: VoiceTask[] = [
+  task("g1", "pew2", "Make voice understand goals", "running", 2, {
+    goal: { title: "Voice goals", status: "running", done: 0, total: 0, verified: "none", next: "Write the first milestone" },
+  }),
+  task("g2", "acme-storefront", "Ship the Stripe checkout", "blocked", 12, {
+    goal: {
+      title: "Stripe checkout",
+      status: "blocked",
+      done: 1,
+      total: 3,
+      verified: "none",
+      needsYou: "Add the Stripe test key to the env file",
+    },
+  }),
+  task("g3", "infra", "Move the staging database", "blocked", 5, {
+    question: { requestId: "q1", text: "Keep the old database running for a week?", options: ["Yes", "No"] },
+  }),
+];
+
 const SCENES: Record<string, { machine: MachineState; store: VoiceStore; transcript: TranscriptLine[] }> = {
   empty: { machine: { ...initialState, phase: "listening" }, store: emptyStore, transcript: [] },
   idle: { machine: initialState, store: emptyStore, transcript: [] },
+  goals: {
+    machine: { ...initialState, phase: "listening" },
+    store: {
+      ...emptyStore,
+      tasks: Object.fromEntries(GOAL_TASKS.filter((t) => !ONLY_TASK || t.taskId === ONLY_TASK).map((t) => [t.taskId, t])),
+    },
+    transcript: [{ id: 1, role: "user", text: "How are my goals coming along?" }],
+  },
   busy: {
     machine: { ...initialState, phase: "speaking" },
     store: { ...emptyStore, tasks: Object.fromEntries(BUSY_TASKS.map((t) => [t.taskId, t])) },

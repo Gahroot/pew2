@@ -11,6 +11,9 @@ export type VoiceTask = wire.VoiceTask;
 export type VoiceDebrief = wire.VoiceDebrief;
 export type VoiceRepo = wire.VoiceRepo;
 export type VoiceAttachment = wire.VoiceAttachment;
+export type VoiceGoalProgress = wire.VoiceGoalProgress;
+export type VoiceGoalChange = wire.VoiceGoalChange;
+export type VoiceQuestion = wire.VoiceQuestion;
 
 /** A conversation this daemon holds open, as the voice model may hear of it. */
 export interface RunningSession {

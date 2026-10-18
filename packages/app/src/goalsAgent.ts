@@ -6,8 +6,29 @@
 
 export const GOALS_PROVIDER_ID = "gg-goals";
 
+/** Every goals provider: GG Coder's goals, then EZ Coder's. */
+export const GOALS_PROVIDER_IDS = ["gg-goals", "ez-goals"] as const;
+
+/** The agent each goals provider is synthesised from (and sits beside). */
+export const GOALS_AGENT_OF: Readonly<Record<string, string>> = { "gg-goals": "ggcoder", "ez-goals": "ezcoder" };
+
 export function isGoalsProvider(providerId: string | undefined): boolean {
-  return providerId === GOALS_PROVIDER_ID;
+  return providerId !== undefined && (GOALS_PROVIDER_IDS as readonly string[]).includes(providerId);
+}
+
+/** The goals backend a goal belongs to; absent means an older daemon, so GG's. */
+export function goalProviderOf(goal: { providerId?: string }): string {
+  return goal.providerId ?? GOALS_PROVIDER_ID;
+}
+
+/** Only the goals of one backend, for the drawer under that goals chip. */
+export function goalsFor<G extends { providerId?: string }>(goals: readonly G[] | undefined, providerId: string): G[] | undefined {
+  return goals?.filter((goal) => goalProviderOf(goal) === providerId);
+}
+
+/** The composer placeholder on a goals chip: inside a goal, or describing a new one. */
+export function goalsPlaceholder(providerName: string | undefined, inSession: boolean): string {
+  return inSession ? `Message ${providerName ?? "Goals"}...` : "Describe the goal...";
 }
 
 interface StripExtensions {
@@ -57,6 +78,7 @@ const GOAL_STATUS_WORD: Record<string, string | undefined> = {
 
 interface GoalRowSource {
   id: string;
+  providerId?: string;
   name: string;
   status: string;
   path: string;
@@ -75,7 +97,7 @@ export function goalDrawerRow(goal: GoalRowSource, lastActive: string) {
   return {
     row: {
       id: goal.id,
-      providerId: GOALS_PROVIDER_ID,
+      providerId: goalProviderOf(goal),
       title: goal.name,
       startedAt: goal.lastActiveMs,
       cwd: goal.path,

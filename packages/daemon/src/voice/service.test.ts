@@ -11,10 +11,11 @@ import { buildRegistry } from "./registry.js";
 
 function host(): VoiceHost & { permissionAnswers: string[] } {
   const permissionAnswers: string[] = [];
+  let sessions = 0;
   return {
     permissionAnswers,
     async startSession() {
-      return "s1";
+      return `s${++sessions}`;
     },
     prompt: () => new Promise<void>(() => {}),
     async cancel() {},
@@ -22,6 +23,7 @@ function host(): VoiceHost & { permissionAnswers: string[] } {
       permissionAnswers.push(o);
       return true;
     },
+    answerAsk: () => true,
     hasSession: () => true,
     lastText: () => undefined,
   };
@@ -32,13 +34,15 @@ const mintFetch = (async () =>
 
 async function service(
   env: NodeJS.ProcessEnv = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" },
-  extra: { dave?: DaveClient; runningSessions?: () => RunningSession[] } = {},
+  extra: { dave?: DaveClient; runningSessions?: () => RunningSession[]; dataDir?: string } = {},
 ) {
   const emitted: unknown[] = [];
   const pushed: VoiceEvent[] = [];
   const h = host();
   const svc = await VoiceService.create({
     dataDir: scratch(),
+    // Never the real ~/.ezcoder: goal runs are read from an empty scratch dir.
+    goalRunsBase: scratch(),
     env,
     host: h,
     emit: (m) => emitted.push(m),
@@ -81,36 +85,135 @@ const toolNames = (ready: unknown) =>
     (ready as { realtime: { session: { tools: { name: string }[] } } }).realtime.session.tools ?? []
   ).map((t) => t.name);
 
-test("DAVE is ask-only: open() never contacts it, and its tools exist only when enabled", async () => {
-  let daveCalls = 0;
-  const daveFetch = (async () => {
-    daveCalls++;
-    return new Response(JSON.stringify({ queue: [], projects: [], decisions: [] }));
+/** A DAVE that records every request, with Triten's top objective settable. */
+function fakeDave() {
+  const requests: { method: string; path: string }[] = [];
+  let top = "o1";
+  const daveFetch = (async (url: string, init?: RequestInit) => {
+    requests.push({ method: init?.method ?? "GET", path: new URL(url).pathname });
+    const objective = { id: top, projectId: "p-tri", projectName: "Triten", objective: "Call the client about the secret deal", humanOnly: false };
+    return new Response(JSON.stringify({ top: objective, queue: [objective], projects: [], decisions: [] }));
   }) as unknown as typeof fetch;
-  const dave = new DaveClient({ off: false, origin: "http://127.0.0.1:4317" }, daveFetch);
+  return {
+    requests,
+    setTop: (id: string) => void (top = id),
+    client: new DaveClient({ off: false, origin: "http://127.0.0.1:4317" }, daveFetch),
+  };
+}
+
+const instructionsOf = (ready: unknown) =>
+  (ready as { realtime: { session: { instructions: string } } }).realtime.session.instructions;
+
+test("DAVE: open() makes exactly one read-only GET of its focus list; the tools exist only when enabled", async () => {
   const env = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" };
-
-  const { svc } = await service(env, { dave });
+  const dave = fakeDave();
+  const { svc } = await service(env, { dave: dave.client });
   const ready = await svc.open({ voiceSessionId: "v", source: "in_app" });
-  expect(toolNames(ready)).toEqual(
-    expect.arrayContaining(["check_backlog", "delegate_backlog_item"]),
-  );
-  expect(daveCalls).toBe(0);
+  expect(toolNames(ready)).toEqual(expect.arrayContaining(["check_backlog", "delegate_backlog_item"]));
+  expect(dave.requests).toEqual([{ method: "GET", path: "/api/intel/focus" }]);
 
-  await svc.tool({
-    voiceSessionId: "v",
-    callId: "d1",
-    name: "check_backlog",
-    args: { about: "priorities" },
-  });
-  expect(daveCalls).toBe(1);
+  await svc.tool({ voiceSessionId: "v", callId: "d1", name: "check_backlog", args: { about: "priorities" } });
+  // Asking adds exactly the one read it needs; nothing else touched DAVE.
+  expect(dave.requests).toEqual([
+    { method: "GET", path: "/api/intel/focus" },
+    { method: "GET", path: "/api/intel/focus" },
+  ]);
   svc.dispose();
+
+  // Opted out of the check-in: open() contacts DAVE not at all, and the tools stay.
+  const quiet = fakeDave();
+  const optedOut = await service({ ...env, PEW2_DAVE_CHECKIN: "off" }, { dave: quiet.client });
+  const still = await optedOut.svc.open({ voiceSessionId: "v", source: "in_app" });
+  expect(quiet.requests).toEqual([]);
+  expect(toolNames(still)).toContain("check_backlog");
+  optedOut.svc.dispose();
 
   const off = await service(env);
   const plain = await off.svc.open({ voiceSessionId: "v", source: "in_app" });
   expect(toolNames(plain)).not.toContain("check_backlog");
   expect(toolNames(plain)).not.toContain("delegate_backlog_item");
   off.svc.dispose();
+});
+
+test("check-in: one sentence about what happened since, said once, naming DAVE's changed project only", async () => {
+  const env = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" };
+  const dave = fakeDave();
+  const { svc } = await service(env, { dave: dave.client });
+
+  // First sight of DAVE records silently; nothing has happened yet.
+  const first = (await svc.open({ voiceSessionId: "v1", source: "in_app" })) as { snapshot: { checkin?: { say?: string } } };
+  expect(first.snapshot.checkin).toMatchObject({ finished: 0, failed: 0, needsYou: 0, dave: [] });
+  expect(first.snapshot.checkin?.say).toBeUndefined();
+  expect(instructionsOf(first)).not.toContain("\n\nCheck-in:");
+  await svc.close({ voiceSessionId: "v1" });
+
+  // Two agents finish, one is waiting on an approval, and DAVE's top pick for Triten changes.
+  const enqueue = (name: string) =>
+    svc.orchestrator.enqueue({ projectId: `p_${name}`, projectName: name, cwd: `/code/${name}`, providerId: "echo", title: name, prompt: name });
+  const [a, b, c] = [enqueue("alpha"), enqueue("beta"), enqueue("gamma")];
+  await new Promise((r) => setTimeout(r, 0));
+  for (const done of [a, b]) svc.store.transition(done.taskId, "completed", "task.completed", "The agent says it finished.");
+  const sessionId = svc.store.getTask(c.taskId)?.sessionId;
+  if (!sessionId) throw new Error("expected gamma to have a session");
+  svc.orchestrator.onSessionPayload(sessionId, {
+    kind: "permission_request",
+    requestId: "perm_1",
+    params: { toolCall: { title: "npm test", kind: "execute" }, options: [{ optionId: "y", kind: "allow_once" }] },
+  });
+  dave.setTop("o2");
+
+  const second = (await svc.open({ voiceSessionId: "v2", source: "in_app" })) as { snapshot: { checkin?: { say?: string; dave: string[] } } };
+  const say = "Two agents finished, one is blocked by an approval, and DAVE has a new recommendation for Triten. Want the details?";
+  expect(second.snapshot.checkin).toMatchObject({ say, finished: 2, needsYou: 1, dave: ["Triten"] });
+  expect(instructionsOf(second)).toContain(`\n\nCheck-in: ${say}`);
+  // Project names only: DAVE's objective text never reaches the model.
+  expect(instructionsOf(second)).not.toContain("secret deal");
+  await svc.close({ voiceSessionId: "v2" });
+
+  // Heard once: the next session repeats neither the results nor DAVE's news; the live approval still counts.
+  const third = (await svc.open({ voiceSessionId: "v3", source: "in_app" })) as { snapshot: { checkin?: { say?: string } } };
+  expect(third.snapshot.checkin?.say).toBe("One is blocked by an approval. Want the details?");
+  svc.dispose();
+});
+
+test("focus survives a new voice session and a restart, as working-memory lines", async () => {
+  const dataDir = scratch();
+  const first = await service(undefined, { dataDir });
+  await first.svc.open({ voiceSessionId: "v1", source: "in_app" });
+  await first.svc.tool({ voiceSessionId: "v1", callId: "s", name: "start_task", args: { project: "pew2", instruction: "fix the login screen" } });
+  await first.svc.close({ voiceSessionId: "v1" });
+  first.svc.dispose();
+
+  const again = await service(undefined, { dataDir });
+  const ready = await again.svc.open({ voiceSessionId: "v2", source: "in_app" });
+  const text = instructionsOf(ready);
+  expect(text).toContain("Working memory: current project pew2");
+  expect(text).toContain("Working memory: current task fix the login screen");
+  again.svc.dispose();
+});
+
+test("contextText carries goal progress and an open question per task", () => {
+  const text = contextText({
+    eventId: 3,
+    projects: [],
+    unheard: [],
+    tasks: [
+      {
+        taskId: "t_1",
+        projectId: "p",
+        projectName: "pew2",
+        title: "Login goal",
+        state: "running",
+        priority: 0,
+        createdAt: 1,
+        updatedAt: 2,
+        goal: { done: 2, total: 3, status: "running", verified: "pass", needsYou: "Grant the browser permission" },
+        question: { requestId: "ask_1", text: "Use the staging database?", options: ["Yes", "No"] },
+      },
+    ],
+  });
+  expect(text).toContain("  Goal: 2 of 3 milestones, run running, verifier passed, needs you: Grant the browser permission");
+  expect(text).toContain("  Question ask_1: Use the staging database? (options: Yes, No)");
 });
 
 test("events are broadcast, an answer elsewhere unblocks, and urgent ones push", async () => {

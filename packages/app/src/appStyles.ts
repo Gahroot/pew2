@@ -46,12 +46,15 @@ export const styles = StyleSheet.create({
   },
   navFade: { zIndex: 2 },
   navAction: { width: theme.size.control, flexShrink: 0 },
-  // Two controls on the right in a goal; the menu side takes the same width so
-  // the title stays centred on the screen.
+  // Two controls wide on the right in a goal; the menu side takes the same width
+  // so the title stays centred on the screen. Projects and Voice sit beside the
+  // goal's own two, so the group wraps into rows of two: in one row the four
+  // overflowed leftwards over the title, which a 375pt phone hid entirely.
   navLeadGoal: { justifyContent: "flex-start" },
   navActionsGoal: {
     width: theme.size.control * 2 + theme.space(2),
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "flex-end",
     gap: theme.space(2),
     flexShrink: 0,

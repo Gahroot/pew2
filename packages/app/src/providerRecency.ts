@@ -39,7 +39,31 @@ export function orderProvidersByRecency<P extends ProviderLike>(
 ): P[] {
   const pinned = PINNED_PROVIDERS.flatMap((id) => providers.filter((p) => p.id === id));
   const rest = providers.filter((p) => !(PINNED_PROVIDERS as readonly string[]).includes(p.id));
-  return [...pinned, ...orderRest(rest, sessions)];
+  return goalsBesideAgents([...pinned, ...orderRest(rest, sessions)]);
+}
+
+/** Each goals provider and the agent it is synthesised from. */
+const GOALS_AGENTS: Readonly<Record<string, string>> = { "gg-goals": "ggcoder", "ez-goals": "ezcoder" };
+
+/**
+ * A goals provider immediately follows its agent wherever that agent landed
+ * (EZ Goals right after EZ Coder); with its agent absent it keeps its place.
+ */
+function goalsBesideAgents<P extends ProviderLike>(ordered: readonly P[]): P[] {
+  const present = new Set(ordered.map((p) => p.id));
+  const follows = (p: P): boolean => {
+    const agent = GOALS_AGENTS[p.id];
+    return agent !== undefined && present.has(agent);
+  };
+  const out: P[] = [];
+  for (const provider of ordered) {
+    if (follows(provider)) continue;
+    out.push(provider);
+    for (const goals of ordered) {
+      if (GOALS_AGENTS[goals.id] === provider.id) out.push(goals);
+    }
+  }
+  return out;
 }
 
 function orderRest<P extends ProviderLike>(

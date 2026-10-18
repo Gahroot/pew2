@@ -6,9 +6,18 @@ import { isAvailable, unavailableReason } from "../providers/registry.js";
 import { connectProvider, type AcpSessionHandle } from "../acp/connect.js";
 import { resolve as __resolve } from "node:path";
 import { resolveWorkspace } from "../workspace.js";
+import { humanError } from "../errors.js";
 import { wire } from "@pew2/protocol";
 import { DaemonProjects } from "./projects.js";
-import { AUTOPILOT_PHASES, GG_GOALS_ID, GG_PROVIDER_ID, type ActiveSession } from "./types.js";
+import {
+  AUTOPILOT_PHASES,
+  GG_GOALS_BACKEND,
+  GOALS_BACKENDS,
+  goalsBackend,
+  isGoalsId,
+  type ActiveSession,
+  type GoalsBackend,
+} from "./types.js";
 
 export abstract class DaemonGg extends DaemonProjects {
   /** `_gg/plan_state`: the plan sheet's state, broadcast and kept for catch-up. */
@@ -73,7 +82,7 @@ export abstract class DaemonGg extends DaemonProjects {
   /** `autopilot.set`: turn Ken on or off for this session's project. */
   async setAutopilot(sessionId: string, enabled: boolean): Promise<void> {
     const session = this.require(sessionId);
-    if (session.providerId === GG_GOALS_ID) throw new Error("Autopilot is for GG Coder conversations.");
+    if (isGoalsId(session.providerId)) throw new Error("Autopilot is for GG Coder conversations.");
     await session.ready;
     if (!session.handle?.ggCapabilities?.autopilot) throw new Error("This agent has no Autopilot.");
     await session.handle.extRequest("_gg/autopilot/set", {
@@ -85,7 +94,7 @@ export abstract class DaemonGg extends DaemonProjects {
   /** `checklist`: the project checklist via `_gg/checklist`, mapped to wire rows. */
   async checklist(sessionId: string): Promise<{ staleAfterDays?: number; items: wire.ChecklistItemRow[] }> {
     const session = this.require(sessionId);
-    if (session.providerId === GG_GOALS_ID) throw new Error("The checklist is for GG Coder conversations.");
+    if (isGoalsId(session.providerId)) throw new Error("The checklist is for GG Coder conversations.");
     await session.ready;
     if (!session.handle?.ggCapabilities?.checklist) throw new Error("This agent has no project checklist.");
     const raw = await session.handle.extRequest<{ staleAfterDays?: unknown; items?: unknown }>(
@@ -151,16 +160,17 @@ export abstract class DaemonGg extends DaemonProjects {
    * ggcoder session or a warm spare is used first, and only otherwise one is
    * booted (and parked as the spare, so it is reused and idles out).
    */
-  protected async goalsConnection(): Promise<AcpSessionHandle> {
-    const provider = this.providers.find((p) => p.manifest.id === GG_PROVIDER_ID);
+  protected async goalsConnection(backend: GoalsBackend = GG_GOALS_BACKEND): Promise<AcpSessionHandle> {
+    const { agentId, goalsId, agentName } = backend;
+    const provider = this.providers.find((p) => p.manifest.id === agentId);
     if (!provider || provider.commandMissing) {
-      throw new Error("GG Coder isn't installed on this machine.");
+      throw new Error(`${agentName} isn't installed on this machine.`);
     }
-    if (!this.isEnabled(GG_PROVIDER_ID)) throw new Error("GG Coder is turned off on this machine.");
-    if (!isAvailable(provider)) throw new Error(unavailableReason(provider) ?? "GG Coder is unavailable.");
+    if (!this.isEnabled(agentId)) throw new Error(`${agentName} is turned off on this machine.`);
+    if (!isAvailable(provider)) throw new Error(unavailableReason(provider) ?? `${agentName} is unavailable.`);
     const supports = (handle: AcpSessionHandle) => {
       if (!handle.ggCapabilities?.goals) {
-        throw new Error("This GG Coder is too old for goals. Update it on your computer.");
+        throw new Error(`This ${agentName} is too old for goals. Update it on your computer.`);
       }
       return handle;
     };
@@ -176,44 +186,49 @@ export abstract class DaemonGg extends DaemonProjects {
       spare.handle.close();
       this.spares.delete(key);
     }
+    const ours = (id: string) => id === agentId || id === goalsId;
     const live = [...this.sessions.values()]
-      .filter((s) => (s.providerId === GG_PROVIDER_ID || s.providerId === GG_GOALS_ID) && s.handle && s.agentSessionId && alive(s.handle))
+      .filter((s) => ours(s.providerId) && s.handle && s.agentSessionId && alive(s.handle))
       .sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0]?.handle;
     if (live) return supports(live);
-    const spare = [...this.spares.values()].find((s) => s.providerId === GG_PROVIDER_ID || s.providerId === GG_GOALS_ID);
+    const spare = [...this.spares.values()].find((s) => ours(s.providerId));
     if (spare) return supports(spare.handle);
-    // A capability probe already booting GG Coder will park its process as a
+    // A capability probe already booting the agent will park its process as a
     // spare. Wait for that rather than racing it with a second boot: two boots
     // land on the same spare key, and whichever is stashed second closes the
     // first — mid-`session/list` for the probe, which then failed with "ACP
-    // connection closed" and left GG Coder's chats and goals list empty.
-    const warming = this.warming.get(GG_PROVIDER_ID);
+    // connection closed" and left the agent's chats and goals list empty.
+    const warming = this.warming.get(agentId);
     if (warming) {
       await warming.catch(() => {});
-      const parked = [...this.spares.values()].find((s) => s.providerId === GG_PROVIDER_ID);
+      const parked = [...this.spares.values()].find((s) => s.providerId === agentId);
       if (parked) return supports(parked.handle);
     }
-    this.ggConnecting ??= (async () => {
-      const workspace = resolveWorkspace();
-      const handle = await connectProvider({
-        provider,
-        cwd: workspace,
-        onUpdate: () => {},
-        onPermissionRequest: () => {},
+    let connecting = this.ggConnecting.get(goalsId);
+    if (!connecting) {
+      connecting = (async () => {
+        const workspace = resolveWorkspace();
+        const handle = await connectProvider({
+          provider,
+          cwd: workspace,
+          onUpdate: () => {},
+          onPermissionRequest: () => {},
+        });
+        // Never evict a parked process for this one: a probe may still be using
+        // it. If one appeared while this booted, keep it and drop the newcomer.
+        const parked = [...this.spares.values()].find((s) => s.providerId === agentId);
+        if (parked) {
+          handle.close();
+          return parked.handle;
+        }
+        this.stashSpare(agentId, handle, workspace);
+        return handle;
+      })().finally(() => {
+        this.ggConnecting.delete(goalsId);
       });
-      // Never evict a parked process for this one: a probe may still be using
-      // it. If one appeared while this booted, keep it and drop the newcomer.
-      const parked = [...this.spares.values()].find((s) => s.providerId === GG_PROVIDER_ID);
-      if (parked) {
-        handle.close();
-        return parked.handle;
-      }
-      this.stashSpare(GG_PROVIDER_ID, handle, workspace);
-      return handle;
-    })().finally(() => {
-      this.ggConnecting = undefined;
-    });
-    return supports(await this.ggConnecting);
+      this.ggConnecting.set(goalsId, connecting);
+    }
+    return supports(await connecting);
   }
 
   /** Read one goal summary off GG Coder, dropping anything malformed. */
@@ -235,16 +250,19 @@ export abstract class DaemonGg extends DaemonProjects {
   }
 
   /** The live daemon session open on a goal folder, newest use first. */
-  protected goalSessionEntry(path: string): [string, ActiveSession] | undefined {
+  protected goalSessionEntry(path: string, goalsId?: string): [string, ActiveSession] | undefined {
+    const backend = goalsId === undefined ? undefined : goalsBackend(goalsId);
+    const ours = (id: string) =>
+      backend ? id === backend.agentId || id === backend.goalsId : GOALS_BACKENDS.some((b) => id === b.agentId || id === b.goalsId);
     return [...this.sessions.entries()]
-      .filter(([, s]) => (s.providerId === GG_PROVIDER_ID || s.providerId === GG_GOALS_ID) && s.cwd === path)
+      .filter(([, s]) => ours(s.providerId) && s.cwd === path)
       .sort((a, b) => b[1].lastUsedAt - a[1].lastUsedAt)[0];
   }
 
   /** GG Coder never reports `running` or a daemon session: only this process knows. */
   protected overlayGoal(goal: wire.GoalSummary): wire.GoalSummary {
     const { sessionId: _ignored, ...rest } = goal;
-    const live = this.goalSessionEntry(goal.path);
+    const live = this.goalSessionEntry(goal.path, goal.providerId);
     if (!live) return rest;
     return {
       ...rest,
@@ -259,43 +277,94 @@ export abstract class DaemonGg extends DaemonProjects {
    * Listing a goal publishes its folder, so each becomes a known project: the
    * app opens a goal by starting a ggcoder session with that folder as `cwd`.
    */
-  async listGoals(): Promise<wire.GoalSummary[]> {
-    const handle = await this.goalsConnection();
+  async listGoals(goalsIds: readonly string[] = [GG_GOALS_BACKEND.goalsId]): Promise<wire.GoalSummary[]> {
+    // One backend missing (no ggcoder here) must not hide another's goals;
+    // only when every backend failed is that the answer.
+    const all: wire.GoalSummary[] = [];
+    let firstError: Error | undefined;
+    let anyOk = false;
+    for (const goalsId of goalsIds) {
+      try {
+        all.push(...(await this.listBackendGoals(this.backendFor(goalsId))));
+        anyOk = true;
+      } catch (error) {
+        firstError ??= asError(error);
+      }
+    }
+    if (!anyOk && firstError !== undefined) throw firstError;
+    return all;
+  }
+
+  protected backendFor(goalsId: string): GoalsBackend {
+    const backend = goalsBackend(goalsId);
+    if (!backend || backend.goalsId !== goalsId) throw new Error(`Unknown goals provider '${goalsId}'.`);
+    return backend;
+  }
+
+  /** One backend's goals, stamped with its `providerId` (gg stays unstamped: absent means gg-goals). */
+  protected async listBackendGoals(backend: GoalsBackend): Promise<wire.GoalSummary[]> {
+    const handle = await this.goalsConnection(backend);
     const answer = await handle.extRequest<{ goals?: unknown }>("_gg/goals/list", {});
     const goals = (Array.isArray(answer?.goals) ? answer.goals : []).flatMap((value) => {
-      const goal = DaemonGg.readGoal(value);
+      const goal = this.stampGoal(DaemonGg.readGoal(value), backend);
       return goal ? [goal] : [];
     });
-    this.goalNames = new Map(goals.map((g) => [__resolve(g.path), g.name]));
+    this.goalNames.set(backend.goalsId, new Map(goals.map((g) => [__resolve(g.path), g.name])));
     for (const goal of goals) await this.rememberProject(goal.path);
     return goals.map((goal) => this.overlayGoal(goal));
   }
 
-  async createGoal(input: {
-    name: string;
-    goal: string;
-    context: string[];
-    instructions?: string;
-  }): Promise<wire.GoalSummary> {
-    const handle = await this.goalsConnection();
+  /** gg goals keep today's exact shape; any other backend's goals name their provider. */
+  protected stampGoal(goal: wire.GoalSummary | undefined, backend: GoalsBackend): wire.GoalSummary | undefined {
+    if (!goal) return undefined;
+    return backend.goalsId === GG_GOALS_BACKEND.goalsId ? goal : { ...goal, providerId: backend.goalsId };
+  }
+
+  async createGoal(
+    input: {
+      name: string;
+      goal: string;
+      context: string[];
+      instructions?: string;
+    },
+    goalsId: string = GG_GOALS_BACKEND.goalsId,
+  ): Promise<wire.GoalSummary> {
+    const backend = this.backendFor(goalsId);
+    const handle = await this.goalsConnection(backend);
     const answer = await handle.extRequest<{ goal?: unknown }>("_gg/goals/create", {
       name: input.name,
       goal: input.goal,
       context: input.context,
       ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
     });
-    const goal = DaemonGg.readGoal(answer?.goal);
-    if (!goal) throw new Error("GG Coder did not return the new goal.");
-    this.goalNames.set(__resolve(goal.path), goal.name);
+    const goal = this.stampGoal(DaemonGg.readGoal(answer?.goal), backend);
+    if (!goal) throw new Error(`${backend.agentName} did not return the new goal.`);
+    const names = this.goalNames.get(goalsId) ?? new Map<string, string>();
+    names.set(__resolve(goal.path), goal.name);
+    this.goalNames.set(goalsId, names);
     await this.rememberProject(goal.path);
     return this.overlayGoal(goal);
   }
 
-  /** One goal by id, with the daemon session open on it, if any. */
-  async findGoal(goalId: string): Promise<wire.GoalSummary> {
-    const goal = (await this.listGoals()).find((g) => g.id === goalId);
-    if (!goal) throw new Error("That goal no longer exists.");
-    return goal;
+  /**
+   * One goal by id, with the daemon session open on it, if any. Without a
+   * `goalsId` (an older app), gg-goals is searched first, then the others.
+   */
+  async findGoal(goalId: string, goalsId?: string): Promise<wire.GoalSummary> {
+    const ids = goalsId !== undefined ? [goalsId] : GOALS_BACKENDS.map((b) => b.goalsId);
+    let firstError: Error | undefined;
+    for (const id of ids) {
+      try {
+        const goal = (await this.listGoals([id])).find((g) => g.id === goalId);
+        if (goal) return goal;
+      } catch (error) {
+        if (goalsId !== undefined) throw error;
+        firstError ??= asError(error);
+      }
+    }
+    // A backend that failed says more than "gone" (today's gg-only answer).
+    if (firstError !== undefined) throw firstError;
+    throw new Error("That goal no longer exists.");
   }
 
   /** The open session on a goal, for the session-scoped `_gg/goal/*` calls. */
@@ -313,12 +382,14 @@ export abstract class DaemonGg extends DaemonProjects {
     goalId: string,
     action: "delete" | "pause" | "update" | "critterModel",
     input: { context?: string[]; instructions?: string; model?: string | null } = {},
+    goalsId?: string,
   ): Promise<wire.GoalSummary | undefined> {
-    const goal = await this.findGoal(goalId);
+    const goal = await this.findGoal(goalId, goalsId);
+    const backend = this.backendFor(goal.providerId ?? GG_GOALS_BACKEND.goalsId);
     if (action === "delete") {
-      const live = this.goalSessionEntry(goal.path);
-      if (live?.[1].working) throw new Error("GG Goals is working on this goal. Pause it first.");
-      const handle = await this.goalsConnection();
+      const live = this.goalSessionEntry(goal.path, backend.goalsId);
+      if (live?.[1].working) throw new Error(`${backend.name} is working on this goal. Pause it first.`);
+      const handle = await this.goalsConnection(backend);
       await handle.extRequest("_gg/goals/delete", { id: goalId });
       return undefined;
     }
@@ -340,6 +411,11 @@ export abstract class DaemonGg extends DaemonProjects {
         model: input.model ?? null,
       });
     }
-    return (await this.listGoals()).find((g) => g.id === goalId);
+    return (await this.listGoals([backend.goalsId])).find((g) => g.id === goalId);
   }
+}
+
+/** A caught value as an Error; a JSON-RPC rejection keeps its `data.details` via humanError. */
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(humanError(error));
 }

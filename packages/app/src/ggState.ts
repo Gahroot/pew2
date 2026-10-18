@@ -163,7 +163,11 @@ export function applyGoalMessage(state: GgState, message: { t: string } & Record
   if (message.t === "goals") {
     if (typeof message.error === "string") return { ...state, goalsLoading: false, goalsError: message.error };
     if (!Array.isArray(message.goals)) return { ...state, goalsLoading: false };
-    return { ...state, goals: message.goals as GoalSummary[], goalsLoading: false, goalsError: undefined };
+    // A list covers only the backends it names (absent: an older daemon, GG's);
+    // goals of any other backend stay, so per-backend broadcasts merge.
+    const covered: readonly unknown[] = Array.isArray(message.providerIds) ? message.providerIds : ["gg-goals"];
+    const kept = (state.goals ?? []).filter((goal) => !covered.includes(goal.providerId ?? "gg-goals"));
+    return { ...state, goals: [...kept, ...(message.goals as GoalSummary[])], goalsLoading: false, goalsError: undefined };
   }
   if (message.t === "goal.result" && typeof message.requestId === "string") {
     return { ...state, goalResults: { ...state.goalResults, [message.requestId]: message as unknown as GoalResult } };

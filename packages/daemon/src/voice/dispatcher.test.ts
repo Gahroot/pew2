@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { Orchestrator, type VoiceHost } from "./dispatcher.js";
+import type { AskAnswer } from "../acp/connect-types.js";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { GOAL_COMPLETED_TEXT, MAX_GOAL_CONTINUES, Orchestrator, type GoalHooks, type GoalTurnDecision, type VoiceHost } from "./dispatcher.js";
 import { VoiceStore, type NewTask } from "./store.js";
 
 interface Turn {
@@ -11,6 +15,7 @@ interface Turn {
 function fakeHost() {
   const turns: Turn[] = [];
   const answered: Array<[string, string, string]> = [];
+  const asked: Array<[string, string, AskAnswer]> = [];
   const cancelled: string[] = [];
   let sessions = 0;
   let failStart = 0;
@@ -37,6 +42,10 @@ function fakeHost() {
       answered.push([id, req, option]);
       return true;
     },
+    answerAsk(id, req, result) {
+      asked.push([id, req, result]);
+      return true;
+    },
     hasSession: (id) => live.has(id),
     lastText: () => lastText,
   };
@@ -44,6 +53,7 @@ function fakeHost() {
     host,
     turns,
     answered,
+    asked,
     cancelled,
     live,
     failNextStarts: (n: number) => (failStart = n),
@@ -393,4 +403,202 @@ test("a slash command is always its own turn, sent verbatim, never folded or wra
   expect(orchestrator.followUp(queued.taskId, "/commit message: dark mode").ok).toBe(true);
   await tick();
   expect(fake.turns.at(-1)?.text).toBe("/commit message: dark mode");
+});
+
+// ---- goals -----------------------------------------------------------------
+
+/** Hooks that answer from a scripted list, recording each call. */
+function scriptedGoals(decisions: GoalTurnDecision[]) {
+  const calls: string[] = [];
+  const hooks: GoalHooks = {
+    async afterTurn(t) {
+      calls.push(t.taskId);
+      return decisions.shift() ?? { kind: "ordinary" };
+    },
+  };
+  return { hooks, calls };
+}
+
+const goalTask = (over: Partial<NewTask> = {}) =>
+  task({ providerId: "ezcoder", prompt: "/goal ship it", goal: { objective: "ship it", requestedAt: 0, continues: 0 }, ...over });
+
+function goalSetup(decisions: GoalTurnDecision[]) {
+  const store = VoiceStore.memory();
+  const fake = fakeHost();
+  const goals = scriptedGoals(decisions);
+  const orchestrator = new Orchestrator(store, fake.host, { retryBackoffMs: 0, goals: goals.hooks });
+  return { store, fake, orchestrator, goals };
+}
+
+const cont = (n = 0): GoalTurnDecision => ({
+  kind: "continue",
+  prompt: "Continue goal run r1",
+  goal: { objective: "ship it", requestedAt: 0, runId: "r1", continues: n, lastRunUpdatedAt: `u${n}` },
+});
+
+async function endTurn(fake: ReturnType<typeof fakeHost>, index: number) {
+  await tick();
+  fake.turns[index]?.resolve();
+  await tick();
+  await tick();
+}
+
+test("goal: a continue decision sends the continue prompt, then completion is the agent's claim", async () => {
+  const { store, fake, orchestrator } = goalSetup([cont(0), { kind: "complete" }]);
+  const t = orchestrator.enqueue(goalTask());
+  await endTurn(fake, 0);
+  expect(fake.turns.map((x) => x.text)).toEqual(["/goal ship it", "Continue goal run r1"]);
+  expect(store.getTask(t.taskId)?.goal?.continues).toBe(1);
+  await endTurn(fake, 1);
+  const done = store.getTask(t.taskId);
+  expect(done?.state).toBe("completed");
+  const last = store.eventsSince(0).at(-1);
+  expect(last?.text).toBe(GOAL_COMPLETED_TEXT);
+  expect(last?.goal?.change).toBe("passed");
+  expect(fake.turns).toHaveLength(2);
+});
+
+test("goal: stalled blocks with a question to the user", async () => {
+  const { store, fake, orchestrator } = goalSetup([{ kind: "stalled", say: "The goal run made no progress on the last turn." }]);
+  const t = orchestrator.enqueue(goalTask());
+  await endTurn(fake, 0);
+  expect(store.getTask(t.taskId)?.state).toBe("blocked");
+  const last = store.eventsSince(0).at(-1);
+  expect(last).toMatchObject({ kind: "task.blocked", goal: { change: "stalled" } });
+  expect(last?.text).toContain("Keep going");
+  expect(fake.turns).toHaveLength(1);
+});
+
+test("goal: needs_you blocks with goal.change needs_you, and a follow_up picks it up again", async () => {
+  const { store, fake, orchestrator } = goalSetup([{ kind: "needs_you", say: "an API key" }, { kind: "complete" }]);
+  const t = orchestrator.enqueue(goalTask());
+  await endTurn(fake, 0);
+  expect(store.getTask(t.taskId)?.state).toBe("blocked");
+  expect(store.eventsSince(0).at(-1)).toMatchObject({ kind: "task.blocked", class: "blocked", goal: { change: "needs_you" } });
+  expect(orchestrator.followUp(t.taskId, "the key is in the keychain").ok).toBe(true);
+  await tick();
+  expect(fake.turns).toHaveLength(2);
+  expect(fake.turns[1]?.text).toContain("the key is in the keychain");
+});
+
+test("goal: failed fails the task", async () => {
+  const { store, fake, orchestrator } = goalSetup([{ kind: "failed", say: "The goal run failed." }]);
+  const t = orchestrator.enqueue(goalTask());
+  await endTurn(fake, 0);
+  expect(store.getTask(t.taskId)?.state).toBe("failed");
+  expect(store.eventsSince(0).at(-1)?.goal?.change).toBe("failed");
+});
+
+test("goal: the continue cap blocks with 'keep going?', and follow_up resets it", async () => {
+  const decisions = Array.from({ length: MAX_GOAL_CONTINUES + 1 }, (_, i) => cont(i));
+  const { store, fake, orchestrator } = goalSetup(decisions);
+  const t = orchestrator.enqueue(goalTask());
+  for (let i = 0; i <= MAX_GOAL_CONTINUES; i++) await endTurn(fake, i);
+  expect(fake.turns).toHaveLength(MAX_GOAL_CONTINUES + 1);
+  const blocked = store.getTask(t.taskId);
+  expect(blocked?.state).toBe("blocked");
+  expect(store.eventsSince(0).at(-1)?.text).toContain("Keep going?");
+  orchestrator.followUp(t.taskId, "yes, keep going");
+  expect(store.getTask(t.taskId)?.goal?.continues).toBe(0);
+});
+
+test("goal: pause during an in-flight continue turn sends nothing more and stays paused", async () => {
+  const { store, fake, orchestrator } = goalSetup([cont(0), cont(1)]);
+  const t = orchestrator.enqueue(goalTask());
+  await endTurn(fake, 0);
+  expect(fake.turns).toHaveLength(2); // the continue turn is in flight
+  await orchestrator.pause(t.taskId);
+  await endTurn(fake, 1);
+  expect(fake.turns).toHaveLength(2);
+  expect(store.getTask(t.taskId)?.state).toBe("paused");
+});
+
+test("goal: cancel during a continue turn sends nothing more and stays cancelled", async () => {
+  const { store, fake, orchestrator } = goalSetup([cont(0), cont(1)]);
+  const t = orchestrator.enqueue(goalTask());
+  await endTurn(fake, 0);
+  await orchestrator.cancel(t.taskId);
+  await endTurn(fake, 1);
+  expect(fake.turns).toHaveLength(2);
+  expect(store.getTask(t.taskId)?.state).toBe("cancelled");
+});
+
+test("goal: a pause while the decision is being read wins over the continue", async () => {
+  const store = VoiceStore.memory();
+  const fake = fakeHost();
+  let release: (d: GoalTurnDecision) => void = () => undefined;
+  const hooks: GoalHooks = { afterTurn: () => new Promise((r) => (release = r)) };
+  const orchestrator = new Orchestrator(store, fake.host, { goals: hooks });
+  const t = orchestrator.enqueue(goalTask());
+  await endTurn(fake, 0);
+  await orchestrator.pause(t.taskId);
+  release(cont(0));
+  await tick();
+  await tick();
+  expect(fake.turns).toHaveLength(1);
+  expect(store.getTask(t.taskId)?.state).toBe("paused");
+});
+
+test("goal: restart mid-run fails it as interrupted and nothing auto-continues", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "voice-goal-")), "voice.json");
+  const before = await VoiceStore.open(path);
+  const t = before.createTask(goalTask({ goal: { objective: "ship it", requestedAt: 0, runId: "r1", continues: 2 } }));
+  before.transition(t.taskId, "running", "task.started", "Started", { sessionId: "s9" });
+  await before.flush();
+
+  const store = await VoiceStore.open(path);
+  const fake = fakeHost();
+  const goals = scriptedGoals([cont(2)]);
+  let starts = 0;
+  const host: VoiceHost = { ...fake.host, startSession: async (...a) => (starts++, fake.host.startSession(...a)) };
+  const orchestrator = new Orchestrator(store, host, { goals: goals.hooks });
+  orchestrator.reconcile();
+  const after = store.getTask(t.taskId);
+  expect(after?.state).toBe("failed");
+  expect(after?.interrupted).toBe(true);
+  orchestrator.pump();
+  await tick();
+  expect(starts).toBe(0);
+  expect(fake.turns).toHaveLength(0);
+  expect(goals.calls).toHaveLength(0);
+});
+
+// ---- questions -------------------------------------------------------------
+
+test("ask_user blocks with the question; an answer goes to the agent and the task runs again; a stale one is refused", async () => {
+  const { store, fake, orchestrator } = setup();
+  const t = orchestrator.enqueue(task());
+  await tick();
+  orchestrator.onSessionPayload("s1", {
+    kind: "ask_user",
+    requestId: "ask_1",
+    questions: [{ id: "q1", question: "Which database, in /Users/me/app/db?", kind: "choice", options: [{ label: "Postgres", value: "pg" }, { label: "SQLite" }] }],
+  });
+  const blocked = store.getTask(t.taskId);
+  expect(blocked?.state).toBe("blocked");
+  expect(blocked?.question).toEqual({ requestId: "ask_1", text: "Which database, in db?", options: ["Postgres", "SQLite"] });
+  expect(store.eventsSince(0).at(-1)).toMatchObject({ kind: "task.blocked", text: "Question: Which database, in db?" });
+  // A tool update while the question is open does not unblock it.
+  orchestrator.onSessionPayload("s1", { update: { sessionUpdate: "tool_call", title: "Read" } });
+  expect(store.getTask(t.taskId)?.state).toBe("blocked");
+
+  expect(orchestrator.answerQuestion(t.taskId, "ask_0", "Postgres").ok).toBe(false);
+  expect(fake.asked).toHaveLength(0);
+  const r = orchestrator.answerQuestion(t.taskId, "ask_1", "postgres");
+  expect(r.ok).toBe(true);
+  expect(fake.asked).toEqual([["s1", "ask_1", { action: "answer", answers: { q1: "pg" } }]]);
+  expect(store.getTask(t.taskId)?.state).toBe("running");
+  expect(store.getTask(t.taskId)?.question).toBeUndefined();
+  expect(orchestrator.answerQuestion(t.taskId, "ask_1", "again").ok).toBe(false);
+});
+
+test("ask_user_closed clears the question and returns the task to running", async () => {
+  const { store, orchestrator } = setup();
+  const t = orchestrator.enqueue(task());
+  await tick();
+  orchestrator.onSessionPayload("s1", { kind: "ask_user", requestId: "ask_2", questions: [{ id: "q", question: "Go?", kind: "confirm" }] });
+  expect(store.getTask(t.taskId)?.state).toBe("blocked");
+  orchestrator.onSessionPayload("s1", { kind: "ask_user_closed", requestId: "ask_2" });
+  expect(store.getTask(t.taskId)?.state).toBe("running");
+  expect(store.getTask(t.taskId)?.question).toBeUndefined();
 });

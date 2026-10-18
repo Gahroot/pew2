@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { ggStrips, goalDrawerRow, isGoalsProvider, suggestGoalName } from "./goalsAgent";
+import {
+  GOALS_PROVIDER_IDS,
+  ggStrips,
+  goalDrawerRow,
+  goalProviderOf,
+  goalsFor,
+  goalsPlaceholder,
+  isGoalsProvider,
+  suggestGoalName,
+} from "./goalsAgent";
 
 describe("ggStrips", () => {
   test("never shows autopilot/checklist/plan for gg-goals", () => {
@@ -47,5 +56,32 @@ describe("goalDrawerRow", () => {
   });
   test("a running goal gets the busy dot", () => {
     expect(goalDrawerRow({ ...goal, status: "running" }, "just now").row.busy).toBe(true);
+  });
+});
+
+describe("goals backends", () => {
+  test("both goals providers, nothing else", () => {
+    expect(GOALS_PROVIDER_IDS).toEqual(["gg-goals", "ez-goals"]);
+    expect(isGoalsProvider("ez-goals")).toBe(true);
+    expect(isGoalsProvider("gg-goals")).toBe(true);
+    expect(isGoalsProvider("ezcoder")).toBe(false);
+    expect(isGoalsProvider(undefined)).toBe(false);
+  });
+  test("absent providerId is GG's; filter by chip", () => {
+    expect(goalProviderOf({})).toBe("gg-goals");
+    expect(goalProviderOf({ providerId: "ez-goals" })).toBe("ez-goals");
+    const goals = [{ id: "a" }, { id: "b", providerId: "ez-goals" }];
+    expect(goalsFor(goals, "ez-goals")?.map((g) => g.id)).toEqual(["b"]);
+    expect(goalsFor(goals, "gg-goals")?.map((g) => g.id)).toEqual(["a"]);
+    expect(goalsFor(undefined, "gg-goals")).toBeUndefined();
+  });
+  test("placeholder names the provider", () => {
+    expect(goalsPlaceholder("EZ Goals", true)).toBe("Message EZ Goals...");
+    expect(goalsPlaceholder("GG Goals", false)).toBe("Describe the goal...");
+  });
+  test("drawer row carries the goal's backend", () => {
+    const base = { id: "g", name: "G", status: "idle", path: "/g", lastActiveMs: 1 };
+    expect(goalDrawerRow(base, "now").row.providerId).toBe("gg-goals");
+    expect(goalDrawerRow({ ...base, providerId: "ez-goals" }, "now").row.providerId).toBe("ez-goals");
   });
 });

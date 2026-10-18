@@ -4,7 +4,7 @@
  */
 import { isAvailable } from "../providers/registry.js";
 import { connectProvider, type AcpSessionHandle, type ConfigOption } from "../acp/connect.js";
-import { dirname as __dirname, resolve as __resolve } from "node:path";
+import { dirname as __dirname, join as __join, resolve as __resolve } from "node:path";
 import { resolveWorkspace } from "../workspace.js";
 import { readProbeCache, writeProbeCache } from "../probe-cache.js";
 import { readConfigPrefs } from "../config-prefs.js";
@@ -12,9 +12,9 @@ import { readCommandDirs } from "../commands/from-disk.js";
 import { DaemonSpares } from "./spares.js";
 import {
   EMPTY_CAPABILITIES,
-  GG_GOALS_ID,
-  GG_PROVIDER_ID,
-  goalsRoot,
+  GOALS_BACKENDS,
+  goalsBackend,
+  isGoalsId,
   readExtensions,
   withStoredPrefs,
   type ProviderCapabilities,
@@ -38,17 +38,18 @@ export abstract class DaemonProbes extends DaemonSpares {
     providerId: string,
     { refresh = false } = {},
   ): Promise<ProviderCapabilities> {
-    if (providerId === GG_GOALS_ID) {
-      if (!this.isEnabled(GG_GOALS_ID)) return EMPTY_CAPABILITIES;
-      const base = await this.probeRaw(GG_PROVIDER_ID, { refresh });
+    const backend = goalsBackend(providerId);
+    if (backend && providerId === backend.goalsId) {
+      if (!this.isEnabled(providerId)) return EMPTY_CAPABILITIES;
+      const base = await this.probeRaw(backend.agentId, { refresh });
       if (base === EMPTY_CAPABILITIES) return base;
-      const ext = base.extensions ?? this.knownExtensions.get(GG_PROVIDER_ID);
+      const ext = base.extensions ?? this.knownExtensions.get(backend.agentId);
       return {
         ...base,
         sessions: base.sessions
-          .filter((s) => this.isGoalFolder(s.cwd))
+          .filter((s) => this.isGoalFolder(s.cwd, backend.goalsId))
           .map((s) => {
-            const name = this.goalNames.get(__resolve(s.cwd));
+            const name = this.goalNames.get(backend.goalsId)?.get(__resolve(s.cwd));
             return name ? { ...s, title: name } : s;
           }),
         projects: [],
@@ -61,18 +62,28 @@ export abstract class DaemonProbes extends DaemonSpares {
       };
     }
     const raw = await this.probeRaw(providerId, { refresh });
-    if (providerId !== GG_PROVIDER_ID || raw === EMPTY_CAPABILITIES) return raw;
+    if (!backend || raw === EMPTY_CAPABILITIES) return raw;
+    const goalsId = backend.goalsId;
     return {
       ...raw,
-      sessions: raw.sessions.filter((s) => !this.isGoalFolder(s.cwd)),
-      ...(raw.projects ? { projects: raw.projects.filter((p) => !this.isGoalFolder(p.path)) } : {}),
+      sessions: raw.sessions.filter((s) => !this.isGoalFolder(s.cwd, goalsId)),
+      ...(raw.projects ? { projects: raw.projects.filter((p) => !this.isGoalFolder(p.path, goalsId)) } : {}),
     };
   }
 
-  /** A directory directly inside the goals root, or a path from the last goals list. */
-  isGoalFolder(cwd: string): boolean {
+  /**
+   * A directory directly inside a goals backend's root, or a path from its last
+   * goals list. Without `goalsId`, any backend. `<root>/projects` is ezcoder's
+   * goal-runs store (no goal.json), never a goal folder.
+   */
+  isGoalFolder(cwd: string, goalsId?: string): boolean {
     const abs = __resolve(cwd);
-    return this.goalNames.has(abs) || __dirname(abs) === __resolve(goalsRoot());
+    const backends = goalsId === undefined ? GOALS_BACKENDS : GOALS_BACKENDS.filter((b) => b.goalsId === goalsId);
+    return backends.some((b) => {
+      const root = __resolve(b.root());
+      if (abs === __join(root, "projects")) return false;
+      return this.goalNames.get(b.goalsId)?.has(abs) === true || __dirname(abs) === root;
+    });
   }
 
   protected async probeRaw(
@@ -290,7 +301,7 @@ export abstract class DaemonProbes extends DaemonSpares {
     const probed = await this.probeProvider(providerId, { refresh });
     if (probed === EMPTY_CAPABILITIES) return probed;
     const extensions = probed.extensions ?? this.knownExtensions.get(providerId);
-    if (providerId === GG_GOALS_ID) {
+    if (isGoalsId(providerId)) {
       return { ...probed, configOptions: withStoredPrefs(probed.configOptions, await readConfigPrefs(providerId)) };
     }
     return {

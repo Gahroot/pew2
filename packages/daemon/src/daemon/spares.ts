@@ -8,7 +8,7 @@
 import type { LoadedProvider } from "../providers/registry.js";
 import { connectProvider, type AcpSessionHandle } from "../acp/connect.js";
 import { DaemonState } from "./state.js";
-import { EMPTY_CAPABILITIES, GG_GOALS_ID, readExtensions } from "./types.js";
+import { EMPTY_CAPABILITIES, isGoalsId, readExtensions } from "./types.js";
 
 export abstract class DaemonSpares extends DaemonState {
   /**
@@ -98,7 +98,7 @@ export abstract class DaemonSpares extends DaemonState {
     // A GG Goals process belongs to one goal folder, and a spare is parked at
     // the default workspace — no goal could ever adopt it, so it would only be
     // a second idle GG Coder. Goal conversations open cold.
-    if (providerId === GG_GOALS_ID) return Promise.resolve();
+    if (isGoalsId(providerId)) return Promise.resolve();
     // Any warm process for this provider is enough to skip the boot; the
     // directory match is `takeSpare`'s business, not this one's.
     if (this.hasSpare(providerId)) {

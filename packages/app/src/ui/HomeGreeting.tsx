@@ -9,6 +9,7 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 import Reanimated, { runOnJS, useAnimatedReaction, useAnimatedStyle, useSharedValue, type SharedValue } from "react-native-reanimated";
 import { theme } from "../theme";
 import { lastActiveLabel } from "../ggState";
+import { recentChatsFit } from "../homeFit";
 import { Dissolve } from "./motion/Dissolve";
 import { Pew } from "../pew/Pew";
 import { homeMood, pewInk } from "../pew/palette";
@@ -51,6 +52,12 @@ export interface HomeGreetingProps {
   typing?: SharedValue<number>;
   /** Pew smiles (its tap is about to open the agent switcher, which carries the smile on). */
   smiling?: boolean;
+  /**
+   * The tallest this block can be, centred as it is, and still clear the
+   * composer (`homeMaxHeight`). The recent-chats row is left out when it would
+   * not fit; undefined keeps it.
+   */
+  maxHeight?: number;
 }
 
 /** Pew's size while typing, as a fraction of the hero. */
@@ -61,10 +68,14 @@ const HERO = 200;
 const GLOW = 340;
 const MAX_CHATS = 6;
 
-export function HomeGreeting({ color, busy, online = true, failed = false, text, status, onPressPew, chats, onOpenChat, typing, smiling = false }: HomeGreetingProps) {
+export function HomeGreeting({ color, busy, online = true, failed = false, text, status, onPressPew, chats, onOpenChat, typing, smiling = false, maxHeight }: HomeGreetingProps) {
   const mood: PewMood = smiling ? "happy" : failed ? "oops" : homeMood(online, busy);
   const ink = pewInk(color);
-  const shown = (chats ?? []).slice(0, MAX_CHATS);
+  // The block's height without the row: the same whether the row is drawn or
+  // not, so deciding from it cannot flip the row on and off.
+  const [core, setCore] = useState(0);
+  const withRow = onOpenChat !== undefined && recentChatsFit(core, ROW_SPACE, maxHeight);
+  const shown = withRow ? (chats ?? []).slice(0, MAX_CHATS) : [];
   // Height of everything under Pew, so a typing Pew can move down by half of
   // it and sit in the middle of the block once the rest has gone.
   const below = useSharedValue(0);
@@ -91,7 +102,15 @@ export function HomeGreeting({ color, busy, online = true, failed = false, text,
     },
   );
   return (
-    <View style={styles.root}>
+    <View
+      style={styles.root}
+      onLayout={(e) => {
+        // Measured with whatever this render drew, so the row's space comes off
+        // only when it was there.
+        const height = Math.round(e.nativeEvent.layout.height) - (withRow ? ROW_SPACE : 0);
+        setCore((prev) => (prev === height ? prev : height));
+      }}
+    >
       <Reanimated.View style={[styles.spot, pewStyle]}>
         <AgentGlow color={ink} size={GLOW} />
         <Dissolve>
@@ -142,9 +161,10 @@ export function HomeGreeting({ color, busy, online = true, failed = false, text,
           history arrives a moment after launch, and adding the row then pushed
           Pew and the greeting up the screen. Now the cards fade into a space
           that was already there. (A brand-new install with no chats keeps the
-          empty band; the layout never jumps.) */}
-      {onOpenChat && shown.length === 0 && <View style={styles.cardsHold} />}
-      {shown.length > 0 && onOpenChat && (
+          empty band; the layout never jumps.) A screen too short for the row
+          (see `homeFit.ts`) draws neither the row nor its band. */}
+      {withRow && shown.length === 0 && <View style={styles.cardsHold} />}
+      {withRow && shown.length > 0 && onOpenChat && (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -182,6 +202,10 @@ const GREETING_LINE = theme.line.greeting;
 
 /** A recent-chat card's height, fixed so the row is the same before and after. */
 const CARD_HEIGHT = 76;
+/** Space above the row (`cards`/`cardsHold` marginTop). */
+const ROW_GAP = theme.space(6);
+/** All the height the row adds to the block, drawn or held. */
+const ROW_SPACE = CARD_HEIGHT + ROW_GAP;
 /** The card's height is fixed, so its text may grow only this far before it would clip. */
 const CARD_FONT_SCALE = 1.3;
 
@@ -200,10 +224,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   hint: { color: theme.color.textDim, fontSize: 13, marginTop: theme.space(1) },
-  cards: { alignSelf: "stretch", marginTop: theme.space(6), flexGrow: 0 },
+  cards: { alignSelf: "stretch", marginTop: ROW_GAP, flexGrow: 0 },
   cardsRow: { paddingHorizontal: theme.gutter, gap: theme.space(2) },
   card: { ...dashedOutline, width: 148, height: CARD_HEIGHT, borderRadius: 12, padding: theme.space(3), gap: theme.space(1.5) },
   // The cards' space while there are none yet: the row's own height.
-  cardsHold: { alignSelf: "stretch", marginTop: theme.space(6), height: CARD_HEIGHT },
+  cardsHold: { alignSelf: "stretch", marginTop: ROW_GAP, height: CARD_HEIGHT },
   cardTitle: { color: theme.color.text, fontSize: 13, lineHeight: 17 },
 });

@@ -378,13 +378,13 @@ export function createActions(refs: ActionRefs, deps: ActionDeps) {
   },
 
   /** Ask for the goal list (GG Coder). */
-  refreshGoals: () => {
+  refreshGoals: (providerIds?: readonly string[]) => {
     const requestId = `goals_${++goalCounter.current}`;
-    if (post({ t: "goals", requestId })) setGg((g) => ({ ...g, goalsLoading: true }));
+    if (post({ t: "goals", requestId, ...(providerIds ? { providerIds: [...providerIds] } : {}) })) setGg((g) => ({ ...g, goalsLoading: true }));
   },
 
   /** Create a goal. Returns the request id to watch in `goalResults`. */
-  createGoal: (input: { name: string; goal: string; context: string[]; instructions?: string; files?: WireAttachment[] }): string | undefined => {
+  createGoal: (input: { name: string; goal: string; context: string[]; instructions?: string; files?: WireAttachment[]; providerId?: string }): string | undefined => {
     const requestId = `goal_${++goalCounter.current}`;
     return post({ t: "goal.create", requestId, ...input }) ? requestId : undefined;
   },
@@ -394,11 +394,14 @@ export function createActions(refs: ActionRefs, deps: ActionDeps) {
     goalId: string,
     action: "delete" | "pause" | "resume" | "update" | "critterModel",
     extra: { context?: string[]; instructions?: string; model?: string | null } = {},
+    providerId?: string,
   ): string | undefined => {
     const requestId = `goal_${++goalCounter.current}`;
-    const sent = post({ t: "goal.action", requestId, goalId, action, ...extra });
+    const sent = post({ t: "goal.action", requestId, goalId, action, ...extra, ...(providerId ? { providerId } : {}) });
     if (sent && action === "delete") {
-      setGg((g) => ({ ...g, goals: g.goals?.filter((goal) => goal.id !== goalId) }));
+      // Ids are slugs and collide across backends: drop only this backend's.
+      const owner = providerId ?? "gg-goals";
+      setGg((g) => ({ ...g, goals: g.goals?.filter((goal) => goal.id !== goalId || (goal.providerId ?? "gg-goals") !== owner) }));
     }
     return sent ? requestId : undefined;
   },

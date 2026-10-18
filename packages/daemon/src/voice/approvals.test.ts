@@ -49,6 +49,7 @@ function setup() {
       answered.push(option);
       return true;
     },
+    answerAsk: () => true,
     hasSession: () => true,
     lastText: () => undefined,
   };

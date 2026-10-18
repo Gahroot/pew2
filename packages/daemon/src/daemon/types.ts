@@ -142,16 +142,59 @@ export function goalsRoot(env: NodeJS.ProcessEnv = process.env): string {
   return join(env.GG_AGENT_DIR || join(homedir(), ".gg"), "goals");
 }
 
-/** `gg-goals`, synthesised in memory from the ggcoder provider (no manifest file). */
-export function goalsProviderFrom(gg: LoadedProvider): LoadedProvider {
+/** A goals backend: the agent whose ACP connection speaks `_gg/goals/*`, offered as its own goals provider. */
+export interface GoalsBackend {
+  goalsId: string;
+  agentId: string;
+  name: string;
+  /** The agent's name, for errors ("EZ Coder isn't installed…"). */
+  agentName: string;
+  color: string;
+  root: (env?: NodeJS.ProcessEnv) => string;
+}
+
+/** Every agent with a goals extension. gg-goals first: an untargeted goal action searches it first. */
+export const GG_GOALS_BACKEND: GoalsBackend = {
+  goalsId: GG_GOALS_ID,
+  agentId: GG_PROVIDER_ID,
+  name: "GG Goals",
+  agentName: "GG Coder",
+  color: "#8b7cf6",
+  root: goalsRoot,
+};
+
+export const GOALS_BACKENDS: readonly GoalsBackend[] = [
+  GG_GOALS_BACKEND,
+  {
+    goalsId: "ez-goals",
+    agentId: "ezcoder",
+    name: "EZ Goals",
+    agentName: "EZ Coder",
+    color: "#a78bfa",
+    root: (env: NodeJS.ProcessEnv = process.env) => env.PEW2_TEST_EZ_GOALS_ROOT || join(homedir(), ".ezcoder", "goals"),
+  },
+];
+
+/** The backend for a goals id or its agent id. */
+export function goalsBackend(id: string): GoalsBackend | undefined {
+  return GOALS_BACKENDS.find((b) => b.goalsId === id || b.agentId === id);
+}
+
+/** Is this provider id a goals provider (not its agent)? */
+export function isGoalsId(id: string | undefined): boolean {
+  return id !== undefined && GOALS_BACKENDS.some((b) => b.goalsId === id);
+}
+
+/** A goals provider, synthesised in memory from its agent's provider (no manifest file). */
+export function goalsProviderFrom(agent: LoadedProvider, backend: GoalsBackend = GG_GOALS_BACKEND): LoadedProvider {
   return {
-    ...gg,
+    ...agent,
     manifest: {
-      ...gg.manifest,
-      id: GG_GOALS_ID,
-      name: "GG Goals",
-      description: "Long-running goals: GG Goals plans, runs workers and checks in.",
-      pew: { ...gg.manifest.pew, color: "#8b7cf6", requiresWorkspace: false },
+      ...agent.manifest,
+      id: backend.goalsId,
+      name: backend.name,
+      description: `Long-running goals: ${backend.name} plans, runs workers and checks in.`,
+      pew: { ...agent.manifest.pew, color: backend.color, requiresWorkspace: false },
     },
   };
 }

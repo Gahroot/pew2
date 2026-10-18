@@ -10,6 +10,7 @@
  * Honesty rule: "completed" means the agent's turn ended, and the text says
  * so. Nothing here ever says a thing worked on its own authority.
  */
+import type { AskAnswer } from "../acp/connect-types.js";
 import { humanError } from "../errors.js";
 import { buildDebrief, TurnEvidence } from "./debrief.js";
 import {
@@ -20,7 +21,8 @@ import {
   speakable,
   type PermissionOption,
 } from "./safety.js";
-import { ACTIVE, TERMINAL, type NewTask, type StoredTask, type VoiceStore } from "./store.js";
+import type { VoiceGoalChange } from "./types.js";
+import { ACTIVE, TERMINAL, type NewTask, type StoredGoal, type StoredTask, type VoiceStore } from "./store.js";
 
 /** The slice of Daemon the dispatcher needs; a fake in tests. */
 /** A screenshot as a prompt carries it: the bytes, inline, and a name to call it by. */
@@ -42,10 +44,31 @@ export interface VoiceHost {
   prompt(sessionId: string, text: string, attachments?: readonly PromptImage[]): Promise<void>;
   cancel(sessionId: string): Promise<void>;
   answerPermission(sessionId: string, requestId: string, optionId: string): boolean;
+  /** Answer the agent's open `ask_user` question. False when it is no longer open. */
+  answerAsk(sessionId: string, requestId: string, result: AskAnswer): boolean;
   hasSession(sessionId: string): boolean;
   /** What the agent said at the end of the current turn. */
   lastText(sessionId: string): string | undefined;
 }
+
+/** What a goal task does once a turn ends; decided from the run on disk (`goalRuns.ts`). */
+export type GoalTurnDecision =
+  | { kind: "continue"; prompt: string; goal?: StoredGoal }
+  | { kind: "complete"; goal?: StoredGoal }
+  | { kind: "needs_you"; say: string; goal?: StoredGoal }
+  | { kind: "failed"; say: string; goal?: StoredGoal }
+  | { kind: "stalled"; say: string; goal?: StoredGoal }
+  /** No run found yet: an ordinary turn. */
+  | { kind: "ordinary" };
+
+export interface GoalHooks {
+  afterTurn(task: StoredTask): Promise<GoalTurnDecision>;
+}
+
+/** "Continue this run" turns per user instruction; `followUp` resets the count. */
+export const MAX_GOAL_CONTINUES = 6;
+
+export const GOAL_COMPLETED_TEXT = "The agent reports the goal passed: verifier and final audit recorded.";
 
 export interface OrchestratorOptions {
   now?: () => number;
@@ -58,6 +81,14 @@ export interface OrchestratorOptions {
    * gone. Without it a task that names any fails rather than going out blind.
    */
   readAttachments?: (attachmentIds: readonly string[]) => Promise<PromptImage[]>;
+  /** Drives goal tasks past one turn; without it a goal task ends like any other. */
+  goals?: GoalHooks;
+}
+
+/** An open `ask_user`, kept so a spoken answer can be mapped onto its question ids. */
+interface OpenAsk {
+  requestId: string;
+  questions: Array<{ id: string; options: Array<{ label: string; value?: string }> }>;
 }
 
 /** One message for a running task's next turn, with any screenshots that go with it. */
@@ -89,6 +120,9 @@ export class Orchestrator {
   private readonly looping = new Set<string>();
   /** Tool calls seen since the task last started running, for the debrief. */
   private readonly evidence = new Map<string, TurnEvidence>();
+  private readonly goals?: GoalHooks;
+  /** Open agent questions per task. */
+  private readonly asks = new Map<string, OpenAsk>();
 
   constructor(
     private readonly store: VoiceStore,
@@ -100,6 +134,7 @@ export class Orchestrator {
     this.timeoutMs = options.taskTimeoutMs ?? 30 * 60_000;
     this.backoffMs = options.retryBackoffMs ?? 5_000;
     this.readAttachments = options.readAttachments;
+    this.goals = options.goals;
   }
 
   // ---- startup -------------------------------------------------------------
@@ -147,8 +182,12 @@ export class Orchestrator {
     // `/commit` and friends are expanded by the agent only when the prompt
     // *starts* with them, so a command is always its own turn, sent verbatim.
     const command = isSlashCommand(line);
+    // The user spoke to it: a goal gets a fresh run of continue turns.
+    if (task.goal) this.store.patch(taskId, { goal: { ...task.goal, continues: 0, lastRunUpdatedAt: undefined } });
+    // A goal parked on "keep going?" or "needs you" has no turn to queue behind.
+    const parked = task.state === "blocked" && !this.looping.has(taskId) && !task.approval && !task.question;
 
-    if (ACTIVE.has(task.state) || task.state === "queued" || task.state === "paused") {
+    if (!parked && (ACTIVE.has(task.state) || task.state === "queued" || task.state === "paused")) {
       if ((task.state === "queued" || task.state === "paused") && !command) {
         // Not started: fold into the task's own prompt so the agent sees one
         // instruction, and its screenshots go out with that first prompt.
@@ -193,6 +232,7 @@ export class Orchestrator {
         activity: undefined,
       });
       this.permissions.delete(taskId);
+      this.asks.delete(taskId);
       await this.safeCancel(task.sessionId);
       this.pump();
     } else {
@@ -222,6 +262,7 @@ export class Orchestrator {
     if (TERMINAL.has(task.state)) return { ok: false, error: `Task is already ${task.state}.` };
     const sessionId = task.sessionId;
     this.permissions.delete(taskId);
+    this.asks.delete(taskId);
     this.followUps.delete(taskId);
     this.store.transition(taskId, "cancelled", "task.cancelled", `Cancelled: ${task.title}`);
     await this.safeCancel(sessionId);
@@ -450,12 +491,29 @@ export class Orchestrator {
     this.evidence.set(taskId, evidence);
     try {
       let next: FollowUp | undefined = first;
-      while (next !== undefined) {
-        await this.sendTurn(taskId, sessionId, next);
+      for (;;) {
+        while (next !== undefined) {
+          await this.sendTurn(taskId, sessionId, next);
+          const task = this.store.getTask(taskId);
+          if (!task || !ACTIVE.has(task.state)) return; // cancelled, paused or timed out meanwhile
+          this.lastActivity.set(taskId, this.now());
+          next = this.followUps.get(taskId)?.shift();
+        }
         const task = this.store.getTask(taskId);
-        if (!task || !ACTIVE.has(task.state)) return; // cancelled, paused or timed out meanwhile
-        this.lastActivity.set(taskId, this.now());
-        next = this.followUps.get(taskId)?.shift();
+        if (!task?.goal || !this.goals) break;
+        const decision = await this.goalDecision(task);
+        // Re-read after the await: a pause, cancel or timeout meanwhile wins, and nothing more is sent.
+        const now = this.store.getTask(taskId);
+        if (!now?.goal || now.state !== "running") return;
+        const queued = this.followUps.get(taskId)?.shift();
+        if (queued) {
+          next = queued;
+          continue;
+        }
+        if (decision.kind === "ordinary") break;
+        if (this.finishGoalTurn(now, decision, evidence, sessionId)) return;
+        if (decision.kind !== "continue") return;
+        next = { text: decision.prompt, attachmentIds: [] };
       }
       const lastText = this.host.lastText(sessionId);
       const summary = speakable(lastText, 220);
@@ -480,6 +538,125 @@ export class Orchestrator {
       if (this.evidence.get(taskId) === evidence) this.evidence.delete(taskId);
       this.pump();
     }
+  }
+
+  // ---- goals ---------------------------------------------------------------
+
+  private async goalDecision(task: StoredTask): Promise<GoalTurnDecision> {
+    try {
+      return (await this.goals?.afterTurn(task)) ?? { kind: "ordinary" };
+    } catch {
+      // An unreadable run is not a verdict on the work: end like an ordinary turn.
+      return { kind: "ordinary" };
+    }
+  }
+
+  /**
+   * Apply a goal decision. Returns true when the task left the loop (finished,
+   * blocked or failed); false only for a continue that is going out.
+   */
+  private finishGoalTurn(task: StoredTask, decision: Exclude<GoalTurnDecision, { kind: "ordinary" }>, evidence: TurnEvidence, sessionId: string): boolean {
+    const goal: StoredGoal = decision.goal ?? (task.goal as StoredGoal);
+    const runId = goal.runId;
+    const extra = (change: VoiceGoalChange) => ({
+      goal: { ...(runId ? { runId } : null), change },
+    });
+    switch (decision.kind) {
+      case "continue": {
+        if (goal.continues >= MAX_GOAL_CONTINUES) {
+          this.store.transition(
+            task.taskId,
+            "blocked",
+            "task.blocked",
+            `The goal has had ${MAX_GOAL_CONTINUES} continue turns since you last spoke to it. Keep going?`,
+            { goal, activity: undefined },
+            extra("stalled"),
+          );
+          return true;
+        }
+        this.store.patch(task.taskId, { goal: { ...goal, continues: goal.continues + 1 } });
+        this.lastActivity.set(task.taskId, this.now());
+        return false;
+      }
+      case "complete": {
+        const lastText = this.host.lastText(sessionId);
+        const summary = speakable(lastText, 220);
+        this.store.transition(task.taskId, "completed", "task.completed", GOAL_COMPLETED_TEXT, {
+          goal,
+          lastOutput: summary || undefined,
+          activity: undefined,
+          debrief: buildDebrief({ lastText, steps: evidence.list() }),
+        }, extra("passed"));
+        return true;
+      }
+      case "needs_you":
+        this.store.transition(task.taskId, "blocked", "task.blocked", `The goal needs you: ${speakable(decision.say, 200)}`, { goal, activity: undefined }, extra("needs_you"));
+        return true;
+      case "failed":
+        this.store.transition(task.taskId, "failed", "task.failed", speakable(decision.say, 200) || "The goal run failed.", { goal, activity: undefined, error: "goal run failed" }, extra("failed"));
+        return true;
+      case "stalled":
+        this.store.transition(task.taskId, "blocked", "task.blocked", `${speakable(decision.say, 160)} Keep going, or try a different approach?`, { goal, activity: undefined }, extra("stalled"));
+        return true;
+    }
+  }
+
+  // ---- questions -----------------------------------------------------------
+
+  /**
+   * Answer the agent's open question. Checked against the question open *now*,
+   * like approvals: an answer to an earlier question is refused, not applied.
+   * A plain string answers every question, matched to an option label when one fits.
+   */
+  answerQuestion(taskId: string, requestId: string, answer: string | AskAnswer): Outcome {
+    const task = this.store.getTask(taskId);
+    if (!task) return { ok: false, error: `No task ${taskId}.` };
+    if (!task.question) return { ok: false, error: "Stale: that task is not waiting on a question any more." };
+    if (task.question.requestId !== requestId) {
+      return { ok: false, error: "Stale: a different question is open now. Ask for open questions." };
+    }
+    const open = this.asks.get(taskId);
+    if (!open || open.requestId !== requestId || !task.sessionId) {
+      return { ok: false, error: "Stale: the agent is no longer waiting on that question." };
+    }
+    const result = typeof answer === "string" ? toAskAnswer(open, answer) : answer;
+    if (!this.host.answerAsk(task.sessionId, requestId, result)) {
+      return { ok: false, error: "Stale: the agent had already moved on from that question." };
+    }
+    this.closeQuestion(task, requestId, typeof answer === "string" ? `Answered: ${speakable(answer, 80)}` : "Question answered.");
+    return { ok: true, value: this.store.getTask(taskId) ?? task };
+  }
+
+  private onAsk(task: StoredTask, requestId: string, record: { questions?: unknown }) {
+    const questions = Array.isArray(record.questions) ? record.questions : [];
+    const parsed: OpenAsk["questions"] = [];
+    const spoken: string[] = [];
+    const labels: string[] = [];
+    for (const q of questions) {
+      const item = q as { id?: unknown; question?: unknown; options?: unknown } | null;
+      if (!item || typeof item.id !== "string") continue;
+      const options = (Array.isArray(item.options) ? item.options : [])
+        .map((o) => o as { label?: unknown; value?: unknown } | null)
+        .filter((o): o is { label: string; value?: unknown } => !!o && typeof o.label === "string")
+        .map((o) => ({ label: o.label, ...(typeof o.value === "string" ? { value: o.value } : null) }));
+      parsed.push({ id: item.id, options });
+      if (typeof item.question === "string") spoken.push(speakable(item.question, 160));
+      for (const o of options) labels.push(speakable(o.label, 40));
+    }
+    this.asks.set(task.taskId, { requestId, questions: parsed });
+    const text = speakable(spoken.filter(Boolean).join(" "), 240) || "The agent has a question.";
+    const options = labels.filter(Boolean).slice(0, 8);
+    this.store.transition(task.taskId, "blocked", "task.blocked", `Question: ${text}`, {
+      question: { requestId, text, ...(options.length ? { options } : null) },
+    });
+  }
+
+  private closeQuestion(task: StoredTask, requestId: string, note: string) {
+    if (this.asks.get(task.taskId)?.requestId === requestId) this.asks.delete(task.taskId);
+    if (task.question?.requestId !== requestId) return;
+    this.lastActivity.set(task.taskId, this.now());
+    const pendingApproval = !!task.approval;
+    this.store.transition(task.taskId, pendingApproval ? "blocked" : "running", "task.progress", note, { question: undefined });
   }
 
   // ---- session events ------------------------------------------------------
@@ -507,12 +684,20 @@ export class Orchestrator {
       this.onPermission(task, record.requestId, record.params);
       return;
     }
+    if (record?.kind === "ask_user" && typeof record.requestId === "string") {
+      this.onAsk(task, record.requestId, record as { questions?: unknown });
+      return;
+    }
+    if (record?.kind === "ask_user_closed" && typeof record.requestId === "string") {
+      this.closeQuestion(task, record.requestId, "Question closed; continuing.");
+      return;
+    }
     const update = record?.update;
     if (!update?.sessionUpdate) return;
     this.evidence.get(task.taskId)?.record(update);
 
     // Any sign of progress while "blocked" means the request was answered elsewhere (the app's own sheet).
-    if (task.state === "blocked" && !this.permissions.get(task.taskId)?.size) {
+    if (task.state === "blocked" && !this.permissions.get(task.taskId)?.size && !task.question && this.looping.has(task.taskId)) {
       this.store.transition(task.taskId, "running", "task.progress", "Approval handled; continuing.", {
         approval: undefined,
       });
@@ -561,6 +746,17 @@ export class Orchestrator {
       // The session may already be gone; the task state is what matters.
     }
   }
+}
+
+/** A spoken answer as the agent expects it: each question gets the option it names, or the words. */
+function toAskAnswer(open: OpenAsk, answer: string): AskAnswer {
+  const said = answer.trim();
+  const answers: Record<string, string> = {};
+  for (const q of open.questions) {
+    const option = q.options.find((o) => o.label.toLowerCase() === said.toLowerCase());
+    answers[q.id] = option ? option.value ?? option.label : said;
+  }
+  return { action: "answer", answers };
 }
 
 /** `/name` at the very start: an agent command, not prose. */

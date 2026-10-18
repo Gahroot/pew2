@@ -8,7 +8,7 @@ import { readKnownProjects, rememberKnownProject } from "../known-projects.js";
 import { hydrateMessageCounts } from "../acp/messageCounts.js";
 import { sessionsInProject, type AgentProject } from "../projects.js";
 import { DaemonProbes } from "./probing.js";
-import { GG_PROVIDER_ID, PROJECT_SESSION_LIMIT } from "./types.js";
+import { PROJECT_SESSION_LIMIT, goalsBackend } from "./types.js";
 
 export abstract class DaemonProjects extends DaemonProbes {
   /**
@@ -28,7 +28,8 @@ export abstract class DaemonProjects extends DaemonProbes {
     // on the same `ggcoder acp`), and a goal is often what it ran last: that
     // put a goal folder in GG Coder's composer as "the project". Goal folders
     // belong to GG Goals alone.
-    const own = providerId === GG_PROVIDER_ID ? sessions.filter((s) => !this.isGoalFolder(s.cwd)) : sessions;
+    const backend = goalsBackend(providerId);
+    const own = backend?.agentId === providerId ? sessions.filter((s) => !this.isGoalFolder(s.cwd, backend.goalsId)) : sessions;
     return own[0]?.cwd;
   }
 

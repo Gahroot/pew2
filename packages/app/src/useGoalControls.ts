@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { useDaemon } from "./useDaemon";
-import { ggStrips, isGoalsProvider } from "./goalsAgent";
+import { ggStrips, goalProviderOf, goalsFor, isGoalsProvider } from "./goalsAgent";
 import { goalForSession, type GoalSummary } from "./ggState";
 import { latestKenSaying, withoutKenLines } from "./kenLine";
 import { returnedDraft } from "./queue";
@@ -43,8 +43,8 @@ export function useGoalControls({
     setAutopilot: setAutopilotDaemon,
     requestChecklist,
     refreshGoals,
-    createGoal,
-    goalAction,
+    createGoal: createGoalDaemon,
+    goalAction: goalActionDaemon,
     openGoal: openGoalDaemon,
     browseWorkspaces,
   } = daemon;
@@ -63,9 +63,16 @@ export function useGoalControls({
     lastAskId.current = askId;
   }, [askId]);
   const goalState = openSessionId ? gg.goalStates[openSessionId] : undefined;
+  // The goals chip in use (GG Goals or EZ Goals): the drawer, create and act go there.
+  const activeGoalsCandidate = daemon.effectiveProviderId ?? activeId;
+  const activeGoalsId = isGoalsProvider(activeGoalsCandidate) ? activeGoalsCandidate : undefined;
+  const goalsHere = useMemo(
+    () => (activeGoalsId ? goalsFor(gg.goals, activeGoalsId) : gg.goals),
+    [gg.goals, activeGoalsId],
+  );
   const goalHere =
-    isGoalsProvider(daemon.effectiveProviderId ?? activeId) && (openSessionId || daemon.workspace)
-      ? goalForSession(gg.goals, { sessionId: openSessionId, cwd: daemon.workspace?.cwd }, goalState)
+    activeGoalsId !== undefined && (openSessionId || daemon.workspace)
+      ? goalForSession(goalsHere, { sessionId: openSessionId, cwd: daemon.workspace?.cwd }, goalState)
       : undefined;
   // Goal header/roster/Ken line belong to GG Goals conversations only.
   const inGoal =
@@ -148,7 +155,21 @@ export function useGoalControls({
     // The setters are the screen's state setters, handed in: stable.
     [openGoalDaemon, setMenuOpen],
   );
-  const deleteGoal = useCallback((goal: GoalSummary) => goalAction(goal.id, "delete"), [goalAction]);
+  const createGoal = useCallback(
+    (input: Parameters<typeof createGoalDaemon>[0]) =>
+      createGoalDaemon(activeGoalsId ? { ...input, providerId: activeGoalsId } : input),
+    [createGoalDaemon, activeGoalsId],
+  );
+  // Acts on the goal open here (or, failing that, the active chip's backend).
+  const goalAction = useCallback(
+    (goalId: string, action: Parameters<typeof goalActionDaemon>[1], extra: Parameters<typeof goalActionDaemon>[2] = {}) =>
+      goalActionDaemon(goalId, action, extra, goalHere?.id === goalId ? goalProviderOf(goalHere) : activeGoalsId),
+    [goalActionDaemon, goalHere, activeGoalsId],
+  );
+  const deleteGoal = useCallback(
+    (goal: GoalSummary) => goalActionDaemon(goal.id, "delete", {}, goalProviderOf(goal)),
+    [goalActionDaemon],
+  );
   const openNewGoal = useCallback((prefill?: string) => {
     setMenuOpen(false);
     setNewGoalPrefill(prefill);
@@ -189,6 +210,8 @@ export function useGoalControls({
 
   return {
     gg,
+    activeGoalsId,
+    goalsHere,
     refreshGoals,
     createGoal,
     goalAction,

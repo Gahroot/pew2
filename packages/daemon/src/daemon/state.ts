@@ -297,11 +297,11 @@ export abstract class DaemonState {
    */
   protected disabled = new Set<string>();
 
-  /** Goal folder paths (resolved) -> goal name, from the last goals list. */
-  protected goalNames = new Map<string, string>();
+  /** Per goals id: goal folder paths (resolved) -> goal name, from that backend's last goals list. */
+  protected goalNames = new Map<string, Map<string, string>>();
 
-  /** One shared boot of a GG Coder connection for goal calls, while in flight. */
-  protected ggConnecting?: Promise<AcpSessionHandle>;
+  /** Per goals id: one shared boot of the agent's connection for goal calls, while in flight. */
+  protected ggConnecting = new Map<string, Promise<AcpSessionHandle>>();
 
   // ── Implemented by a later layer, called from an earlier one ─────────────
   // Type-only declarations: they emit nothing, so every call still goes through

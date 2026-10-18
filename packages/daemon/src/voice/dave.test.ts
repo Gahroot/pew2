@@ -2,10 +2,14 @@ import { expect, test } from "bun:test";
 import {
   BACKLOG_TOOLS,
   DaveClient,
+  daveChanges,
+  daveCheckinEnabled,
   daveClient,
+  daveDigest,
   daveConfig,
   daysUntil,
   FocusSchema,
+  TriageUndoSchema,
 } from "./dave.js";
 import { Orchestrator, type VoiceHost } from "./dispatcher.js";
 import { buildRegistry } from "./registry.js";
@@ -121,14 +125,18 @@ interface Seen {
   url: string;
   origin: string | null;
   method: string;
+  search: string;
+  csrf: string | null;
+  contentType: string | null;
+  body: unknown;
 }
 
 /** A fake DAVE: routes by path, records every request. */
-function fakeDave(routes: Record<string, () => Response> = {}) {
+function fakeDave(routes: Record<string, (seen: Seen) => Response> = {}) {
   const seen: Seen[] = [];
   const json = (body: unknown) => () =>
     new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-  const table: Record<string, () => Response> = {
+  const table: Record<string, (seen: Seen) => Response> = {
     "/api/intel/focus": json(focusFixture()),
     "/api/meetings/items": json(meetingsFixture),
     "/api/intel/projects/p-acme": json(intelFixture),
@@ -148,15 +156,29 @@ function fakeDave(routes: Record<string, () => Response> = {}) {
   const impl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     const headers = new Headers(init?.headers);
-    seen.push({ url: url.pathname, origin: headers.get("origin"), method: init?.method ?? "GET" });
-    const route = table[url.pathname];
-    return route ? route() : new Response("not found", { status: 404 });
+    const method = init?.method ?? "GET";
+    const entry: Seen = {
+      url: url.pathname,
+      origin: headers.get("origin"),
+      method,
+      search: url.search,
+      csrf: headers.get("x-dave-csrf"),
+      contentType: headers.get("content-type"),
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    };
+    seen.push(entry);
+    const route = table[`${method} ${url.pathname}`] ?? table[url.pathname];
+    return route ? route(entry) : new Response("not found", { status: 404 });
   }) as unknown as typeof fetch;
   return { impl, seen, client: new DaveClient({ off: false, origin: ORIGIN }, impl) };
 }
 
 function harness(
-  opts: { routes?: Record<string, () => Response>; providers?: string[]; paths?: string[] } = {},
+  opts: {
+    routes?: Record<string, (seen: Seen) => Response>;
+    providers?: string[];
+    paths?: string[];
+  } = {},
 ) {
   const dave = fakeDave(opts.routes);
   const store = VoiceStore.memory();
@@ -171,6 +193,7 @@ function harness(
     },
     async cancel() {},
     answerPermission: () => true,
+    answerAsk: () => true,
     hasSession: () => true,
     lastText: () => undefined,
   };
@@ -191,7 +214,7 @@ function harness(
   let n = 0;
   const call = (name: string, args: Record<string, unknown> = {}, callId = `c${++n}`) =>
     executor.handle({ callId, name, args });
-  return { ...dave, store, call, prompts };
+  return { ...dave, store, call, prompts, orchestrator };
 }
 
 // ---- config -----------------------------------------------------------------
@@ -607,4 +630,394 @@ test("a DAVE tool with DAVE turned off fails plainly", async () => {
   });
   const r = await executor.handle({ callId: "x", name: "check_backlog", args: {} });
   expect(r).toMatchObject({ ok: false, error: "DAVE is turned off." });
+});
+
+// ---- opening check-in ---------------------------------------------------------
+
+test("daveDigest makes one GET with the short timeout and maps each project's top", async () => {
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify(focusFixture()), { status: 200 });
+  }) as unknown as typeof fetch;
+  const digest = await daveDigest(new DaveClient({ off: false, origin: ORIGIN }, fetchImpl), 1500);
+  expect(calls.map((c) => [c.url, c.init?.method])).toEqual([[`${ORIGIN}/api/intel/focus`, "GET"]]);
+  expect(digest).toEqual({
+    "p-acme": { topObjectiveId: "o1", projectName: "Acme Portal" },
+    "p-bill": { topObjectiveId: "o2", projectName: "billing-api" },
+  });
+});
+
+test("daveDigest honours its timeout and is undefined on failure", async () => {
+  const hang = ((_url: string, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    })) as unknown as typeof fetch;
+  const started = Date.now();
+  // Constructor timeout is 60s; the per-call one must win.
+  const digest = await daveDigest(new DaveClient({ off: false, origin: ORIGIN }, hang, 60_000), 50);
+  expect(digest).toBeUndefined();
+  expect(Date.now() - started).toBeLessThan(2_000);
+  const down = (async () => {
+    throw new TypeError("connect ECONNREFUSED");
+  }) as unknown as typeof fetch;
+  expect(await daveDigest(new DaveClient({ off: false, origin: ORIGIN }, down))).toBeUndefined();
+  expect(await daveDigest(new DaveClient({ off: false, refused: "no" }, down))).toBeUndefined();
+});
+
+test("daveChanges: first sight is silent, a changed top names the project only", () => {
+  const digest = {
+    "p-acme": { topObjectiveId: "o1", projectName: "Acme Portal" },
+    "p-bill": { topObjectiveId: "o2", projectName: "billing-api" },
+  };
+  const first = daveChanges(undefined, digest);
+  expect(first).toEqual({ projects: [], seen: { "p-acme": "o1", "p-bill": "o2" } });
+  expect(daveChanges(first.seen, digest).projects).toEqual([]);
+  const next = daveChanges(first.seen, {
+    ...digest,
+    "p-acme": { topObjectiveId: "o9", projectName: "Acme Portal" },
+    "p-new": { topObjectiveId: "o7", projectName: "Triten" },
+  });
+  expect(next.projects).toEqual(["Acme Portal", "Triten"]);
+  expect(next.seen).toEqual({ "p-acme": "o9", "p-bill": "o2", "p-new": "o7" });
+  expect(JSON.stringify(next.projects)).not.toMatch(/Do o|o9|o7/);
+  // No digest (DAVE down): nothing announced, the seen map is kept.
+  expect(daveChanges(first.seen, undefined)).toEqual({ projects: [], seen: first.seen });
+});
+
+test("daveCheckinEnabled is on unless PEW2_DAVE_CHECKIN=off", () => {
+  expect(daveCheckinEnabled({})).toBe(true);
+  expect(daveCheckinEnabled({ PEW2_DAVE_CHECKIN: "off" })).toBe(false);
+  expect(daveCheckinEnabled({ PEW2_DAVE_CHECKIN: "on" })).toBe(true);
+});
+
+// ---- closed loop: next, progress, review and confirm-gated writes ----------
+
+const reply = (body: unknown, status = 200) => () =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const prepared = (id: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  projectId: "p-acme",
+  projectName: "Acme Portal",
+  kind: "decide",
+  title: `Accept the export plan ${id.slice(0, 2)}`,
+  whyNow: "Mail bob@acme.com about https://secret.example/doc",
+  effort: "one_tap",
+  primary: { label: "Accept", op: { op: "accept_proposal", proposalId: "pr1" } },
+  secondary: [],
+  draft: null,
+  doneWhen: ["Plan accepted"],
+  evidence: [{ label: "Kickoff call", at: null, sourceKind: "meeting" }],
+  missing: [],
+  objectiveId: "0123456789abcdef",
+  targetItemIds: [],
+  score: 1,
+  uncertain: null,
+  fingerprint: "f",
+  ...extra,
+});
+const A1 = "aaaaaaaaaaaaaaaa";
+const A2 = "bbbbbbbbbbbbbbbb";
+const A3 = "cccccccccccccccc";
+const A4 = "dddddddddddddddd";
+const HAND = "eeeeeeeeeeeeeeee";
+const nextState = {
+  generatedAt: "x",
+  action: prepared(A1),
+  queue: [
+    prepared(A1),
+    prepared(A2),
+    prepared(A3),
+    prepared(A4),
+    prepared(HAND, { primary: { label: "Hand to EZ Coder", op: { op: "hand_to_ezcoder", objectiveId: "o1" } } }),
+  ],
+  skipped: 0,
+};
+const briefing = (sinceSource: string, since = "2026-10-14T08:00:00Z") => ({
+  generatedAt: "x",
+  since,
+  sinceSource,
+  next: prepared(A1),
+  alsoReady: [prepared(A2)],
+  progress: [
+    {
+      eventId: "e1",
+      projectId: "p-acme",
+      projectName: "Acme Portal",
+      at: "2026-10-16T10:00:00Z",
+      headline: "EZ Coder finished: export to CSV now looks implemented (not verified).",
+      verdict: "partial",
+      advanced: [{ itemId: "i1", title: "Export to CSV", from: {}, to: {} }],
+      stillMissing: [{ itemId: "i2", title: "Import", state: "not_implemented", why: "open" }],
+      finishLine: { verified: 1, observed: 1, total: 4, percentDone: 37.5 },
+      nextBefore: null,
+      nextAfter: null,
+      source: "ezcoder",
+      link: "explicit",
+    },
+  ],
+  decisionsWaiting: 2,
+  changedSince: { objectiveChanges: 1, workEvents: 1 },
+});
+const csrfRoute = (tokens: string[]) => {
+  let n = 0;
+  return () => new Response(JSON.stringify({ token: tokens[Math.min(n++, tokens.length - 1)] }));
+};
+const noLeak = (out: unknown) => {
+  const text = JSON.stringify(out);
+  for (const leak of ["bob@acme.com", "https://", "secret.example"]) expect(text).not.toContain(leak);
+};
+
+test("progress asks DAVE's briefing as pew and holds no timestamp between calls", async () => {
+  const routes = { "/api/intel/briefing": reply(briefing("last_asked")) };
+  const a = harness({ routes });
+  const b = harness({ routes });
+  const ra = await a.call("check_backlog", { about: "progress" });
+  await a.call("check_backlog", { about: "progress" });
+  const rb = await b.call("check_backlog", { about: "progress" });
+  const reqs = [...a.seen, ...b.seen].map((s) => `${s.method} ${s.url}${s.search}`);
+  expect(reqs).toEqual(Array(3).fill("GET /api/intel/briefing?caller=pew"));
+  expect(ra.output).toEqual(rb.output);
+  const out = ra.output as { window: string; moved: { moved: string[]; stillMissing: string[]; percentDone: number }[] };
+  expect(out.window).toBe("since you last asked");
+  expect(out.moved[0]).toMatchObject({ moved: ["Export to CSV"], stillMissing: ["Import"], percentDone: 38 });
+  noLeak(ra.output);
+});
+
+test("the spoken window follows sinceSource", async () => {
+  const window = async (src: string) =>
+    ((await harness({ routes: { "/api/intel/briefing": reply(briefing(src)) } }).call("check_backlog", { about: "progress" })).output as { window: string }).window;
+  expect(await window("last_asked")).toBe("since you last asked");
+  expect(await window("default_24h")).toBe("in the last day");
+  expect(await window("explicit")).toBe("since October 14");
+});
+
+test("next gives DAVE's one recommendation plus two alternatives; overview leads with it", async () => {
+  const h = harness({
+    routes: { "/api/intel/next": reply(nextState), "/api/intel/briefing": reply(briefing("default_24h")) },
+  });
+  const next = (await h.call("check_backlog", { about: "next" })).output as {
+    recommendation: { actionId: string };
+    alternatives: { actionId: string }[];
+  };
+  expect(next.recommendation.actionId).toBe(A1);
+  expect(next.alternatives.map((a) => a.actionId)).toEqual([A2, A3]);
+  noLeak(next);
+  const overview = (await h.call("check_backlog", {})).output as Record<string, unknown>;
+  expect(Object.keys(overview).slice(0, 3)).toEqual(["available", "next", "progress"]);
+  expect(overview.progress).toBe(
+    "in the last day: EZ Coder finished: export to CSV now looks implemented (not verified).",
+  );
+  noLeak(overview);
+});
+
+test("review summarises agreement and patterns", async () => {
+  const h = harness({
+    routes: {
+      "/api/intel/recommendations/review": reply({
+        days: 30,
+        totals: { followed: 3, overridden: 1 },
+        agreementRate: 0.75,
+        byKind: [],
+        byProject: [],
+        overrides: [],
+        patterns: ["You often pick billing first"],
+        suggestions: [{ id: "s1", text: "Raise billing-api", op: {} }],
+      }),
+    },
+  });
+  const out = (await h.call("check_backlog", { about: "review" })).output as Record<string, unknown>;
+  expect(h.seen.at(-1)?.search).toBe("?days=30");
+  expect(out).toMatchObject({ agreement: "75 percent followed", suggestions: ["Raise billing-api"] });
+});
+
+test("POST: CSRF fetched with the exact Origin, cached, and refetched once on 403", async () => {
+  let posts = 0;
+  const dave = fakeDave({
+    "/api/security/csrf": csrfRoute(["t1", "t2"]),
+    "POST /api/triage/undo": (s) => {
+      posts++;
+      return s.csrf === "t2" ? reply({ restored: 1, skipped: 0 })() : new Response("no", { status: 403 });
+    },
+  });
+  const r = await dave.client.post("/api/triage/undo", { batchId: "x" }, TriageUndoSchema);
+  expect(r).toMatchObject({ ok: true, value: { restored: 1 } });
+  expect(dave.seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+    "GET /api/security/csrf",
+    "POST /api/triage/undo",
+    "GET /api/security/csrf",
+    "POST /api/triage/undo",
+  ]);
+  const post = dave.seen.at(-1);
+  expect(post).toMatchObject({ origin: ORIGIN, csrf: "t2", contentType: "application/json", body: { batchId: "x" } });
+  await dave.client.post("/api/triage/undo", { batchId: "y" }, TriageUndoSchema);
+  expect(dave.seen.filter((s) => s.url === "/api/security/csrf")).toHaveLength(2);
+  expect(posts).toBe(3);
+
+  const always = fakeDave({
+    "/api/security/csrf": csrfRoute(["t1"]),
+    "POST /api/triage/undo": () => new Response("no", { status: 403 }),
+  });
+  expect(await always.client.post("/api/triage/undo", {}, TriageUndoSchema)).toMatchObject({
+    ok: false,
+    say: "DAVE refused the request.",
+  });
+  expect(always.seen.filter((s) => s.method === "POST")).toHaveLength(2);
+});
+
+test("POST: non-loopback and non-allow-listed paths never fetch", async () => {
+  let fetched = 0;
+  const far = daveClient({ PEW2_DAVE_URL: "http://10.0.0.5:4317" }, (async () => {
+    fetched++;
+    return new Response("{}");
+  }) as unknown as typeof fetch);
+  expect(await far?.post("/api/triage/apply", {}, TriageUndoSchema)).toMatchObject({ ok: false });
+  const dave = fakeDave({ "/api/security/csrf": csrfRoute(["t1"]) });
+  for (const path of [
+    "/api/agents/launch",
+    "/api/intel/next/ABCDEF0123456789/act",
+    "/api/intel/next/aaaaaaaaaaaaaaaa/act/x",
+    "/api/triage/apply?x=1",
+    "/api/intel/focus",
+  ])
+    expect(await dave.client.post(path, {}, TriageUndoSchema)).toMatchObject({ ok: false });
+  expect(fetched).toBe(0);
+  expect(dave.seen).toEqual([]);
+});
+
+test("act_on_backlog asks first, posts only after a yes, and never enqueues", async () => {
+  const h = harness({
+    routes: {
+      "/api/intel/next": reply(nextState),
+      "/api/security/csrf": csrfRoute(["t1"]),
+      [`POST /api/intel/next/${A1}/act`]: reply({ ok: true, actionId: A1, op: "accept_proposal", summary: "Accepted the export plan." }),
+    },
+  });
+  let enqueued = 0;
+  h.orchestrator.enqueue = () => {
+    enqueued++;
+    throw new Error("never");
+  };
+  const first = (await h.call("act_on_backlog", { actionId: A1, choice: "primary" })).output as {
+    needsConfirmation: boolean;
+    confirmToken: string;
+  };
+  expect(first.needsConfirmation).toBe(true);
+  expect(h.seen.some((s) => s.method === "POST")).toBe(false);
+  // A token without a yes, or for another choice, changes nothing.
+  await h.call("act_on_backlog", { actionId: A1, choice: "primary", confirmToken: first.confirmToken });
+  expect(h.seen.some((s) => s.method === "POST")).toBe(false);
+  const again = (await h.call("act_on_backlog", { actionId: A1, choice: "primary" })).output as { confirmToken: string };
+  await h.call("act_on_backlog", { actionId: A1, choice: "skip", confirmToken: again.confirmToken, userConfirmed: true });
+  expect(h.seen.some((s) => s.method === "POST")).toBe(false);
+  const t = (await h.call("act_on_backlog", { actionId: A1, choice: "primary" })).output as { confirmToken: string };
+  const done = await h.call("act_on_backlog", { actionId: A1, choice: "primary", confirmToken: t.confirmToken, userConfirmed: true });
+  expect(done.output).toMatchObject({ acted: true, say: "Accepted the export plan." });
+  expect(h.seen.filter((s) => s.method === "POST").map((s) => s.body)).toEqual([{ op: "accept_proposal" }]);
+
+  const hand = await h.call("act_on_backlog", { actionId: HAND, choice: "primary" });
+  expect(hand.output).toMatchObject({ acted: false, handOff: true });
+  expect(JSON.stringify(hand.output)).toContain("delegate_backlog_item");
+  expect(enqueued).toBe(0);
+  expect(h.store.tasks()).toEqual([]);
+});
+
+test("act_on_backlog reports a stale action, before and after the yes", async () => {
+  const h = harness({
+    routes: {
+      "/api/intel/next": reply(nextState),
+      "/api/security/csrf": csrfRoute(["t1"]),
+      [`POST /api/intel/next/${A2}/act`]: reply({ error: "stale" }, 409),
+    },
+  });
+  expect((await h.call("act_on_backlog", { actionId: "ffffffffffffffff", choice: "skip" })).output).toMatchObject({ stale: true });
+  const t = (await h.call("act_on_backlog", { actionId: A2, choice: "defer", until: "2026-10-20" })).output as { confirmToken: string };
+  const r = await h.call("act_on_backlog", { actionId: A2, choice: "defer", until: "2026-10-20", confirmToken: t.confirmToken, userConfirmed: true });
+  expect(r.output).toMatchObject({ acted: false, stale: true });
+  expect(h.seen.filter((s) => s.method === "POST").map((s) => s.body)).toEqual([{ op: "defer", date: "2026-10-20" }]);
+});
+
+test("act_on_backlog never claims a copy: no question, no post, and it says the draft is in DAVE", async () => {
+  const COPY = "ffffffffffff0000";
+  const BARE = "ffffffffffff0001";
+  const copyStep = { primary: { label: "Copy message", op: { op: "copy" } } };
+  const h = harness({
+    routes: {
+      "/api/intel/next": reply({
+        ...nextState,
+        queue: [
+          prepared(COPY, { ...copyStep, draft: { kind: "email", to: "bob@acme.com", subject: "Export", text: "Hi Bob, about the secret deal" } }),
+          prepared(BARE, copyStep),
+        ],
+      }),
+      "/api/security/csrf": csrfRoute(["t1"]),
+    },
+  });
+  const r = await h.call("act_on_backlog", { actionId: COPY, choice: "primary" });
+  expect(r.output).toEqual({ acted: false, copyInDave: true, say: "The email is ready to copy in DAVE; nothing was copied." });
+  // A yes changes nothing either: there is still nothing for Pew to do.
+  const yes = await h.call("act_on_backlog", { actionId: COPY, choice: "primary", confirmToken: "x", userConfirmed: true });
+  expect(yes.output).toMatchObject({ acted: false, copyInDave: true });
+  expect((await h.call("act_on_backlog", { actionId: BARE, choice: "primary" })).output).toMatchObject({
+    say: "It's ready to copy in DAVE; nothing was copied.",
+  });
+  expect(h.seen.some((s) => s.method === "POST")).toBe(false);
+  // check_backlog tells the model up front, and the draft's words never reach it.
+  const next = await h.call("check_backlog", { about: "next" });
+  expect(JSON.stringify(next.output)).toContain('"copyInDave":true');
+  for (const out of [r.output, next.output]) {
+    expect(JSON.stringify(out)).not.toContain("secret deal");
+    expect(JSON.stringify(out)).not.toContain("bob@acme.com");
+  }
+});
+
+test("clean_up_backlog previews, then applies exactly the frozen keys after a yes; undo asks too", async () => {
+  const key = (n: number) => `m:mi-${String(n).padStart(24, "0")}`;
+  const entry = (n: number, bucket: string, projectName: string, meetingTitle = "Acme kickoff") => ({
+    key: key(n), kind: "promise", bucket, title: `Idea ${n} for bob@acme.com`, projectId: "p-acme", projectName, dueDate: null,
+    meetingAt: null, meetingTitle, reasons: [], confirmed: false,
+  });
+  let entries = [entry(1, "ideas", "Acme Portal"), entry(2, "ideas", "Acme Portal"), entry(3, "old_asks", "billing-api"), entry(4, "ideas", "billing-api", "Weekly")];
+  const h = harness({
+    routes: {
+      "/api/security/csrf": csrfRoute(["t1"]),
+      "POST /api/triage/preview": () => reply({ generatedAt: "x", entries, counts: {}, total: entries.length, confirmedHidden: 0 })(),
+      "POST /api/triage/apply": (s) => reply({ batchId: "tb-000000000000000000000001", changed: (s.body as { keys: string[] }).keys.length, skipped: [], kept: [], summary: "Cleared 3 items." })(),
+      "/api/triage/batches": reply({ batches: [{ id: "tb-000000000000000000000001", createdAt: "x", source: "ui", action: "clear", summary: "Cleared 3 items.", count: 3, undoneAt: null }] }),
+      "POST /api/triage/undo": reply({ restored: 3, skipped: 0 }),
+    },
+  });
+  const p = (await h.call("clean_up_backlog", { buckets: ["ideas", "old_asks"], project: "acme", meeting: "kickoff", olderThanDays: 7, action: "clear" })).output as {
+    needsConfirmation: boolean; confirmToken: string; keys: string[]; byBucket: Record<string, number>; byProject: Record<string, number>; examples: string[];
+  };
+  expect(h.seen.find((s) => s.url === "/api/triage/preview")?.body).toEqual({
+    filter: { buckets: ["old_asks", "ideas"], olderThanDays: 7, projectId: "p-acme" },
+  });
+  expect(p.keys).toEqual([key(1), key(2), key(3)]);
+  expect(p.byBucket).toEqual({ ideas: 2, old_asks: 1 });
+  expect(p.byProject).toEqual({ "Acme Portal": 2, "billing-api": 1 });
+  expect(p.examples).toHaveLength(3);
+  noLeak(p);
+  expect(h.seen.some((s) => s.url === "/api/triage/apply")).toBe(false);
+
+  // New noise arrives before the yes; a widened key list does not redeem the token.
+  entries = [...entries, entry(5, "ideas", "Acme Portal")];
+  const widened = await h.call("clean_up_backlog", { action: "clear", keys: [...p.keys, key(5)], confirmToken: p.confirmToken, userConfirmed: true });
+  expect(widened.output).toMatchObject({ cleaned: false });
+  const p2 = (await h.call("clean_up_backlog", { buckets: ["ideas", "old_asks"], project: "acme", meeting: "kickoff", action: "clear" })).output as { confirmToken: string; keys: string[] };
+  entries = [...entries, entry(6, "ideas", "Acme Portal")];
+  const yes = await h.call("clean_up_backlog", { action: "clear", keys: [...p2.keys].reverse(), confirmToken: p2.confirmToken, userConfirmed: true });
+  expect(yes.output).toMatchObject({ cleaned: true, batchId: "tb-000000000000000000000001" });
+  expect(h.seen.filter((s) => s.url === "/api/triage/apply").map((s) => s.body)).toEqual([
+    { keys: [...p2.keys].reverse(), action: "clear" },
+  ]);
+  expect(p2.keys).not.toContain(key(6));
+
+  const u = (await h.call("undo_backlog_clean_up", {})).output as { needsConfirmation: boolean; confirmToken: string; batchId: string };
+  expect(u.needsConfirmation).toBe(true);
+  expect(h.seen.some((s) => s.url === "/api/triage/undo")).toBe(false);
+  const undone = await h.call("undo_backlog_clean_up", { batchId: u.batchId, confirmToken: u.confirmToken, userConfirmed: true });
+  expect(undone.output).toMatchObject({ undone: true });
+  expect(h.seen.find((s) => s.url === "/api/triage/undo")?.body).toEqual({ batchId: "tb-000000000000000000000001" });
 });

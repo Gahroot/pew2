@@ -100,6 +100,7 @@ function harness() {
     },
     async cancel() {},
     answerPermission: () => true,
+    answerAsk: () => true,
     hasSession: () => true,
     lastText: () => undefined,
   };

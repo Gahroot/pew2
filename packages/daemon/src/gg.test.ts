@@ -500,3 +500,72 @@ test("gg-goals: goal sessions split from ggcoder, goal cwd required, no autopilo
   expect(sent.some((m) => m.t === "autopilot.state" && m.sessionId === started.sessionId)).toBe(false);
   setEnv("GG_AGENT_DIR", undefined);
 });
+
+// ── EZ Goals: the same contract on ezcoder ───────────────────
+
+const ezProvider: LoadedProvider = {
+  ...ggProvider,
+  manifest: { ...ggProvider.manifest, id: "ezcoder", name: "EZ Coder" },
+  args: [...ggProvider.args, "--ez"],
+};
+
+async function ezDaemon() {
+  const env = await ggDaemon();
+  setEnv("PEW2_TEST_EZ_GOALS_ROOT", join(env.root, "ez-goals"));
+  (env.daemon as any).providers = [ezProvider];
+  return env;
+}
+
+test("ez-goals: list + create stamp providerId, and an ez action broadcasts only ez", async () => {
+  const { daemon, sent, send, root } = await ezDaemon();
+  await send({ t: "goals", requestId: "r1", providerIds: ["ez-goals"] });
+  expect(sent.find((m) => m.requestId === "r1")).toMatchObject({ goals: [], providerIds: ["ez-goals"] });
+
+  await send({ t: "goal.create", requestId: "c", providerId: "ez-goals", name: "Ship it", goal: "Ship", context: [] });
+  const created = sent.find((m) => m.t === "goal.result" && m.requestId === "c");
+  expect(created).toMatchObject({ ok: true, goal: { name: "Ship it", providerId: "ez-goals" } });
+  const path = created.goal.path as string;
+  expect(path.startsWith(join(root, "ez-goals"))).toBe(true);
+  expect(daemon.isGoalFolder(path, "ez-goals")).toBe(true);
+  expect(daemon.isGoalFolder(path, "gg-goals")).toBe(false);
+  const broadcast = sent.findLast((m) => m.t === "goals" && m.requestId === undefined);
+  expect(broadcast).toMatchObject({ providerIds: ["ez-goals"], goals: [{ providerId: "ez-goals" }] });
+
+  // An old app: no providerId on the action still finds the ez goal (gg absent).
+  const before = sent.length;
+  await send({ t: "goal.action", requestId: "a", goalId: created.goal.id, action: "delete" });
+  expect(sent.find((m) => m.requestId === "a")).toMatchObject({ ok: true });
+  const after = sent.slice(before).findLast((m) => m.t === "goals");
+  expect(after).toMatchObject({ providerIds: ["ez-goals"], goals: [] });
+
+  // An old app listing (no providerIds) gets today's gg-only frame, byte for byte.
+  await send({ t: "goals", requestId: "gg" });
+  const { replied: _r, ...frame } = sent.find((m) => m.requestId === "gg");
+  expect(JSON.stringify(frame)).toBe(
+    JSON.stringify({ t: "goals", requestId: "gg", goals: [], error: "GG Coder isn't installed on this machine." }),
+  );
+
+  // Without ezcoder, the error names it.
+  (daemon as any).providers = [];
+  await send({ t: "goals", requestId: "r2", providerIds: ["ez-goals"] });
+  expect(sent.find((m) => m.requestId === "r2").error).toBe("EZ Coder isn't installed on this machine.");
+});
+
+test("ez-goals: probe split, projects/ store excluded, gg-goals cannot open an ez folder", async () => {
+  const { daemon, sent, send, root } = await ezDaemon();
+  const ezRoot = join(root, "ez-goals");
+  await daemon.refreshProviders();
+  (daemon as any).providers = [ezProvider, { ...ezProvider, manifest: { ...ezProvider.manifest, id: "ez-goals", name: "EZ Goals" } }];
+  expect(daemon.isGoalFolder(join(ezRoot, "projects"))).toBe(false);
+  expect(daemon.isGoalFolder(join(ezRoot, "ship-it"))).toBe(true);
+
+  const ez = await daemon.capabilitiesFor("ezcoder");
+  expect(ez.sessions.map((s) => s.sessionId)).toEqual(["ez_runs_1", "ez_plain_1"]);
+  const goals = await daemon.capabilitiesFor("ez-goals");
+  expect(goals.sessions.map((s) => s.sessionId)).toEqual(["ez_goal_1"]);
+  expect(await daemon.lastWorkspace("ezcoder")).toBe(join(ezRoot, "projects"));
+
+  await send({ t: "session.start", requestId: "x", providerId: "gg-goals", cwd: join(ezRoot, "ship-it") });
+  expect(sent.find((m) => m.t === "error" && m.code === "not_a_goal")).toBeDefined();
+  expect(sent.some((m) => m.t === "session.started" && m.requestId === "x")).toBe(false);
+});

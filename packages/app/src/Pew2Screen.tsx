@@ -40,7 +40,7 @@ import { AttachmentSheet } from "./ui/AttachmentSheet";
 import { useAttachments } from "./ui/useAttachments";
 import { useDictation } from "./ui/useDictation";
 import { QueuedStrip } from "./ui/QueuedStrip";
-import { isGoalsProvider } from "./goalsAgent";
+import { goalsPlaceholder, isGoalsProvider } from "./goalsAgent";
 import { ThoughtSheet } from "./ui/ThoughtSheet";
 import { applyCommand, type SlashCommand } from "./slashCommands";
 import { CircleButton } from "./ui/controls";
@@ -806,6 +806,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   });
   const {
     gg,
+    goalsHere,
     refreshGoals,
     openSessionId,
     queuedHere,
@@ -918,9 +919,9 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
         onOpenConnection={openConnection}
         onClose={closeMenu}
         goals={
-          isGoalsProvider(activeId) && daemon.hasGgCoder
+          activeId !== undefined && daemon.goalsProviders.includes(activeId)
             ? {
-                list: gg.goals,
+                list: goalsHere,
                 loading: gg.goalsLoading,
                 error: gg.goalsError,
                 onRefresh: refreshGoals,
@@ -1013,6 +1014,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
             openSession={openSession}
             greeting={greeting}
             emptyReason={emptyReason}
+            bottomClearance={dockHeightFor(dockHeights, false, restingDockHeight) + stripsHeight}
           />
         ) : null}
 
@@ -1105,9 +1107,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
                   : !active
                     ? "Waiting for an agent..."
                     : isGoalsProvider(active.id)
-                      ? openSessionId
-                        ? "Message GG Goals..."
-                        : "Describe the goal..."
+                      ? goalsPlaceholder(active.name, Boolean(openSessionId))
                       : "Build anything..."
             }
             attachments={attachments}
