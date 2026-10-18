@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { IDLE_ACTIVITY, type Activity } from "../activity";
-import { receiptLength, receiptParts, revealParts, tickerLine, tickerSteps } from "./tickerText";
+import { TICKER_STEPS_MAX, receiptLength, receiptParts, revealParts, tickerLine, tickerSteps } from "./tickerText";
 
 const busy: Activity = {
   startedAt: 0,
@@ -16,6 +16,19 @@ test("steps name verb and target, marking the live one", () => {
     { id: "a", verb: "READ", target: "cursors.ts", state: "done" },
     { id: "b", verb: "SEARCH", target: "advanceCursor", state: "live" },
   ]);
+});
+
+test("steps keep only the most recent ten, live one last", () => {
+  const tools = Array.from({ length: 25 }, (_, i) => ({
+    id: `t${i}`,
+    title: `Read file${i}.ts`,
+    kind: "read" as const,
+    status: i === 24 ? ("in_progress" as const) : ("completed" as const),
+  }));
+  const steps = tickerSteps({ ...busy, tools });
+  expect(TICKER_STEPS_MAX).toBe(10);
+  expect(steps.map((s) => s.id)).toEqual(tools.slice(-10).map((t) => t.id));
+  expect(steps.at(-1)?.state).toBe("live");
 });
 
 test("working line joins the recent steps", () => {

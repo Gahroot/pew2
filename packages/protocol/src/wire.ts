@@ -669,6 +669,17 @@ export const SessionIdle = z.object({
   providerId: z.string().optional(),
   /** Last segment of the session's cwd: the project as people say it. */
   folder: z.string().optional(),
+  /**
+   * How the turn ended, when it was not a normal finish.
+   *
+   * `failed`: the agent rejected the prompt or crashed, so a banner must not
+   * say "Finished". `cancelled`: someone pressed stop, so there is nothing to
+   * announce. Absent = finished normally, which is also all an older daemon
+   * could say, so an app reading this from one keeps announcing as before.
+   */
+  outcome: z.enum(["failed", "cancelled"]).optional(),
+  /** Why a `failed` turn failed, in the words `humanError` produced. */
+  reason: z.string().optional(),
 });
 
 /**

@@ -157,7 +157,12 @@ export function goalsProviderFrom(gg: LoadedProvider): LoadedProvider {
 }
 
 /** What `prompt` did with a message: ran it (and anything queued behind it), or queued it. */
-export type PromptOutcome = "ran" | "queued";
+/**
+ * How `prompt` ended: the turn ran to its end, was only queued behind another,
+ * or was stopped by someone pressing cancel (which ACP reports as an ordinary
+ * end, so only the daemon's own `cancelling` flag can tell it apart).
+ */
+export type PromptOutcome = "ran" | "queued" | "cancelled";
 
 export function queuedForWire(entry: QueueEntry): wire.QueuedMessage {
   return {

@@ -48,6 +48,9 @@ export abstract class DaemonPromptQueue extends DaemonGg {
     session.lastUsedAt = Date.now();
     session.working = true;
     session.cancelling = false;
+    // Read before the loop clears the flag: the turn's end is the only point
+    // that knows it was a stop, and the push it decides on comes after.
+    let cancelled = false;
     try {
       // Written before the echo: an attachment that cannot be stored (over the
       // limits, disk full) must fail the whole prompt rather than leave a turn on
@@ -93,6 +96,7 @@ export abstract class DaemonPromptQueue extends DaemonGg {
             );
           }
           // The turn is over: whatever it was blocked on died with it.
+          if (session.cancelling) cancelled = true;
           session.cancelling = false;
           session.permissions?.clear();
           next = await this.takeQueuedTurn(session);
@@ -120,7 +124,7 @@ export abstract class DaemonPromptQueue extends DaemonGg {
       // twenty minutes would otherwise be reapable the moment it finished.
       session.lastUsedAt = Date.now();
     }
-    return "ran";
+    return cancelled ? "cancelled" : "ran";
   }
 
   /** Log a message as the user's turn, at the moment it reaches the agent. */

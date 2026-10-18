@@ -25,6 +25,8 @@ export interface LedProps {
   unlit?: boolean;
   style?: StyleProp<TextStyle>;
   numberOfLines?: number;
+  /** Dynamic Type ceiling, for an LED inside a fixed-height row. */
+  maxFontSizeMultiplier?: number;
 }
 
 const TONE: Record<Exclude<LedTone, "agent">, string> = {
@@ -36,13 +38,14 @@ const TONE: Record<Exclude<LedTone, "agent">, string> = {
   text: theme.color.text,
 };
 
-function LedView({ children, tone = "agent", color, size = theme.stage.ledSize, unlit = false, style, numberOfLines = 1 }: LedProps) {
+function LedView({ children, tone = "agent", color, size = theme.stage.ledSize, unlit = false, style, numberOfLines = 1, maxFontSizeMultiplier }: LedProps) {
   const agent = useAgentColor();
   const ink = color ?? (tone === "agent" ? agent : TONE[tone]);
   const lit = !unlit && tone !== "dim";
   return (
     <Text
       numberOfLines={numberOfLines}
+      maxFontSizeMultiplier={maxFontSizeMultiplier}
       style={[
         {
           fontFamily: theme.display.regular,

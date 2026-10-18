@@ -12,6 +12,7 @@ import Animated, { cancelAnimation, Easing, useAnimatedStyle, useSharedValue, wi
 import { theme } from "../theme";
 import type { Pill, PillTone } from "../statusPill";
 import { useReducedMotion } from "./useReducedMotion";
+import { useAppActive } from "./useAppActive";
 
 const TONE: Record<PillTone, string> = {
   live: theme.color.success,
@@ -24,7 +25,9 @@ const TONE: Record<PillTone, string> = {
 function StatusPillView({ pill }: { pill: Pill }) {
   const reduceMotion = useReducedMotion();
   const breath = useSharedValue(1);
-  const breathing = pill.pulse === true && !reduceMotion;
+  // Off screen the loop would only keep a display link awake: see `useAppActive`.
+  const appActive = useAppActive();
+  const breathing = pill.pulse === true && !reduceMotion && appActive;
   useEffect(() => {
     if (!breathing) {
       cancelAnimation(breath);

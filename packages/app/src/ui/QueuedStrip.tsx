@@ -24,6 +24,7 @@ import Animated, {
 import { theme } from "../theme";
 import { haptics } from "./haptics";
 import { useReducedMotion } from "./useReducedMotion";
+import { useAppActive } from "./useAppActive";
 import { queuePreview, type QueuedMessage } from "../queue";
 import { Pew } from "../pew/Pew";
 import { DashedRule } from "./stage/DashedRule";
@@ -121,13 +122,16 @@ function Packet({
   onCancel: (id: string) => void;
 }) {
   const bob = useSharedValue(0);
+  // The bob is a forever loop; it rests while the app is not on screen (see
+  // `useAppActive`). Only the bob: a flight in progress still finishes.
+  const appActive = useAppActive();
   const scale = useSharedValue(1);
   const opacity = useSharedValue(1);
   const fly = useSharedValue(0);
   const [gone, setGone] = useState(false);
 
   useEffect(() => {
-    if (still) {
+    if (still || !appActive) {
       cancelAnimation(bob);
       bob.value = 0;
       return;
@@ -138,7 +142,7 @@ function Packet({
       withRepeat(withSequence(withTiming(-3, { duration: 600, easing: ease }), withTiming(0, { duration: 600, easing: ease })), -1),
     );
     return () => cancelAnimation(bob);
-  }, [still, index, bob]);
+  }, [still, appActive, index, bob]);
 
   useEffect(() => {
     if (!flying || still) return;

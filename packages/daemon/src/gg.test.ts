@@ -325,6 +325,25 @@ test("goals: list, create, open with a kickoff turn, act, delete", async () => {
   expect(sent.findLast((m) => m.t === "goals").goals).toEqual([]);
 });
 
+test("goals replaces a parked GG Coder that has exited instead of reusing its closed connection", async () => {
+  const { daemon, sent, send } = await ggDaemon();
+  await send({ t: "goals", requestId: "r1" });
+  expect(sent.find((m) => m.requestId === "r1")).toMatchObject({ goals: [] });
+
+  // The process behind the parked spare dies (a crash, or the checkout it runs
+  // from being rebuilt), leaving the spare in place.
+  const spares = (daemon as any).spares as Map<string, { handle: AcpSessionHandle }>;
+  const parked = [...spares.values()][0]?.handle;
+  expect(parked).toBeDefined();
+  parked!.child.kill("SIGKILL");
+  await until(() => parked!.child.signalCode !== null, "spare exit");
+
+  await send({ t: "goals", requestId: "r2" });
+  const answer = sent.find((m) => m.requestId === "r2");
+  expect(answer.error).toBeUndefined();
+  expect(answer.goals).toEqual([]);
+});
+
 test("an older GG Coder answers goals with an error, not a crash", async () => {
   const { sent, send } = await ggDaemon({ old: true });
   await send({ t: "goals", requestId: "r1" });

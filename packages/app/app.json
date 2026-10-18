@@ -3,7 +3,7 @@
     "name": "pew2",
     "slug": "pew2",
     "version": "1.0.0",
-    "//scheme": "Claims the `pew2://` URL scheme so this app has a stable identity to be opened by. The only link routed is pew2://voice (src/voice/deepLink.ts), which opens a voice conversation and can do nothing else. Pairing is still camera-only, and the link it carries is a `ws://` URL, not this scheme: a link that paired on arrival would let any app that can open a URL point this phone at someone else's daemon, so any pairing handler needs a confirmation step designed first.",
+    "//scheme": "Claims the `pew2://` URL scheme so this app has a stable identity to be opened by. Two links are routed, and neither can pair, prompt or approve: pew2://voice (src/voice/deepLink.ts) opens a voice conversation, and `pew2://open?session=<id>`, from the home/Lock Screen widget, opens a conversation already in the list (`conversationFromLink` in src/widgetSnapshot.ts). Pairing stays camera-only on purpose, and the link it carries is a `ws://` URL, not this scheme: a link that paired on arrival would let any app point this phone at someone else's daemon, so that handler needs a confirmation step designed before it exists.",
     "scheme": "pew2",
     "//runtimeVersion": "Which native binary an over-the-air update may load. `appVersion` ties it to the version above, so an update built against changed native code can never be handed to a build that cannot run it — the failure being a launch loop on a phone with no way back. Actually publishing updates needs `updates.url` from `eas init`, which requires an account this repository does not carry; until then this ships the client without a source.",
     "runtimeVersion": {
@@ -17,10 +17,17 @@
       "supportsTablet": false,
       "//": "Reverse-DNS of the GitHub org that hosts this, not a domain: `pew2.dev` is not registered, and an identifier built from a domain someone else can buy is a claim that can be contested after the app is on a store \u2014 at which point it cannot be changed without shipping a new app. Fork this and you must change it: an identifier is unique per store, and a fork keeping this one cannot be submitted alongside the original.",
       "bundleIdentifier": "io.github.kenkaiii.pew2",
+      "//appleTeamId": "The team every target is signed by. Required by @bacons/apple-targets so the widget and notification extensions are signed like the app; public (it is in every signed binary), not a secret.",
+      "appleTeamId": "396M7LY29W",
+      "//entitlements": "The App Group the home/Lock Screen widget reads from: the app writes `pew2.snapshot` there (src/ui/useHomeWidget.ts), and so does the notification service extension when a push lands while the app is asleep (targets/notifications). Both targets mirror this value from here.",
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.io.github.kenkaiii.pew2"]
+      },
       "//infoPlist": "Ships verbatim into Info.plist, so no comment keys inside it — Apple reads what is written there. `ITSAppUsesNonExemptEncryption: false` answers the export-compliance question at build time instead of halting every upload to ask it. The answer is honest: this app's own cryptography is the pairing seal in @pew2/protocol (XChaCha20-Poly1305 and HKDF-SHA256 from @noble) over TLS, both exempt under the standard 'uses only encryption exempt from EAR' category. Adding a non-exempt algorithm of our own means revisiting this line, not merely the answer in the console.",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": ["audio", "remote-notification"]
+        "UIBackgroundModes": ["audio", "remote-notification"],
+        "NSLocalNetworkUsageDescription": "Used to connect to the pew2 daemon running on your computer when both are on the same network."
       }
     },
     "android": {
@@ -54,13 +61,19 @@
       [
         "expo-splash-screen",
         {
-          "//": "Without this the generated splash is pure white while the app's own background is #111111 with userInterfaceStyle dark, so every cold launch flashed white before painting. No `dark` variant: the app is dark-only, and declaring one conflicts with the app-wide userInterfaceStyle. The colour is theme.color.bg, kept in step by hand because app.json cannot import it.",
-          "backgroundColor": "#111111",
+          "//": "Without this the generated splash is pure white while the app's own background is theme.color.bg with userInterfaceStyle dark, so every cold launch flashed white before painting. No `dark` variant: the app is dark-only, and declaring one conflicts with the app-wide userInterfaceStyle. The colour is theme.color.bg, kept in step by hand because app.json cannot import it. The image is Pew from scripts/make-icon.py, lifted off that same colour so its glow composes back exactly; 250 makes his globe the size LaunchScreen's Pew opens at, so the handoff does not jump.",
+          "backgroundColor": "#0a0a0c",
           "image": "./assets/splash-icon.png",
-          "imageWidth": 160
+          "imageWidth": 250
         }
       ],
-      "expo-secure-store",
+      [
+        "expo-secure-store",
+        {
+          "//": "false removes NSFaceIDUsageDescription. Nothing here stores with requireAuthentication, and the plugin otherwise ships its generic Face ID string, a purpose string for a permission the app never asks for.",
+          "faceIDPermission": false
+        }
+      ],
       [
         "expo-camera",
         {
@@ -114,7 +127,8 @@
           "//": "Native call screen (off by default, Connection sheet). Adds the voip background mode and CallKit/Intents frameworks on iOS, and callkeep's Telecom ConnectionService plus its phone permissions on Android. Must run before withVoiceCall, whose AppDelegate code calls into callkeep."
         }
       ],
-      "./plugins/withVoiceCall"
+      "./plugins/withVoiceCall",
+      "@bacons/apple-targets"
     ],
     "//experiments": "The React Compiler memoises components automatically — the same work as the hand-written memo/useCallback in Sidebar and ChatThread, which is what stopped the drawer recomputing its lists on the frame it starts moving. Those stay: they document intent, and the compiler is a floor under them rather than a replacement. Which files it may touch is decided by `sources` in babel.config.js, not here — this flag is only the on switch, and turning it on without that filter would hand it the daemon hook too, where a dropped update reads as a reply that never arrived rather than as a slow screen.",
     "experiments": {

@@ -11,7 +11,7 @@ import { createStreamBatch, foldStreamBatch } from "./streamBatch";
 import { dropPendingSessions, isPendingSession } from "./pendingSession";
 import { markSent, partitionOutbox, queuedPendingSessions } from "./outbox";
 import { beginActivity } from "./activity";
-import { CONNECT_TIMEOUT, STALLED_ATTEMPTS, WEBSOCKET_CONNECTING } from "./daemonState";
+import { CONNECT_TIMEOUT, STALLED_ATTEMPTS, WEBSOCKET_CONNECTING, reconnectDelay } from "./daemonState";
 import type { DaemonRefs } from "./daemonContext";
 import { handleSealedFrame, type FrameRefs } from "./daemonFrame";
 
@@ -40,6 +40,7 @@ export type ConnectionRefs = FrameRefs &
     | "setState"
     | "socket"
     | "streamBoundary"
+    | "streamForeground"
     | "streamGeneration"
   >;
 
@@ -70,6 +71,7 @@ export function openConnection(
     setState,
     socket,
     streamBoundary,
+    streamForeground,
     streamGeneration,
   } = refs;
   alive.current = true;
@@ -358,8 +360,9 @@ export function openConnection(
           ? s
           : { ...s, status: "offline", unreachable: stalled },
       );
-      // Exponential backoff, capped, so a sleeping laptop does not get hammered.
-      const delay = Math.min(1000 * 2 ** attempts.current, 10_000);
+      // Exponential backoff, capped, so a sleeping laptop does not get hammered
+      // — and capped higher while the app is off screen. See `reconnectDelay`.
+      const delay = reconnectDelay(attempts.current, streamForeground.current);
       attempts.current += 1;
       retry.current = setTimeout(connect, delay);
     };

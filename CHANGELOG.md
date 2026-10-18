@@ -11,6 +11,23 @@ installs them separately, and what an app and a daemon must agree on is
 
 Dates are the day the tag was cut.
 
+## 0.9.23 — 2026-10-17
+
+### Added
+
+- **Your phone is told when an agent needs you, not only when it finishes.**
+  An approval waiting, a question from the agent, or a turn that failed now
+  sends a notification too, and the app icon's badge counts the conversations
+  stopped on an answer from you. A finished turn clears a badge left by an
+  approval you have since given.
+
+### Fixed
+
+- **GG Goals no longer fails with "ACP connection closed".** pew2 reused a
+  GG Coder process kept ready in the background without checking it was still
+  running, so after that process exited, opening GG Goals failed until pew2
+  happened to clear it. It now starts a fresh one instead.
+
 ## 0.9.22 — 2026-10-14
 
 ### Fixed

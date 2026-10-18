@@ -460,6 +460,25 @@ export function useDaemon(
     resume.current?.();
   }, []);
 
+  /**
+   * Hand the daemon this phone's push address on the connection already open.
+   *
+   * The connect path sends it only when notifications are already allowed, and
+   * it never asks: the system prompt waits for the first message sent. Once that
+   * is answered yes, the screen calls this so the token arrives now rather than
+   * at the next reconnect, which could be hours away on a steady connection.
+   * Says nothing on failure, so a phone that is already registered stays so.
+   */
+  const registerPush = useCallback(() => {
+    const ask = optionsRef.current.pushAddress;
+    if (!ask) return;
+    void ask().then((address) => {
+      if (!address || !post({ t: "app.push", ...address })) return;
+      pushRegistered.current = true;
+      optionsRef.current.onPushRegistered?.(true);
+    });
+  }, [post]);
+
   // Send a prompt, or hold it until there is a socket: see `deliverPrompt`
   // in `daemonActions.ts`.
   const deliverPrompt = useCallback(
@@ -667,6 +686,7 @@ export function useDaemon(
     ...state,
     ...actions,
     resumeNow,
+    registerPush,
     setForeground,
     /** Sends one sealed message; false when not connected. Used by the voice hook. */
     send: post,

@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "bun:test";
-import { duplicatePush, finishedNotice, summarise } from "./notificationPolicy";
+import { duplicatePush, finishedNotice, summarise, waitingCount } from "./notificationPolicy";
 
 const base = {
   sessionId: "s1",
@@ -11,6 +11,22 @@ const base = {
 describe("finishedNotice", () => {
   it("stays quiet for the conversation already on screen", () => {
     expect(finishedNotice({ ...base, activeSessionId: "s1" })).toBeNull();
+  });
+
+  it("stays quiet for a turn someone stopped on purpose", () => {
+    // The daemon sends no push for a cancel either, so the routes agree.
+    expect(finishedNotice({ ...base, foreground: false, outcome: "cancelled" })).toBeNull();
+  });
+
+  it("calls a failed turn a failure, quoting the reason rather than the half-answer", () => {
+    const notice = finishedNotice({
+      ...base,
+      activeSessionId: "other",
+      outcome: "failed",
+      reason: "Rate limited by the provider",
+      lastText: "Let me start by",
+    });
+    expect(notice?.body).toBe("Stopped on an error: Rate limited by the provider");
   });
 
   it("announces a session finishing while another is open", () => {
@@ -131,6 +147,18 @@ describe("duplicatePush", () => {
     expect(duplicatePush({ ...push, local: true, openSessionId: "s1" })).toBe(false);
   });
 
+  it("never swallows an approval as a twin of the turn just announced", () => {
+    // Only a turn ending has a local banner it could be racing. An approval
+    // seconds later is new, and dropping it leaves the agent stopped.
+    expect(duplicatePush({ ...push, kind: "approval", announcedAt: 995_000 })).toBe(false);
+    expect(duplicatePush({ ...push, kind: "question", announcedAt: 995_000 })).toBe(false);
+    expect(duplicatePush({ ...push, kind: "failed", announcedAt: 995_000 })).toBe(true);
+  });
+
+  it("still drops an approval for the conversation already open, where the sheet is", () => {
+    expect(duplicatePush({ ...push, kind: "approval", openSessionId: "s1" })).toBe(true);
+  });
+
   it("shows a push it cannot attribute to a session", () => {
     // Better a banner that cannot be deduped than a silently dropped turn.
     expect(duplicatePush({ ...push, sessionId: undefined, openSessionId: "s1" })).toBe(false);
@@ -171,4 +199,20 @@ test("a pushed turn and a locally announced one are worded identically", async (
   expect(finishedNotice({ ...turn, agentName: undefined })?.title).toBe("pew2");
   expect(finishedNotice({ ...turn, folder: undefined })?.title).toBe("Claude Code");
   expect(finishedNotice({ ...turn, folder: undefined, agentName: undefined })?.title).toBe("pew2");
+});
+
+describe("waitingCount", () => {
+  it("counts each conversation stopped on an answer once", () => {
+    // A conversation with both an approval and a question is one thing to do.
+    const sessions = [
+      { id: "a", permission: { requestId: "r1" } },
+      { id: "b" },
+      { id: "c", permission: { requestId: "r2" } },
+    ];
+    expect(waitingCount(sessions, { a: [{}], d: [{}], e: [] })).toBe(3);
+  });
+
+  it("is nothing once every approval is given", () => {
+    expect(waitingCount([{ id: "a" }], {})).toBe(0);
+  });
 });

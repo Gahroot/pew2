@@ -273,6 +273,22 @@ test("base64url round trips, and avoids characters that need escaping", () => {
   }
 });
 
+test("base64url is byte-exact across its internal chunk boundaries", () => {
+  // Encoded in 32KiB slices; a slice edge must not shift or drop a byte.
+  for (const length of [0x8000 - 1, 0x8000, 0x8000 + 1, 3 * 0x8000 + 7]) {
+    const bytes = new Uint8Array(length).map((_, i) => (i * 131 + 7) & 255);
+    const expected = Buffer.from(bytes).toString("base64url");
+    expect(toBase64Url(bytes)).toBe(expected);
+  }
+});
+
+test("base64url round trips empty, odd-length and >64KiB buffers", () => {
+  for (const length of [0, 1, 2, 3, 5, 77, 0x10000 + 13]) {
+    const bytes = new Uint8Array(length).map((_, i) => (i * 37 + 11) & 255);
+    expect([...fromBase64Url(toBase64Url(bytes))]).toEqual([...bytes]);
+  }
+});
+
 test("hex round trips and rejects malformed input", () => {
   expect(toHex(new Uint8Array([0, 15, 16, 255]))).toBe("000f10ff");
   expect([...fromHex("000f10ff")]).toEqual([0, 15, 16, 255]);

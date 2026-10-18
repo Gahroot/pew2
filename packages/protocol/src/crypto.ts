@@ -260,9 +260,23 @@ function utf8(text: string): Uint8Array {
   return new TextEncoder().encode(text);
 }
 
+/**
+ * Bytes per `String.fromCharCode` call. Every sealed frame passes through
+ * here (an image is up to 8MB), and one concatenation per byte was the slowest
+ * step of a seal. Chunked rather than one call because engines cap argument
+ * counts (~64k on Hermes and JSC); 32k stays under all of them.
+ */
+const BASE64_CHUNK = 0x8000;
+
 export function toBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += BASE64_CHUNK) {
+    // `apply` takes the typed array as-is; spreading it builds an array first.
+    parts.push(
+      String.fromCharCode.apply(null, bytes.subarray(i, i + BASE64_CHUNK) as unknown as number[]),
+    );
+  }
+  const binary = parts.join("");
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 

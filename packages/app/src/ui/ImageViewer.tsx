@@ -20,6 +20,8 @@ import { DotGlyph } from "./stage/DotGlyph";
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { theme } from "../theme";
 import { Led } from "./stage/Led";
+import { StageButton } from "./stage/StageButton";
+import { useAgentColor } from "./stage/agentColor";
 import { haptics } from "./haptics";
 import { saveImageToDevice, shareImage, type SaveResult } from "./imageSaver";
 import type { ChatImage as ChatImageModel } from "../images";
@@ -70,6 +72,8 @@ export function ImageViewer({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  // The lit Save button glows in the agent's colour, so its icon does too.
+  const agent = useAgentColor();
   const [busy, setBusy] = useState<"save" | "share" | undefined>(undefined);
   const [feedback, setFeedback] = useState<Feedback | undefined>(undefined);
 
@@ -150,45 +154,44 @@ export function ImageViewer({
             </Text>
           )}
 
+          {/* Stage buttons, the same panel every other action in the app is
+              drawn as: Save is the one lit primary, Share the unlit secondary.
+              Quiet on press, because `run` plays the haptic that says how it
+              went. */}
           <View style={styles.buttonRow}>
-            <Pressable
-              accessibilityRole="button"
+            <StageButton
+              compact
+              style={styles.half}
+              label="Save"
               accessibilityLabel="Save image to photos"
               disabled={!!busy}
+              feel="none"
+              icon={
+                busy === "save" ? (
+                  <ActivityIndicator color={agent} size="small" />
+                ) : (
+                  <Ionicons name="download-outline" size={16} color={busy ? theme.color.textDim : agent} />
+                )
+              }
               onPress={() => void run("save")}
-              style={({ pressed }) => [
-                styles.button,
-                styles.primaryButton,
-                pressed && { opacity: 0.8 },
-                !!busy && { opacity: 0.6 },
-              ]}
-            >
-              {busy === "save" ? (
-                <ActivityIndicator color={theme.color.text} size="small" />
-              ) : (
-                <Ionicons name="download-outline" size={18} color={theme.color.text} />
-              )}
-              <Text style={styles.buttonText}>Save</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
+            />
+            <StageButton
+              compact
+              kind="secondary"
+              style={styles.half}
+              label="Share"
               accessibilityLabel="Share image"
               disabled={!!busy}
+              feel="none"
+              icon={
+                busy === "share" ? (
+                  <ActivityIndicator color={theme.color.text} size="small" />
+                ) : (
+                  <Ionicons name="share-outline" size={16} color={busy ? theme.color.textDim : theme.color.text} />
+                )
+              }
               onPress={() => void run("share")}
-              style={({ pressed }) => [
-                styles.button,
-                pressed && { backgroundColor: theme.color.surfacePressed },
-                !!busy && { opacity: 0.6 },
-              ]}
-            >
-              {busy === "share" ? (
-                <ActivityIndicator color={theme.color.text} size="small" />
-              ) : (
-                <Ionicons name="share-outline" size={18} color={theme.color.text} />
-              )}
-              <Text style={styles.buttonText}>Share</Text>
-            </Pressable>
+            />
           </View>
         </View>
       </View>
@@ -318,23 +321,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.gutter,
     paddingTop: theme.space(3),
     gap: theme.space(2),
-    alignItems: "center",
   },
   feedback: {
     color: theme.color.textDim,
     fontSize: theme.font.small,
     textAlign: "center",
   },
-  buttonRow: { flexDirection: "row", gap: theme.space(3) },
-  button: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.space(2),
-    minHeight: theme.size.control,
-    paddingHorizontal: theme.space(5),
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.color.surface,
-  },
-  primaryButton: { backgroundColor: theme.color.surfaceRaised },
-  buttonText: { color: theme.color.text, fontSize: theme.font.body, fontWeight: "600" },
+  // Same pairing as Plan review's Feedback / Reject row: two equal halves on
+  // the gutter rail.
+  buttonRow: { flexDirection: "row", gap: theme.space(2) },
+  half: { flex: 1 },
 });

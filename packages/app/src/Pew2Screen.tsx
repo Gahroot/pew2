@@ -23,8 +23,12 @@ import { projectDrawerRows } from "./historyMetadata";
 import { restorePresentation } from "./restoreState";
 import { currentTool } from "./activity";
 import { dockHeightFor, recordDockHeight, type DockHeights } from "./dockHeight";
-import { ensureNotificationPermission, setOpenConversation } from "./ui/notifier";
+import { clearConversationNotices, ensureNotificationPermission, setOpenConversation, setWaitingBadge } from "./ui/notifier";
 import { useTurnBanners } from "./ui/useTurnBanners";
+import { useAppActive } from "./ui/useAppActive";
+import { waitingCount } from "./notificationPolicy";
+import { onWidgetLink, useHomeWidget } from "./ui/useHomeWidget";
+import { widgetSnapshot } from "./widgetSnapshot";
 import { pushAddress } from "./ui/push";
 import { callKitAvailable } from "./ui/callkit";
 import { ComposerDock, type ComposerDockHandle } from "./ui/ComposerDock";
@@ -136,6 +140,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   // the socket's setup above the ref that decides whether a finished turn needs
   // a banner, which is the more delicate of the two orderings.
   const resumeDaemon = daemon.resumeNow;
+  const registerDaemonPush = daemon.registerPush;
   const setDaemonForeground = daemon.setForeground;
   useEffect(() => {
     setDaemonForeground(AppState.currentState === "active");
@@ -166,6 +171,36 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
   // reply it is announcing. The daemon pushes without knowing what this phone is
   // showing — only this side can know that.
   useEffect(() => setOpenConversation(daemon.sessionId), [daemon.sessionId]);
+
+  // The open conversation's banners leave Notification Center once it is
+  // actually in front of the user: a "needs your OK" left there after the
+  // sheet was answered is a request that no longer exists.
+  const appActive = useAppActive();
+  useEffect(() => {
+    if (appActive && daemon.sessionId) void clearConversationNotices(daemon.sessionId);
+  }, [appActive, daemon.sessionId]);
+
+  // The icon's badge: conversations stopped on an answer. The daemon sets it
+  // on every push; this keeps it true while the app is awake.
+  const waiting = waitingCount(daemon.sessions, daemon.gg.asks);
+  useEffect(() => {
+    void setWaitingBadge(waiting);
+  }, [waiting]);
+
+  // The home and Lock Screen widget: what is waiting, working and new. Built
+  // from the drawer's rows rather than the sessions themselves, because those
+  // keep their identity across streamed chunks and the sessions do not.
+  const widget = useMemo(
+    () =>
+      widgetSnapshot({
+        sessions: drawerProjection.rows,
+        asks: daemon.gg.asks,
+        providers: daemon.providers,
+        machine: daemon.machineName,
+      }),
+    [drawerProjection.rows, daemon.gg.asks, daemon.providers, daemon.machineName],
+  );
+  useHomeWidget(widget);
   /** The name of a goal just launched, until its conversation has something in it. */
   const [launchingGoal, setLaunchingGoal] = useState<string>();
   // `EXPO_PUBLIC_DEV_SHEET=<name>` (development only) starts with that sheet
@@ -628,8 +663,12 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
 
       // Asked at the moment it earns itself: the user is about to wait on an
       // agent, which is the only thing this app notifies about. Not awaited — the
-      // prompt must go out whatever the system decides.
-      void ensureNotificationPermission();
+      // prompt must go out whatever the system decides. A yes hands the daemon
+      // this phone's push address straight away: the connect path never asks,
+      // so until now it had nothing to send.
+      void ensureNotificationPermission().then((allowed) => {
+        if (allowed && !pushExpected.current) registerDaemonPush();
+      });
 
       // Offline the message is queued rather than sent, which still counts as
       // taken: it is on screen, marked as waiting, and goes out on reconnect.
@@ -648,7 +687,7 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     // Attachments are read through their ref, so staging a photo does not
     // rebuild this and re-render the memoised dock beneath it.
     // `attachmentsRef` and `setAttachments` come from `useAttachments`: stable.
-    [cancelDictation, daemon.sessionId, promptDaemon, startDaemon, active, attachmentsRef, setAttachments],
+    [cancelDictation, daemon.sessionId, promptDaemon, startDaemon, active, attachmentsRef, setAttachments, registerDaemonPush, pushExpected],
   );
 
   /**
@@ -709,6 +748,21 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
     [activeId, selectDaemonProject, leaveDaemon],
   );
   useDevOpenSession({ rows: drawerProjection.rows, activeId, openSession, startNewChat, setNewChatOpen });
+
+  // Widget taps. A conversation goes through `setChoice`, exactly like a
+  // banner tap, so a widget that launched the app cold waits for the session
+  // list the same way. Subscribed once: the subscription re-reads the link the
+  // app was launched with, so re-subscribing would act on it again.
+  const startNewChatRef = useRef(startNewChat);
+  startNewChatRef.current = startNewChat;
+  useEffect(
+    () =>
+      onWidgetLink((link) => {
+        if (link.kind === "open") setChoice({ sessionId: link.sessionId });
+        else startNewChatRef.current();
+      }),
+    [setChoice],
+  );
 
   const closeNewChat = useCallback(() => setNewChatOpen(false), []);
   // The drawer only ever offers this beside a named project, so it always has

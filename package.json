@@ -23,7 +23,7 @@
     "providers:list": "bun run packages/daemon/src/cli/index.ts providers list",
     "providers:verify": "bun run packages/daemon/src/cli/index.ts providers verify",
     "daemon": "bun run packages/daemon/src/index.ts",
-    "icon": "bun packages/app/scripts/make-icon.ts"
+    "icon": "python3 packages/app/scripts/make-icon.py"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

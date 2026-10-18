@@ -24,8 +24,10 @@
  * one string does not, and that is the price of an instant notification.
  */
 import {
+  endsTurn,
   noticeBody,
   noticeTitle,
+  type NoticeKind,
   type NoticeOrigin,
   type wire,
 } from "@pew2/protocol";
@@ -63,8 +65,19 @@ export interface NativeCallRegistration {
 
 export interface FinishedTurnPush extends NoticeOrigin {
   sessionId: string;
-  /** The agent's closing message, if it ended the turn by saying something. */
+  /** What the banner is about. Absent = a turn that finished normally. */
+  kind?: NoticeKind;
+  /**
+   * The text the banner quotes: the agent's closing message, the error, the
+   * tool waiting for approval or the question, depending on `kind`.
+   */
   lastText?: string;
+  /**
+   * The app icon's badge: how many conversations are stopped on an answer
+   * from this phone right now. Sent on every push, so a finished turn also
+   * clears a badge left by an approval that has since been given.
+   */
+  badge?: number;
 }
 
 /**
@@ -151,10 +164,19 @@ interface ExpoMessage {
   to: string;
   title: string;
   body: string;
-  data: { sessionId: string } | VoiceCallbackPush;
+  data: { sessionId: string; kind: NoticeKind } | VoiceCallbackPush;
   sound: "default";
+  /** Only on a turn ending: the inline reply box makes no sense for an approval. */
   categoryId?: string;
   channelId?: string;
+  /** iOS: the icon's badge, absolute rather than an increment. */
+  badge?: number;
+  /**
+   * iOS: wake the app's notification service extension, which folds the push
+   * into the home-screen widget's snapshot. The banner itself is unchanged,
+   * and an app too old to have the extension simply shows it as before.
+   */
+  mutableContent?: boolean;
   /**
    * High, which is what makes this instant on Android.
    *
@@ -175,19 +197,25 @@ interface ExpoTicket {
 }
 
 export function pushMessages(registry: PushRegistry, turn: FinishedTurnPush): ExpoMessage[] {
+  const kind = turn.kind ?? "finished";
   const title = noticeTitle(turn);
-  const body = noticeBody(turn.lastText);
+  const body = noticeBody(turn.lastText, kind);
   return registry.list().map((target) => ({
     to: target.token,
     title,
     body,
     // Read back on tap to open the right conversation, and on an inline reply
-    // to address the right agent. Matches the local banner's payload exactly,
-    // so the app's existing handling works unchanged for both.
-    data: { sessionId: turn.sessionId },
+    // to address the right agent. `kind` lets the app judge a duplicate: only
+    // a turn ending has a local banner it could be racing.
+    data: { sessionId: turn.sessionId, kind },
     sound: "default",
-    categoryId: CATEGORY,
+    // The reply box answers a turn that ended. On an approval or a question
+    // a typed line would only queue behind the request it was meant to
+    // answer, so those open the app, where the real sheet is.
+    ...(endsTurn(kind) ? { categoryId: CATEGORY } : null),
     ...(target.channelId ? { channelId: target.channelId } : null),
+    ...(turn.badge !== undefined ? { badge: turn.badge } : null),
+    ...(target.platform === "ios" ? { mutableContent: true } : null),
     priority: "high",
   }));
 }

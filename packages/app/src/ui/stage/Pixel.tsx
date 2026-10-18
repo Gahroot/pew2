@@ -22,6 +22,7 @@ import Animated, {
 import { theme } from "../../theme";
 import { withAlpha } from "../../motion";
 import { useReducedMotion } from "../useReducedMotion";
+import { useAppActive } from "../useAppActive";
 import { useAgentColor } from "./agentColor";
 
 export type PixelKind = "live" | "attention" | "unread";
@@ -48,7 +49,9 @@ function PixelView({ kind, color, paused = false }: { kind: PixelKind; color?: s
   const agent = useAgentColor();
   // Paused (off screen, a closed drawer) holds still exactly like Reduce
   // Motion: the state still reads, nothing animates where nobody can see it.
-  const reduce = useReducedMotion() || paused;
+  // Backgrounded is the same: see `useAppActive`.
+  const appActive = useAppActive();
+  const reduce = useReducedMotion() || paused || !appActive;
   const ink = color ?? (kind === "attention" ? theme.color.attention : agent);
   const blink = useSharedValue(1);
   useEffect(() => {

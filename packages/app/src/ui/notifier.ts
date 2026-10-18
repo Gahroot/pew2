@@ -22,6 +22,7 @@
  */
 import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
+import type { NoticeKind } from "@pew2/protocol";
 import type { Notice } from "../notificationPolicy";
 import { duplicatePush } from "../notificationPolicy";
 import { suppressVoicePush, type Presence } from "../voice/voiceNotifications";
@@ -38,6 +39,45 @@ let onScreenSessionId: string | undefined;
 /** Told by the screen, so an arriving push knows what the user can already see. */
 export function setOpenConversation(sessionId: string | undefined): void {
   onScreenSessionId = sessionId;
+}
+
+const NOTICE_KINDS: readonly NoticeKind[] = ["finished", "failed", "approval", "question"];
+
+function kindOf(value: unknown): NoticeKind | undefined {
+  return NOTICE_KINDS.find((kind) => kind === value);
+}
+
+/**
+ * Take a conversation's banners out of Notification Center.
+ *
+ * Called when that conversation is on screen with the app in front: the reply
+ * is being read and the approval sheet is up, so a banner left behind is a
+ * stale "needs your OK" for a request that may already be answered. Errors are
+ * swallowed: tidying the tray must never cost the conversation anything.
+ */
+export async function clearConversationNotices(sessionId: string): Promise<void> {
+  try {
+    const shown = await Notifications.getPresentedNotificationsAsync();
+    const mine = shown.filter((n) => n.request.content.data?.sessionId === sessionId);
+    await Promise.all(mine.map((n) => Notifications.dismissNotificationAsync(n.request.identifier)));
+  } catch {
+    // Nothing to do about it.
+  }
+}
+
+/**
+ * Set the app icon's badge: conversations stopped on an answer from you.
+ *
+ * The daemon sends the same count on every push, so the badge is right while
+ * the app is asleep; this keeps it right while the app is awake, and clears it
+ * once the last approval is given. Same failure rule as the rest of this file.
+ */
+export async function setWaitingBadge(count: number): Promise<void> {
+  try {
+    await Notifications.setBadgeCountAsync(Math.max(0, count));
+  } catch {
+    // A refused permission also refuses the badge; nothing to tell anyone.
+  }
 }
 
 /**
@@ -79,7 +119,7 @@ function rememberAnnounced(sessionId: string): void {
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
     const data = notification.request.content.data as
-      | { sessionId?: unknown; local?: unknown }
+      | { sessionId?: unknown; local?: unknown; kind?: unknown }
       | undefined;
     const voiceSuppressed = suppressVoicePush(notification.request.content.data, {
       ...voicePresence,
@@ -90,11 +130,15 @@ Notifications.setNotificationHandler({
     const suppressed = voiceSuppressed || duplicatePush({
       local: data?.local === true,
       sessionId: typeof data?.sessionId === "string" ? data.sessionId : undefined,
+      kind: kindOf(data?.kind),
       openSessionId: onScreenSessionId,
       announcedAt: typeof data?.sessionId === "string" ? announcedAt.get(data.sessionId) : undefined,
       now: Date.now(),
       windowMs: DUPLICATE_WINDOW_MS,
     });
+    // This handler only runs with the app in front, which is where the app
+    // plays its own sounds; a system chime on top would be two sounds for one
+    // event. Off screen the system plays the banner's sound, from either route.
     return {
       shouldShowBanner: !suppressed,
       shouldShowList: !suppressed,
@@ -137,6 +181,9 @@ export const REPLY_ACTION = "reply";
 /** A granted permission, remembered so every turn is not a native round trip. */
 let granted: Promise<boolean> | undefined;
 
+/** The channel and the reply box, set up once per launch. */
+let prepared: Promise<void> | undefined;
+
 /**
  * Register the inline reply box.
  *
@@ -159,18 +206,55 @@ async function registerCategory(): Promise<void> {
   ]);
 }
 
-async function request(): Promise<boolean> {
-  if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync(CHANNEL, {
-      name: "Agent activity",
-      // The agent finishing is the thing the user is waiting on: it earns a
-      // heads-up banner rather than a silent tray entry.
-      importance: Notifications.AndroidImportance.HIGH,
-    });
+/**
+ * Create the Android channel and register the reply box, without asking for
+ * anything.
+ *
+ * Split from asking because the push token is fetched on every connection,
+ * and the channel has to exist before a push names it: Expo shows nothing at
+ * all for a push addressed to a channel the device has not created. Asking,
+ * though, waits for the first message sent (see `ensureNotificationPermission`).
+ */
+function prepare(): Promise<void> {
+  prepared ??= (async () => {
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync(CHANNEL, {
+        name: "Agent activity",
+        // The agent finishing, or stopping to ask, is the thing the user is
+        // waiting on: it earns a heads-up banner rather than a silent tray entry.
+        importance: Notifications.AndroidImportance.HIGH,
+      });
+    }
+    // Registered before the first banner, or it is delivered without the reply
+    // box. Failing here must not cost the notification itself.
+    await registerCategory().catch(() => {});
+  })().catch(() => {
+    // Let the next call try again rather than remembering a failure.
+    prepared = undefined;
+  });
+  return prepared;
+}
+
+/**
+ * Whether notifications are already allowed, without ever showing the system
+ * prompt.
+ *
+ * What the push registration on connect uses. It used to ask, which put the
+ * system prompt on screen moments after pairing, before the user had sent
+ * anything or had any reason to want a notification, and a "Don't Allow" given
+ * then is close to permanent on iOS.
+ */
+export async function notificationsAllowed(): Promise<boolean> {
+  try {
+    await prepare();
+    return (await Notifications.getPermissionsAsync()).granted;
+  } catch {
+    return false;
   }
-  // Registered before the first banner, or it is delivered without the reply
-  // box. Failing here must not cost the notification itself.
-  await registerCategory().catch(() => {});
+}
+
+async function request(): Promise<boolean> {
+  await prepare();
   const existing = await Notifications.getPermissionsAsync();
   if (existing.granted) return true;
   if (!existing.canAskAgain) return false;
@@ -226,6 +310,10 @@ export async function notify(notice: Notice): Promise<void> {
         data: { sessionId: notice.sessionId, local: true },
         // What attaches the inline reply box.
         categoryIdentifier: CATEGORY,
+        // The same sound the daemon's push asks for. Silent in front of the
+        // user (the handler above declines it there), heard when this banner
+        // is raised behind another app, exactly like the push it stands in for.
+        sound: "default",
         ...(Platform.OS === "android" ? { channelId: CHANNEL } : null),
       },
       trigger: null,

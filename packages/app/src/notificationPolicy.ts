@@ -33,6 +33,10 @@ export interface FinishedTurn {
    * the only route, so it must still be raised.
    */
   pushExpected?: boolean;
+  /** Not a normal finish: the agent failed, or someone pressed stop. */
+  outcome?: "failed" | "cancelled";
+  /** Why a failed turn failed, as the daemon worded it. */
+  reason?: string;
 }
 
 export interface Notice {
@@ -51,7 +55,7 @@ export interface Notice {
 //
 // Metro resolves this: `metro.config.js` maps the package's `.js`-suffixed TS
 // imports back, which is how `useDaemon.ts` imports the same package.
-import { noticeBody, noticeTitle, summarise } from "@pew2/protocol";
+import { endsTurn, noticeBody, noticeTitle, summarise, type NoticeKind } from "@pew2/protocol";
 
 // Re-exported because callers and tests reach for it here, alongside the rule
 // that uses it.
@@ -81,6 +85,9 @@ export { summarise };
  * token at all — gets the local banner, which is exactly what it is for.
  */
 export function finishedNotice(turn: FinishedTurn): Notice | null {
+  // Someone pressed stop. Whoever did knows, and the daemon sends no push for
+  // it either, so both routes stay quiet together.
+  if (turn.outcome === "cancelled") return null;
   const watching = turn.foreground && turn.activeSessionId === turn.sessionId;
   if (watching) return null;
   if (!turn.foreground && turn.pushExpected) return null;
@@ -92,7 +99,9 @@ export function finishedNotice(turn: FinishedTurn): Notice | null {
     title: noticeTitle(turn),
     // Falls back to a statement rather than an empty body: a turn can finish
     // having only run tools, with no closing message at all.
-    body: noticeBody(turn.lastText),
+    // A failure says so, in the daemon's words, rather than quoting whatever
+    // half-answer the agent managed before it.
+    body: turn.outcome === "failed" ? noticeBody(turn.reason, "failed") : noticeBody(turn.lastText),
     sessionId: turn.sessionId,
   };
 }
@@ -102,6 +111,8 @@ export interface ArrivingNotification {
   /** True when this app scheduled it, false when it came from the push service. */
   local: boolean;
   sessionId?: string;
+  /** What the push is about. Absent = a finished turn, from an older daemon. */
+  kind?: NoticeKind;
   /** The conversation on screen right now, if any. */
   openSessionId?: string;
   /** When a local banner was last raised for this session. */
@@ -134,6 +145,28 @@ export function duplicatePush(arriving: ArrivingNotification): boolean {
   if (arriving.local) return false;
   if (!arriving.sessionId) return false;
   if (arriving.sessionId === arriving.openSessionId) return true;
+  // Only a turn ending has a local twin. An approval or a question raised
+  // seconds after this app announced the previous turn is new news, and
+  // swallowing it would leave the agent waiting on someone who was never told.
+  if (!endsTurn(arriving.kind)) return false;
   if (arriving.announcedAt === undefined) return false;
   return arriving.now - arriving.announcedAt < arriving.windowMs;
+}
+
+/**
+ * How many conversations are stopped on an answer from this phone: an open
+ * approval, or an open question. The app icon's badge.
+ *
+ * The same count the daemon puts on every push (`waitingOnYou`), worked out
+ * here from what the app holds, so the badge stays right while the app is
+ * awake and drops to nothing once the last approval is given.
+ */
+export function waitingCount(
+  sessions: readonly { id: string; permission?: unknown }[],
+  asks: Readonly<Record<string, readonly unknown[] | undefined>>,
+): number {
+  const waiting = new Set<string>();
+  for (const session of sessions) if (session.permission) waiting.add(session.id);
+  for (const [sessionId, open] of Object.entries(asks)) if (open && open.length > 0) waiting.add(sessionId);
+  return waiting.size;
 }

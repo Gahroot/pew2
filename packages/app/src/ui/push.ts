@@ -18,7 +18,7 @@
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
-import { ensureNotificationPermission } from "./notifier";
+import { notificationsAllowed } from "./notifier";
 import { loadNativeCall, loadVoiceCall } from "../preferences";
 import { voipAddress } from "./callkit";
 
@@ -58,8 +58,12 @@ function projectId(): string | undefined {
  * Resolves undefined rather than throwing, for every reason it can fail:
  *
  * - no EAS project id (a fresh clone, or Expo Go)
- * - notification permission refused
+ * - notification permission refused, or not asked yet
  * - a simulator, which cannot register with APNs at all
+ *
+ * Never shows the system prompt. That waits for the first message sent, and
+ * the screen calls `registerPush` once it is granted, so the token reaches the
+ * daemon on that same connection rather than on the next one.
  */
 export async function pushAddress(): Promise<PushAddress | undefined> {
   if (Platform.OS !== "ios" && Platform.OS !== "android") return undefined;
@@ -69,7 +73,7 @@ export async function pushAddress(): Promise<PushAddress | undefined> {
   // creates the Android channel and the reply category. Expo does not show a
   // push at all if it names a channel the device has not created, so a token
   // handed over before this ran would earn silence rather than banners.
-  if (!(await ensureNotificationPermission())) return undefined;
+  if (!(await notificationsAllowed())) return undefined;
   try {
     const { data } = await Notifications.getExpoPushTokenAsync({ projectId: id });
     if (!data) return undefined;

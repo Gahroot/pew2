@@ -31,6 +31,21 @@ import type {
 export const STALLED_ATTEMPTS = 4;
 
 /**
+ * Delay before reconnect attempt `attempt` (0-based): doubling from a second.
+ *
+ * Capped at ten seconds while the app is on screen, so a network switch or a
+ * daemon restart is picked up promptly. Off screen the cap is a minute: each
+ * attempt wakes the radio, nobody is looking at the status line, and returning
+ * to the foreground retries at once anyway (`resumeNow`). The socket is still
+ * retried in the background rather than abandoned, because on Android it
+ * outlives the app leaving the screen and carries the local turn banners.
+ */
+export function reconnectDelay(attempt: number, foreground: boolean): number {
+  const cap = foreground ? 10_000 : 60_000;
+  return Math.min(1000 * 2 ** attempt, cap);
+}
+
+/**
  * How long a conversation may sit as a skeleton before the app admits it is
  * not coming.
  *
@@ -290,6 +305,10 @@ export interface TurnFinished {
   lastText?: string;
   /** The conversation on screen when this landed, if any. */
   activeSessionId?: string;
+  /** Not a normal finish: the agent failed, or someone pressed stop. */
+  outcome?: "failed" | "cancelled";
+  /** Why a failed turn failed, as the daemon worded it. */
+  reason?: string;
 }
 
 /**

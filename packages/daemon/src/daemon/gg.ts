@@ -6,7 +6,6 @@ import { isAvailable, unavailableReason } from "../providers/registry.js";
 import { connectProvider, type AcpSessionHandle } from "../acp/connect.js";
 import { resolve as __resolve } from "node:path";
 import { resolveWorkspace } from "../workspace.js";
-import { pushFinishedTurn } from "../push.js";
 import { wire } from "@pew2/protocol";
 import { DaemonProjects } from "./projects.js";
 import { AUTOPILOT_PHASES, GG_GOALS_ID, GG_PROVIDER_ID, type ActiveSession } from "./types.js";
@@ -67,11 +66,7 @@ export abstract class DaemonGg extends DaemonProjects {
     if ((raw.phase === "human" || raw.phase === "capped") && (params as { history?: unknown }).history !== true) {
       const sessionId = session.log.sessionId;
       const reason = typeof raw.reason === "string" && raw.reason ? `: ${raw.reason}` : "";
-      void pushFinishedTurn(this.pushTargets, {
-        sessionId,
-        ...this.sessionNotice(sessionId),
-        lastText: `Ken needs you${reason}`,
-      });
+      this.notifyPhones(sessionId, "finished", `Ken needs you${reason}`);
     }
   }
 
@@ -169,8 +164,20 @@ export abstract class DaemonGg extends DaemonProjects {
       }
       return handle;
     };
+    // An exited process still has a handle. A crash, a kill, or a `ggcoder`
+    // linked to a checkout whose build had just wiped `dist/` all leave one
+    // behind, and handing it out failed every goals request with "ACP
+    // connection closed" until the reaper or the spare TTL happened to clear it.
+    const alive = (handle: AcpSessionHandle) =>
+      handle.child.exitCode === null && handle.child.signalCode === null;
+    for (const [key, spare] of this.spares) {
+      if (alive(spare.handle)) continue;
+      clearTimeout(spare.timer);
+      spare.handle.close();
+      this.spares.delete(key);
+    }
     const live = [...this.sessions.values()]
-      .filter((s) => (s.providerId === GG_PROVIDER_ID || s.providerId === GG_GOALS_ID) && s.handle && s.agentSessionId)
+      .filter((s) => (s.providerId === GG_PROVIDER_ID || s.providerId === GG_GOALS_ID) && s.handle && s.agentSessionId && alive(s.handle))
       .sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0]?.handle;
     if (live) return supports(live);
     const spare = [...this.spares.values()].find((s) => s.providerId === GG_PROVIDER_ID || s.providerId === GG_GOALS_ID);

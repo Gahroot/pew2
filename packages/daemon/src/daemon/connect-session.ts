@@ -110,6 +110,12 @@ export abstract class DaemonConnectSession extends DaemonPromptQueue {
         // from before it was even asked.
         session.lastUsedAt = Date.now();
         this.record(session, { kind: "permission_request", requestId, params });
+        // Out of band too: nothing times a permission out, so a phone in a
+        // pocket is the difference between the agent waiting a minute and
+        // waiting until the reaper closes it an hour later. After `record`, so
+        // the badge this carries already counts this request.
+        const tool = (params as { toolCall?: { title?: unknown } } | null)?.toolCall?.title;
+        this.notifyPhones(session.log.sessionId, "approval", typeof tool === "string" ? tool : undefined);
       },
       gg: {
         // Same order as a permission: held, clock stamped, then told.
@@ -119,6 +125,9 @@ export abstract class DaemonConnectSession extends DaemonPromptQueue {
           (session.asks ??= new Map()).set(requestId, questions);
           session.lastUsedAt = Date.now();
           this.record(session, { kind: "ask_user", requestId, questions });
+          // Same reason as a permission: the agent is stopped on this.
+          const first = (questions[0] as { question?: unknown } | undefined)?.question;
+          this.notifyPhones(session.log.sessionId, "question", typeof first === "string" ? first : undefined);
         },
         // The agent withdrew it (JSON-RPC cancel, or a new ask superseded it).
         onAskClosed: (requestId: string) => this.closeAsk(session, requestId),

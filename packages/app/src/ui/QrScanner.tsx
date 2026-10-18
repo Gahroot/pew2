@@ -10,7 +10,7 @@
  * well, so a refusal is offered a way forward rather than treated as an error.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Linking, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -159,7 +159,22 @@ export function QrScanner({ visible, onClose, onScan, error, busy }: Props) {
               <Text style={styles.permissionTitle}>
                 {permission?.canAskAgain === false ? "Camera is off" : "Camera needed"}
               </Text>
-              <Text style={styles.permissionBody}>
+              {/* Once refused, iOS never shows the prompt again, so the only way
+                  back is Settings. The sentence itself opens it rather than a
+                  new button, so the screen looks exactly as it did. */}
+              <Text
+                style={styles.permissionBody}
+                {...(permission?.canAskAgain === false
+                  ? {
+                      accessibilityRole: "link" as const,
+                      accessibilityHint: "Opens this app's settings",
+                      onPress: () => {
+                        haptics.tap();
+                        void Linking.openSettings();
+                      },
+                    }
+                  : null)}
+              >
                 {permission?.canAskAgain === false
                   ? "Turn it on in Settings, or paste the link."
                   : "Only used to read the code."}

@@ -424,6 +424,11 @@ export function handleSealedFrame(refs: FrameRefs, connection: FrameConnection, 
       agentName: providersRef.current.find((p) => p.id === providerId)?.name,
       lastText,
       activeSessionId: sessionRef.current,
+      // How it ended, so the banner neither calls a crash "finished" nor
+      // announces a turn someone stopped on purpose. Absent from an older
+      // daemon, which only ever meant a normal finish.
+      ...(message.outcome === "failed" || message.outcome === "cancelled" ? { outcome: message.outcome } : {}),
+      ...(typeof message.reason === "string" ? { reason: message.reason } : {}),
     };
 
     // A turn just ended, so the agent may have written files: the

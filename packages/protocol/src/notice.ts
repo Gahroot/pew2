@@ -71,11 +71,44 @@ export function noticeTitle(origin: NoticeOrigin): string {
 }
 
 /**
- * The banner's body: what the agent actually said.
+ * What a banner is about.
  *
- * Falls back to a statement rather than an empty body, because a turn can finish
- * having only run tools with no closing message at all.
+ * - `finished`: a turn ended normally; the text is the agent's closing message.
+ * - `failed`: a turn ended on an error; the text is the reason.
+ * - `approval`: the agent is stopped until someone lets a tool run; the text is
+ *   the tool's title.
+ * - `question`: the agent asked something (GG Coder's ask_user); the text is
+ *   the first question.
+ *
+ * The last two are the ones that matter most: nothing times a permission out,
+ * so an agent waiting on one is stopped until somebody answers. Travels in the
+ * push payload as `kind` (absent = `finished`, which is what an older daemon
+ * meant), so the app can tell a turn ending from an agent waiting.
  */
-export function noticeBody(lastText: string | undefined): string {
-  return summarise(lastText) ?? "Finished and waiting on you.";
+export type NoticeKind = "finished" | "failed" | "approval" | "question";
+
+/** Whether a banner announces a turn ending, as opposed to an agent waiting mid-turn. */
+export function endsTurn(kind: NoticeKind | undefined): boolean {
+  return kind === undefined || kind === "finished" || kind === "failed";
+}
+
+/**
+ * The banner's body.
+ *
+ * Every kind falls back to a statement rather than an empty body: a turn can
+ * finish having only run tools, an error can arrive with no message, and a
+ * permission request may not name its tool.
+ */
+export function noticeBody(text: string | undefined, kind: NoticeKind = "finished"): string {
+  const line = summarise(text);
+  switch (kind) {
+    case "failed":
+      return line ? `Stopped on an error: ${line}` : "Stopped on an error.";
+    case "approval":
+      return line ? `Needs your OK to run: ${line}` : "Needs your OK to continue.";
+    case "question":
+      return line ? `Asks: ${line}` : "Has a question for you.";
+    case "finished":
+      return line ?? "Finished and waiting on you.";
+  }
 }

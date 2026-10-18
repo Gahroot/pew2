@@ -348,6 +348,14 @@ test("a prompt for an unknown session is answered, not swallowed", async () => {
   // Names the session rather than failing generically, because the phone shows
   // this text and "something went wrong" is not a thing anyone can act on.
   expect(answer.message).toContain("echo-never-existed");
+  // And the turn's end says it failed, with the same words, so a phone that
+  // was not the one asking does not announce a crash as "finished".
+  const idle = await app.waitFor(
+    (f) => f.t === "session.idle" && f.sessionId === "echo-never-existed",
+    "the failed turn ending",
+  );
+  expect(idle.outcome).toBe("failed");
+  expect(idle.reason).toBe(answer.message);
   app.close();
 }, TEST_TIMEOUT);
 
@@ -379,5 +387,7 @@ test("cancelling a turn actually stops the agent, and closes the turn", async ()
   // phone is usually somewhere else, and only this machine knows the path.
   expect(idle.providerId).toBe("echo");
   expect(idle.folder).toBeTruthy();
+  // Marked as a stop, so no phone announces a turn its own user just ended.
+  expect(idle.outcome).toBe("cancelled");
   app.close();
 }, TEST_TIMEOUT);

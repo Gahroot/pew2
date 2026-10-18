@@ -154,11 +154,17 @@ export function HomeGreeting({ color, busy, online = true, failed = false, text,
         >
           {shown.map((chat, i) => (
             <Dissolve key={chat.id} kind="row" delay={120 + i * 50}>
-              <PressScale feel="tap" onPress={() => onOpenChat(chat.id)} style={styles.card}>
-                <Led tone="dim" size={theme.stage.ledSize}>
+              <PressScale
+                feel="tap"
+                onPress={() => onOpenChat(chat.id)}
+                style={styles.card}
+                accessibilityLabel={`${chat.title}, ${chat.startedAt > 0 ? lastActiveLabel(chat.startedAt) : "earlier"}`}
+                accessibilityHint="Opens this conversation"
+              >
+                <Led tone="dim" size={theme.stage.ledSize} maxFontSizeMultiplier={CARD_FONT_SCALE}>
                   {chat.startedAt > 0 ? lastActiveLabel(chat.startedAt) : "earlier"}
                 </Led>
-                <Text style={styles.cardTitle} numberOfLines={2}>
+                <Text style={styles.cardTitle} numberOfLines={2} maxFontSizeMultiplier={CARD_FONT_SCALE}>
                   {chat.title}
                 </Text>
               </PressScale>
@@ -176,6 +182,8 @@ const GREETING_LINE = theme.line.greeting;
 
 /** A recent-chat card's height, fixed so the row is the same before and after. */
 const CARD_HEIGHT = 76;
+/** The card's height is fixed, so its text may grow only this far before it would clip. */
+const CARD_FONT_SCALE = 1.3;
 
 const styles = StyleSheet.create({
   root: { alignItems: "center", justifyContent: "center", alignSelf: "stretch" },

@@ -7,9 +7,9 @@
  */
 import type { LoadedProvider } from "../providers/registry.js";
 import type { AcpSessionHandle, AgentSession } from "../acp/connect.js";
-import { PushRegistry } from "../push.js";
+import { PushRegistry, pushFinishedTurn } from "../push.js";
 import type { AgentProject } from "../projects.js";
-import type { wire } from "@pew2/protocol";
+import type { NoticeKind, wire } from "@pew2/protocol";
 import type { ActiveSession, ProviderCapabilities } from "./types.js";
 
 export abstract class DaemonState {
@@ -86,6 +86,40 @@ export abstract class DaemonState {
    * not have to be told twice.
    */
   readonly pushTargets = new PushRegistry();
+
+  /**
+   * How many conversations are stopped on an answer: an open approval or an
+   * open question. The badge on the app icon, because it counts exactly the
+   * work that cannot move until someone picks up the phone.
+   */
+  waitingOnYou(): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if ((session.permissions?.size ?? 0) > 0 || (session.asks?.size ?? 0) > 0) count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * Push a banner about one conversation to every registered phone.
+   *
+   * The one way a push leaves this daemon, so the project, the agent and the
+   * badge are always filled in the same way. Never awaited by callers: the
+   * push service can never hold a session open or fail it.
+   *
+   * @param text Overrides what the banner quotes. By default a turn ending
+   *             quotes the agent's closing message.
+   */
+  notifyPhones(sessionId: string, kind: NoticeKind, text?: string): void {
+    const { lastText, ...origin } = this.sessionNotice(sessionId);
+    void pushFinishedTurn(this.pushTargets, {
+      sessionId,
+      ...origin,
+      kind,
+      lastText: text ?? (kind === "finished" ? lastText : undefined),
+      badge: this.waitingOnYou(),
+    });
+  }
 
   protected readonly spares = new Map<
     // Keyed by provider *and* directory. `cwd` is part of a spare's identity

@@ -2,7 +2,7 @@
  * The main screen's nav: menu, title, the goal controls or new-conversation
  * button, the ticker and a goal's crew, over the frosted cover for its zone.
  */
-import type { Dispatch, SetStateAction } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { Text, View } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import type { EdgeInsets } from "react-native-safe-area-context";
@@ -47,6 +47,9 @@ export function ScreenTopBar({
   active: Provider | undefined;
 }) {
   const { inGoal, goalPaused, goalId, resumeGoal, pauseGoal, openGoalSettings, askHere, kenSays, goalState } = goals;
+  // The ticker's step list drops over the crew row, which is drawn after it
+  // and so on top: the row fades out while the list is open.
+  const [stepsOpen, setStepsOpen] = useState(false);
   return (
     <>
       {/* Absolute over the thread: messages scroll beneath the nav and fade
@@ -135,12 +138,13 @@ export function ScreenTopBar({
           project={workspaceTitle(daemon.workspace)}
           changes={daemon.workspace?.uncommitted}
           say={kenSays?.text}
+          onOpenChange={setStepsOpen}
         />
       )}
       {/* A goal's crew: one slidable row of its workers under the ticker, each
           its own Pew in its role colour. Inside the measured overlay, so the
           thread starts below it. */}
-      {inGoal && goalState && !daemon.restoreTarget && <CrewRow workers={goalState.workers} />}
+      {inGoal && goalState && !daemon.restoreTarget && <CrewRow workers={goalState.workers} hidden={stepsOpen} />}
       </View>
 
       {/* Frosted cover for the nav zone only — it ends exactly at the nav's

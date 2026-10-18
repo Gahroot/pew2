@@ -37,8 +37,15 @@ function targetOf(tool: ToolRun, verb: string): string {
   return title;
 }
 
+/**
+ * How many steps the drop-down lists: the most recent ones, newest at the
+ * bottom. A long turn ran to forty rows, taller than the screen, so the live
+ * step sat below the fold and the list hid the whole thread under it.
+ */
+export const TICKER_STEPS_MAX = 10;
+
 export function tickerSteps(activity: Activity): TickerStep[] {
-  return activity.tools.map((tool) => {
+  return activity.tools.slice(-TICKER_STEPS_MAX).map((tool) => {
     const verb = VERBS[tool.kind];
     const running = tool.status === "pending" || tool.status === "in_progress";
     return {

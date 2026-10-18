@@ -11,14 +11,13 @@
  * client, which is the point of the daemon owning the log: a phone and a
  * desktop watching one session both need the update.
  */
-import { GG_GOALS_ID, type Daemon } from "./index.js";
+import { GG_GOALS_ID, type Daemon, type PromptOutcome } from "./index.js";
 import { humanError } from "./errors.js";
 import { loadImage } from "./images.js";
 import { workspaceStatus } from "./git.js";
 import { resolveWorkspace } from "./workspace.js";
 import { suggestionRoots, discoverRepos, listDirectory } from "./workspaces.js";
 import { wire } from "@pew2/protocol";
-import { pushFinishedTurn } from "./push.js";
 import { storeGoalFiles } from "./goalFiles";
 import { readKnownProjects } from "./known-projects.js";
 
@@ -592,32 +591,34 @@ export async function handleMessage(raw: string, ctx: HandlerContext): Promise<v
  * is idle again. A message that was only queued announces nothing: the turn it
  * is waiting on will.
  */
-function runTurn(ctx: HandlerContext, sessionId: string, turn: Promise<unknown>) {
+function runTurn(ctx: HandlerContext, sessionId: string, turn: Promise<PromptOutcome>) {
   const { daemon, reply, broadcast } = ctx;
-  const idle = () => {
+  const idle = (end: { outcome?: "failed" | "cancelled"; reason?: string } = {}) => {
     // Tell every client the turn is over, so they can stop showing a working
     // indicator. Broadcast, not reply: other devices watching this session
     // need it too. Carries the project and agent so a client can announce a
-    // session it is not showing.
-    broadcast({ t: "session.idle", sessionId, ...daemon.sessionOrigin(sessionId) });
+    // session it is not showing, and how it ended so that announcement does
+    // not call a crash "finished".
+    broadcast({ t: "session.idle", sessionId, ...daemon.sessionOrigin(sessionId), ...end });
+    // Someone pressed stop: they know, and a banner saying so is noise.
+    if (end.outcome === "cancelled") return;
     // And again, out of band, to phones whose sockets are asleep. Sent
     // unconditionally: whether an app is really watching is only knowable on
-    // the device, which applies the same rule to its local banner. Not
-    // awaited, so the push service can never hold a session open or fail it.
-    void pushFinishedTurn(daemon.pushTargets, {
-      sessionId,
-      ...daemon.sessionNotice(sessionId),
-    });
+    // the device, which applies the same rule to its local banner.
+    if (end.outcome === "failed") daemon.notifyPhones(sessionId, "failed", end.reason);
+    else daemon.notifyPhones(sessionId, "finished");
   };
   // Deliberately not awaited by the caller: a turn can run for minutes, and the
   // client is driven by streamed events rather than this reply.
   turn.then(
     (outcome) => {
-      if (outcome !== "queued") idle();
+      if (outcome === "cancelled") idle({ outcome: "cancelled" });
+      else if (outcome !== "queued") idle();
     },
     (error) => {
-      reply(errorMessage("prompt_failed", error));
-      idle();
+      const failure = errorMessage("prompt_failed", error);
+      reply(failure);
+      idle({ outcome: "failed", reason: failure.message });
     },
   );
 }
