@@ -1,10 +1,11 @@
 /**
- * DAVE, the user's portfolio assistant, as two voice tools.
+ * DAVE, the user's portfolio assistant, as the two to-do list voice tools,
+ * `check_backlog` and `delegate_backlog_item`.
  *
  * DAVE ("Portfolio Command Center", `~/dave`) runs its own loopback server and
  * knows what each project should do next, what was promised in meetings and
  * which decisions are waiting. Voice consults it **only when the model calls a
- * DAVE tool**, and the model is told to do that only when the user asks.
+ * to-do tool**, and the model is told to do that only when the user asks.
  * Nothing else here — not the opening context, not ticks, not pushes — ever
  * touches DAVE.
  *
@@ -395,15 +396,40 @@ export function projectView(intel: z.output<typeof ProjectIntelSchema>, focus: F
 }
 
 // ---- tools -----------------------------------------------------------------
+//
+// Named for what they do, the user's to-do list, never "dave": `~/dave` is
+// also a project in the registry, and a tool called check_with_dave sat right
+// beside start_task's "dave" for the model to confuse.
 
-export const DAVE_TOOL_NAMES = ["check_with_dave", "delegate_dave_task"] as const;
+export const BACKLOG_TOOL_NAMES = ["check_backlog", "delegate_backlog_item"] as const;
 
-export const DAVE_TOOLS = [
+/**
+ * The names these tools had before, mapped to today's. A Realtime session
+ * minted by an older daemon still calls them until it reconnects; they are
+ * accepted, never offered.
+ */
+export const LEGACY_BACKLOG_TOOL_NAMES: Readonly<
+  Record<string, (typeof BACKLOG_TOOL_NAMES)[number]>
+> = {
+  check_with_dave: "check_backlog",
+  delegate_dave_task: "delegate_backlog_item",
+};
+
+/** Today's name for a to-do tool, under either name; undefined for any other tool. */
+export function backlogToolName(name: string): (typeof BACKLOG_TOOL_NAMES)[number] | undefined {
+  const known = BACKLOG_TOOL_NAMES.find((n) => n === name);
+  return (
+    known ??
+    (Object.hasOwn(LEGACY_BACKLOG_TOOL_NAMES, name) ? LEGACY_BACKLOG_TOOL_NAMES[name] : undefined)
+  );
+}
+
+export const BACKLOG_TOOLS = [
   {
     type: "function",
-    name: "check_with_dave",
+    name: "check_backlog",
     description:
-      "Ask DAVE, the user's portfolio and priorities assistant, what matters now. Only when the user asks (e.g. 'check in with Dave', 'what does Dave think I should do', 'what did I promise Acme'), never on your own.",
+      "Check the backlog: the user's to-do list (what to do next, priorities and promises), as ranked by DAVE, their portfolio and priorities assistant. Only when the user asks (e.g. 'check the backlog', 'what's next on the backlog', 'checking Dave', 'what does Dave think I should do', 'what's next on my to-do list', 'what did I promise Acme'), never on your own. The backlog is not the code project named dave: opening or working on that project ('open the dave project', 'work on dave') is start_task.",
     parameters: {
       type: "object",
       properties: {
@@ -411,7 +437,7 @@ export const DAVE_TOOLS = [
           type: "string",
           enum: ["overview", "priorities", "commitments", "project"],
           description:
-            "overview (default), ranked priorities, meeting commitments, or one project.",
+            "overview (default), ranked priorities (the backlog: the to-do list and what's next), meeting commitments, or one project.",
         },
         project: { type: "string", description: "Spoken project name, for about=project." },
       },
@@ -420,13 +446,13 @@ export const DAVE_TOOLS = [
   },
   {
     type: "function",
-    name: "delegate_dave_task",
+    name: "delegate_backlog_item",
     description:
-      "Hand one of DAVE's coding objectives to EZ Coder. Always needs a yes: call once to get a confirmToken and question, ask it, and call again with confirmToken and userConfirmed true only after the user says yes.",
+      "Hand one coding item from the backlog (an objective from check_backlog) to EZ Coder. Always needs a yes: call once to get a confirmToken and question, ask it, and call again with confirmToken and userConfirmed true only after the user says yes.",
     parameters: {
       type: "object",
       properties: {
-        objectiveId: { type: "string", description: "objectiveId from check_with_dave." },
+        objectiveId: { type: "string", description: "objectiveId from check_backlog." },
         project: {
           type: "string",
           description: "Spoken project name, only if DAVE's project name did not match one.",
@@ -443,7 +469,7 @@ export const DAVE_TOOLS = [
   },
 ] as const;
 
-export interface DaveToolContext {
+export interface BacklogToolContext {
   client: DaveClient;
   projects: () => Promise<VoiceProject[]>;
   usableProviders: () => string[];
@@ -477,7 +503,7 @@ function daveProjects(focus: Focus): VoiceProject[] {
 const PROJECT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const OBJECTIVE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-async function check(args: Record<string, unknown>, ctx: DaveToolContext): Promise<ToolResult> {
+async function check(args: Record<string, unknown>, ctx: BacklogToolContext): Promise<ToolResult> {
   const about = arg(args, "about", 20) ?? "overview";
   const now = ctx.now();
   switch (about) {
@@ -539,7 +565,7 @@ async function check(args: Record<string, unknown>, ctx: DaveToolContext): Promi
 
 /** The objective by id: DAVE's ranked queue first, then each project's other actions. */
 async function findObjective(
-  ctx: DaveToolContext,
+  ctx: BacklogToolContext,
   focus: Focus,
   id: string,
 ): Promise<Objective | undefined> {
@@ -558,7 +584,10 @@ async function findObjective(
   return undefined;
 }
 
-async function delegate(args: Record<string, unknown>, ctx: DaveToolContext): Promise<ToolResult> {
+async function delegate(
+  args: Record<string, unknown>,
+  ctx: BacklogToolContext,
+): Promise<ToolResult> {
   const objectiveId = arg(args, "objectiveId", 64);
   if (!objectiveId) return fail("objectiveId is required.");
   if (!OBJECTIVE_ID.test(objectiveId))
@@ -647,13 +676,14 @@ async function delegate(args: Record<string, unknown>, ctx: DaveToolContext): Pr
   return good({ delegated: true, task: taskView(ctx.store, task) });
 }
 
-/** Run one DAVE tool. Errors become results, like every other voice tool. */
-export function runDaveTool(
+/** Run one backlog tool, under its current or legacy name. Errors become results, like every other voice tool. */
+export function runBacklogTool(
   name: string,
   args: Record<string, unknown>,
-  ctx: DaveToolContext,
+  ctx: BacklogToolContext,
 ): Promise<ToolResult> {
-  if (name === "check_with_dave") return check(args, ctx);
-  if (name === "delegate_dave_task") return delegate(args, ctx);
+  const tool = backlogToolName(name);
+  if (tool === "check_backlog") return check(args, ctx);
+  if (tool === "delegate_backlog_item") return delegate(args, ctx);
   return Promise.resolve(fail(`Unknown tool '${name}'.`));
 }

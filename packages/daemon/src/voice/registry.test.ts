@@ -36,6 +36,15 @@ test("close matches are ambiguous and carry ranked candidates", () => {
   expect(result.candidates.map((c) => c.project.name).sort()).toEqual(["billing-api", "billing-web"]);
 });
 
+test("'the X repo' and 'the X project' resolve to X", () => {
+  expect(resolveProject("the ezcoder repo", projects).best?.name).toBe("ezcoder");
+  expect(resolveProject("the pew two project", projects).best?.name).toBe("pew2");
+  expect(resolveProject("open the ezcoder project", projects).best?.name).toBe("ezcoder");
+  expect(resolveProject("work on pew two", projects).best?.name).toBe("pew2");
+  // The words alone name nothing.
+  expect(resolveProject("the project", projects).best).toBeUndefined();
+});
+
 test("nonsense and empty queries never resolve", () => {
   expect(resolveProject("zzzzqqq", projects)).toEqual({ candidates: [], ambiguous: true });
   expect(resolveProject("  ", projects).ambiguous).toBe(true);

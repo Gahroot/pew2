@@ -131,11 +131,32 @@ function labelsOf(project: VoiceProject): string[] {
   return labels;
 }
 
+/** The better of the words as said and the name inside them. */
+function scoreQuery(query: string, project: VoiceProject): number {
+  const own = scoreProject(query, project);
+  const bare = bareProjectName(query);
+  return bare && bare !== normalise(query) ? Math.max(own, scoreProject(bare, project)) : own;
+}
+
 function scoreProject(query: string, project: VoiceProject): number {
   const own = Math.max(...labelsOf(project).map((label) => scoreName(query, label)));
   if (!project.worktree) return own;
   return Math.max(own, scoreName(query, project.worktree.repo) * WORKTREE_REPO_WEIGHT);
 }
+/**
+ * "the dave repo" names the project dave: the words around a name that only
+ * say it is a project, or ask to open or work on it ("open the dave project").
+ * Stripped as a second reading, never instead of the first, so a project
+ * whose own name ends in "app" still matches in full.
+ */
+export function bareProjectName(query: string): string {
+  return normalise(query)
+    .replace(/^(open|opening|work on|working on|switch to|go to|go into|jump into|start on|inspect|look inside) /, "")
+    .replace(/^(the|my|our) /, "")
+    .replace(/ (project|repo|repository|codebase|code base|checkout|folder|directory)$/, "")
+    .trim();
+}
+
 /** Two matches this close are a coin toss. */
 const AMBIGUITY_GAP = 0.08;
 
@@ -151,7 +172,7 @@ export function resolveProject(
   if (byId) return { candidates: [{ project: byId, score: 1 }], ambiguous: false, best: byId };
 
   const scored = projects
-    .map((project): Candidate => ({ project, score: scoreProject(trimmed, project) }))
+    .map((project): Candidate => ({ project, score: scoreQuery(trimmed, project) }))
     .filter((c) => c.score >= MIN_SCORE)
     .sort((a, b) => b.score - a.score || a.project.name.localeCompare(b.project.name))
     .slice(0, limit);

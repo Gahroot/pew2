@@ -7,7 +7,8 @@
  * against the registry.
  */
 import { coalesce } from "./classify.js";
-import { DAVE_TOOL_NAMES, DAVE_TOOLS, runDaveTool, type DaveClient } from "./dave.js";
+import { BACKLOG_TOOLS, runBacklogTool, backlogToolName, type DaveClient } from "./dave.js";
+import { isDaveProject, routeDave } from "./daveIntent.js";
 import { placeFields, placeSpoken } from "./place.js";
 import type { Orchestrator } from "./dispatcher.js";
 import { branchName, chooseProvider, groupByRepo, projectIdFor, repoOf, resolveProject, worktreesOf } from "./registry.js";
@@ -47,7 +48,7 @@ const def = (
 
 export const VOICE_TOOLS: readonly ToolDef[] = [
   def("list_projects", "List projects the user can name."),
-  def("resolve_project", "Match a spoken project name (partial, misheard or any case is fine). One clear match: use it, don't ask. Ambiguous: ask one short 'did you mean A or B?'.", { query: str("What the user said.") }, ["query"]),
+  def("resolve_project", "Match a spoken project name (partial, misheard or any case is fine). One clear match: use it, don't ask. Ambiguous: ask one short 'did you mean A or B?'. Not for the backlog ('check the backlog', 'checking Dave'): that is check_backlog.", { query: str("What the user said.") }, ["query"]),
   def(
     "start_task",
     "Start a coding task in a project. Each new feature or fix is its own task, and like EZ Coder each one runs in a fresh worktree on its own branch, so tasks never queue behind or touch each other (see worktree). Use follow_up for more work on an existing task.",
@@ -191,7 +192,9 @@ export const VOICE_INSTRUCTIONS = [
   "Call task_status before acting on a task you have not checked this session; state changes while you talk.",
   "Approvals: when an agent is waiting, read the 'say' sentence from pending_approvals in plain words and ask 'Approve or deny?'. Safe means read-only; risky means writes outside the project, deletes, network, installs or git push, so name the risk in a few words. Only call answer_approval after an explicit answer. 'Approve all safe ones' means approve_safe; 'stop asking about safe ones' means set_approval_policy. Risky approvals are never auto-approved. For merge, deploy and destructive actions, and cancelling running work, call once to get a confirmToken, ask 'Are you sure?', and call again with userConfirmed true only after they say yes. Never reuse or invent tokens.",
   "Start by briefly stating what changed from the opening context, if anything, offering the next step on anything that finished. Say nothing about what the user already heard.",
-  "DAVE is the user's portfolio and priorities assistant. Consult it with check_with_dave only when the user asks, in any words ('check in with Dave', 'what does Dave think I should do', 'what did I promise Acme'); never on your own, at the start of a session or to fill silence. Summarise what it says in two or three sentences, and present its ranking as DAVE's recommendation, not a fact. If DAVE isn't available, say so plainly. You may offer to hand one of its coding objectives to EZ Coder as a single yes/no question; call delegate_dave_task's second step only after an explicit yes, and never for a step DAVE marks as the user's own.",
+  "The backlog is the user's to-do list, kept by DAVE, their portfolio and priorities assistant. Check it with check_backlog only when the user asks, in any words ('check the backlog', 'what's on the backlog', 'check in with Dave', 'checking Dave', 'what does Dave think I should do', 'what's next on my to-do list', 'what did I promise Acme'); never on your own, at the start of a session or to fill silence.",
+  "Summarise what DAVE says in two or three sentences, and present its ranking as DAVE's recommendation, not a fact. If DAVE isn't available, say so plainly. You may offer to hand one of its coding objectives to EZ Coder as a single yes/no question; call delegate_backlog_item's second step only after an explicit yes, and never for a step DAVE marks as the user's own.",
+  "The backlog is not the project named dave. Saying backlog ('check the backlog', 'next on the backlog'), talking to or about Dave as a person ('checking Dave', 'ask Dave', 'Dave says', 'Dave's list'), or asking for the next items on their to-do list or their priorities, means check_backlog with about 'priorities', never start_task, list_tasks or resolve_project. Only words about the code mean the project: opening or working on it ('open the dave project', 'work on dave', 'the dave repo', 'in dave') or a coding instruction aimed at it; then use the project tools as for any project. If a result says meantBacklog, do what its next says; if it asks which, put the question to the user.",
   "When the user says they are done or to stop, call end_session, then say a very short goodbye.",
 ].join("\n");
 
@@ -205,7 +208,7 @@ export interface SessionConfigOptions {
    */
   clientVad?: boolean;
   /** Offer the DAVE tools; only when the host has a DAVE client. */
-  daveTools?: boolean;
+  backlogTools?: boolean;
 }
 
 /**
@@ -244,7 +247,7 @@ export function realtimeSession(options: SessionConfigOptions = {}): Record<stri
         ...(options.voice ? { voice: options.voice } : null),
       },
     },
-    tools: options.daveTools ? [...VOICE_TOOLS, ...DAVE_TOOLS] : VOICE_TOOLS,
+    tools: options.backlogTools ? [...VOICE_TOOLS, ...BACKLOG_TOOLS] : VOICE_TOOLS,
     tool_choice: "auto",
   };
 }
@@ -508,6 +511,46 @@ export class ToolExecutor {
     return result;
   }
 
+  /**
+   * Stop a project tool that was really meant for DAVE, the assistant, or that
+   * could be either (`daveIntent.ts`). Undefined means carry on. `extra` is
+   * merged in so a refused start still says `started: false`.
+   */
+  private daveGuard(
+    query: string,
+    r: ReturnType<typeof resolveProject>,
+    instruction?: string,
+    extra: Record<string, unknown> = {},
+  ): ToolResult | undefined {
+    const daveAvailable = !!this.deps.dave;
+    const target = r.best ?? r.candidates.find((c) => isDaveProject(c.project))?.project;
+    const route = routeDave({
+      query,
+      ...(instruction ? { instruction } : null),
+      ...(target ? { target } : null),
+      byId: r.best?.projectId === query.trim(),
+      daveAvailable,
+    });
+    if (route.kind === "project") return undefined;
+    if (route.kind === "assistant") {
+      return good({
+        ...extra,
+        meantBacklog: true,
+        reason: "The user means the backlog, not a project.",
+        next: daveAvailable ? `Call check_backlog with about '${route.about}'.` : "DAVE is turned off on this computer; say so plainly.",
+      });
+    }
+    const name = target?.name ?? "dave";
+    return good({
+      ...extra,
+      needsClarification: true,
+      reason: "Dave could mean the backlog or the dave project.",
+      question: route.about === "priorities" ? `Do you want the backlog, or a task in the ${name} project?` : `Do you mean the backlog, or the ${name} project?`,
+      next: "For the backlog, call check_backlog. For the project, call again with its projectId.",
+      candidates: target ? [{ projectId: target.projectId, name: target.name }] : [],
+    });
+  }
+
   /** "Did you mean A or B?" for a project that did not resolve to one. */
   private clarify(r: ReturnType<typeof resolveProject>): ToolResult {
     return good({
@@ -608,10 +651,10 @@ export class ToolExecutor {
       return store.getTask(id) ?? `No task ${id}.`;
     };
 
-    if ((DAVE_TOOL_NAMES as readonly string[]).includes(name)) {
+    if (backlogToolName(name)) {
       const client = this.deps.dave;
       if (!client) return fail("DAVE is turned off.");
-      return runDaveTool(name, args, {
+      return runBacklogTool(name, args, {
         client,
         projects: this.deps.projects,
         usableProviders: this.deps.usableProviders,
@@ -641,6 +684,8 @@ export class ToolExecutor {
         const query = text(args, "query", 100);
         if (!query) return fail("query is required.");
         const r = resolveProject(query, await this.deps.projects());
+        const meant = this.daveGuard(query, r);
+        if (meant) return meant;
         return good({
           ambiguous: r.ambiguous,
           ...(r.ambiguous && r.candidates.length ? { question: didYouMean(r.candidates.map((c) => c.project.name)) } : null),
@@ -653,6 +698,8 @@ export class ToolExecutor {
         const instruction = text(args, "instruction");
         if (!query || !instruction) return fail("project and instruction are required.");
         const r = resolveProject(query, await this.deps.projects());
+        const meant = this.daveGuard(query, r, instruction, { started: false });
+        if (meant) return meant;
         if (!r.best) {
           return good({
             started: false,
@@ -1034,6 +1081,8 @@ export class ToolExecutor {
         if (!this.deps.createWorktree) return fail("This computer's pew2 cannot make worktrees.");
         const projects = await this.deps.projects();
         const r = resolveProject(query, projects);
+        const meant = this.daveGuard(query, r);
+        if (meant) return meant;
         if (!r.best) return this.clarify(r);
         const root = mainCheckoutOf(r.best, projects);
         if (!root) return fail(`The main checkout of ${r.best.worktree?.repo ?? r.best.name} is not known on this computer.`);
@@ -1053,6 +1102,8 @@ export class ToolExecutor {
         if (!query) return fail("project is required.");
         const projects = await this.deps.projects();
         const r = resolveProject(query, projects);
+        const meant = this.daveGuard(query, r);
+        if (meant) return meant;
         if (!r.best) return this.clarify(r);
         const root = mainCheckoutOf(r.best, projects);
         if (!root) return fail(`The main checkout of ${r.best.worktree?.repo ?? r.best.name} is not known on this computer.`);
@@ -1093,7 +1144,10 @@ export class ToolExecutor {
           task = t;
         } else if (text(args, "project", 100)) {
           const projects = await this.deps.projects();
-          const r = resolveProject(text(args, "project", 100) ?? "", projects);
+          const query = text(args, "project", 100) ?? "";
+          const r = resolveProject(query, projects);
+          const meant = this.daveGuard(query, r);
+          if (meant) return meant;
           if (!r.best) return this.clarify(r);
           const project = r.best;
           // The task that worked in that exact checkout knows what it changed.

@@ -93,14 +93,14 @@ test("DAVE is ask-only: open() never contacts it, and its tools exist only when 
   const { svc } = await service(env, { dave });
   const ready = await svc.open({ voiceSessionId: "v", source: "in_app" });
   expect(toolNames(ready)).toEqual(
-    expect.arrayContaining(["check_with_dave", "delegate_dave_task"]),
+    expect.arrayContaining(["check_backlog", "delegate_backlog_item"]),
   );
   expect(daveCalls).toBe(0);
 
   await svc.tool({
     voiceSessionId: "v",
     callId: "d1",
-    name: "check_with_dave",
+    name: "check_backlog",
     args: { about: "priorities" },
   });
   expect(daveCalls).toBe(1);
@@ -108,8 +108,8 @@ test("DAVE is ask-only: open() never contacts it, and its tools exist only when 
 
   const off = await service(env);
   const plain = await off.svc.open({ voiceSessionId: "v", source: "in_app" });
-  expect(toolNames(plain)).not.toContain("check_with_dave");
-  expect(toolNames(plain)).not.toContain("delegate_dave_task");
+  expect(toolNames(plain)).not.toContain("check_backlog");
+  expect(toolNames(plain)).not.toContain("delegate_backlog_item");
   off.svc.dispose();
 });
 

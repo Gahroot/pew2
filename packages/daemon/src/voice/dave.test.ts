@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { DAVE_TOOLS, DaveClient, daveClient, daveConfig, daysUntil, FocusSchema } from "./dave.js";
+import {
+  BACKLOG_TOOLS,
+  DaveClient,
+  daveClient,
+  daveConfig,
+  daysUntil,
+  FocusSchema,
+} from "./dave.js";
 import { Orchestrator, type VoiceHost } from "./dispatcher.js";
 import { buildRegistry } from "./registry.js";
 import { VoiceStore } from "./store.js";
@@ -227,7 +234,7 @@ test("a refused URL never fetches and says why", async () => {
 
 test("GET sends DAVE's exact Origin and never anything but GET", async () => {
   const h = harness();
-  await h.call("check_with_dave", {});
+  await h.call("check_backlog", {});
   expect(h.seen.length).toBeGreaterThan(0);
   for (const s of h.seen) {
     expect(s.origin).toBe(ORIGIN);
@@ -268,7 +275,7 @@ test("unreachable, refused, oversize and malformed answers become spoken message
 
 test("DAVE down is reported as unavailable, not as a failed command", async () => {
   const h = harness({ routes: { "/api/intel/focus": () => new Response("no", { status: 500 }) } });
-  const r = await h.call("check_with_dave", { about: "priorities" });
+  const r = await h.call("check_backlog", { about: "priorities" });
   expect(r).toMatchObject({ ok: true, output: { available: false } });
 });
 
@@ -284,7 +291,7 @@ test("daysUntil counts whole UTC days", () => {
 
 test("overview: top three, commitments due soon overdue-first, decisions and degraded sources", async () => {
   const h = harness();
-  const r = await h.call("check_with_dave", {});
+  const r = await h.call("check_backlog", {});
   const out = r.output as {
     available: boolean;
     top: { objectiveId: string; codingTask: boolean; when?: string }[];
@@ -306,7 +313,7 @@ test("overview: top three, commitments due soon overdue-first, decisions and deg
 
 test("priorities: up to five, with a count of the rest", async () => {
   const h = harness();
-  const out = (await h.call("check_with_dave", { about: "priorities" })).output as {
+  const out = (await h.call("check_backlog", { about: "priorities" })).output as {
     priorities: { objectiveId: string }[];
     more?: number;
   };
@@ -316,7 +323,7 @@ test("priorities: up to five, with a count of the rest", async () => {
 
 test("commitments: open promises overdue first then soonest, undated last; asks counted", async () => {
   const h = harness();
-  const out = (await h.call("check_with_dave", { about: "commitments" })).output as {
+  const out = (await h.call("check_backlog", { about: "commitments" })).output as {
     promises: { what: string }[];
     looksDone?: number;
     clientAsks?: number;
@@ -337,7 +344,7 @@ test("commitments: open promises overdue first then soonest, undated last; asks 
 
 test("project: resolves against DAVE's own names and summarises one project", async () => {
   const h = harness();
-  const out = (await h.call("check_with_dave", { about: "project", project: "acme portal" }))
+  const out = (await h.call("check_backlog", { about: "project", project: "acme portal" }))
     .output as {
     project: string;
     objective: { objectiveId: string };
@@ -351,7 +358,7 @@ test("project: resolves against DAVE's own names and summarises one project", as
   expect(out.gaps[0]).toEqual({ text: "No tests for checkout", state: "needs review" });
   expect(out.nextCommitment).toMatchObject({ what: "Ship login", when: "in 4 days" });
 
-  const none = await h.call("check_with_dave", { about: "project", project: "zzzqqq" });
+  const none = await h.call("check_backlog", { about: "project", project: "zzzqqq" });
   expect(none.output).toMatchObject({ needsClarification: true });
   expect(h.seen.some((s) => s.url.includes("zzzqqq"))).toBe(false);
 });
@@ -360,20 +367,20 @@ test("project: resolves against DAVE's own names and summarises one project", as
 
 test("delegate: first call asks and starts nothing; a bad token starts nothing", async () => {
   const h = harness();
-  const first = await h.call("delegate_dave_task", { objectiveId: "o1" });
+  const first = await h.call("delegate_backlog_item", { objectiveId: "o1" });
   expect(first.output).toMatchObject({
     needsConfirmation: true,
     question: "Send EZ Coder to acme-portal: Do o1?",
   });
   expect(h.store.tasks()).toHaveLength(0);
 
-  const forged = await h.call("delegate_dave_task", {
+  const forged = await h.call("delegate_backlog_item", {
     objectiveId: "o1",
     confirmToken: "nope",
     userConfirmed: true,
   });
   expect(forged.output).toMatchObject({ needsConfirmation: true });
-  const unconfirmed = await h.call("delegate_dave_task", {
+  const unconfirmed = await h.call("delegate_backlog_item", {
     objectiveId: "o1",
     confirmToken: (first.output as { confirmToken: string }).confirmToken,
   });
@@ -383,9 +390,12 @@ test("delegate: first call asks and starts nothing; a bad token starts nothing",
 
 test("delegate: a confirmed yes starts exactly one EZ Coder task with the redacted brief; a retry is a duplicate", async () => {
   const h = harness();
-  const first = await h.call("delegate_dave_task", { objectiveId: "o1", extra: "keep it small" });
+  const first = await h.call("delegate_backlog_item", {
+    objectiveId: "o1",
+    extra: "keep it small",
+  });
   const confirmToken = (first.output as { confirmToken: string }).confirmToken;
-  const yes = await h.call("delegate_dave_task", {
+  const yes = await h.call("delegate_backlog_item", {
     objectiveId: "o1",
     extra: "keep it small",
     confirmToken,
@@ -403,7 +413,7 @@ test("delegate: a confirmed yes starts exactly one EZ Coder task with the redact
   expect(tasks[0]?.prompt).toEndWith("User's note: keep it small");
   expect(tasks[0]?.prompt).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
 
-  const again = await h.call("delegate_dave_task", {
+  const again = await h.call("delegate_backlog_item", {
     objectiveId: "o1",
     extra: "keep it small",
     confirmToken,
@@ -415,7 +425,7 @@ test("delegate: a confirmed yes starts exactly one EZ Coder task with the redact
 
 test("delegate: a human-only step is refused and never fetches a brief", async () => {
   const h = harness();
-  const r = await h.call("delegate_dave_task", { objectiveId: "o3" });
+  const r = await h.call("delegate_backlog_item", { objectiveId: "o3" });
   expect(r.output).toMatchObject({
     delegated: false,
     humanStep: true,
@@ -427,32 +437,163 @@ test("delegate: a human-only step is refused and never fetches a brief", async (
 
 test("delegate: never falls back to another agent when EZ Coder is missing", async () => {
   const h = harness({ providers: ["echo", "claude"] });
-  const r = await h.call("delegate_dave_task", { objectiveId: "o1" });
+  const r = await h.call("delegate_backlog_item", { objectiveId: "o1" });
   expect(r).toMatchObject({ ok: false, error: "EZ Coder isn't available on the computer." });
   expect(h.store.tasks()).toHaveLength(0);
 });
 
 test("delegate: a stale objective asks to check again; no matching project asks instead of guessing", async () => {
   const h = harness();
-  expect((await h.call("delegate_dave_task", { objectiveId: "gone" })).output).toMatchObject({
+  expect((await h.call("delegate_backlog_item", { objectiveId: "gone" })).output).toMatchObject({
     stale: true,
   });
 
   const unmatched = harness({ paths: ["/code/pew2"] });
-  const r = await unmatched.call("delegate_dave_task", { objectiveId: "o1" });
+  const r = await unmatched.call("delegate_backlog_item", { objectiveId: "o1" });
   expect(r.output).toMatchObject({ delegated: false, needsClarification: true });
   expect(unmatched.store.tasks()).toHaveLength(0);
+});
+
+// ---- DAVE the assistant vs. the dave project ----------------------------------
+
+test("'checking Dave' for the to-do list never starts a task in the dave project", async () => {
+  const h = harness({ paths: ["/code/dave", "/code/pew2"] });
+  const r = await h.call("start_task", {
+    project: "dave",
+    instruction: "Checking Dave, what are the next items on my to-do list?",
+  });
+  expect(r.output).toMatchObject({
+    started: false,
+    meantBacklog: true,
+    next: "Call check_backlog with about 'priorities'.",
+  });
+  expect(h.store.tasks()).toHaveLength(0);
+  // Resolving the phrase itself points at DAVE too, not at a project.
+  expect((await h.call("resolve_project", { query: "checking Dave" })).output).toMatchObject({
+    meantBacklog: true,
+  });
+  expect(h.seen).toHaveLength(0);
+});
+
+test("coding work in the dave project still starts there", async () => {
+  const h = harness({ paths: ["/code/dave", "/code/pew2"] });
+  const r = await h.call("start_task", {
+    project: "dave",
+    instruction: "fix the bug Dave reported in login",
+  });
+  expect(r.output).toMatchObject({ started: true, task: { project: "dave" } });
+  expect(h.store.tasks()[0]?.cwd).toBe("/code/dave");
+  // The project named outright wins even for a to-do question (the repo's own).
+  const explicit = await h.call("start_task", {
+    project: "the dave repo",
+    instruction: "what are the next items on my to-do list",
+  });
+  expect(explicit.output).toMatchObject({ started: true });
+});
+
+test("a bare 'dave' with a to-do question asks which, and a projectId settles it", async () => {
+  const h = harness({ paths: ["/code/dave", "/code/pew2"] });
+  const first = await h.call("start_task", {
+    project: "dave",
+    instruction: "what's next on my to-do list",
+  });
+  const out = first.output as {
+    needsClarification: boolean;
+    question: string;
+    candidates: { projectId: string }[];
+  };
+  expect(out).toMatchObject({
+    started: false,
+    needsClarification: true,
+    question: "Do you want the backlog, or a task in the dave project?",
+  });
+  expect(h.store.tasks()).toHaveLength(0);
+  const projectId = out.candidates[0]?.projectId;
+  expect(projectId).toBeDefined();
+  const second = await h.call("start_task", {
+    project: projectId,
+    instruction: "what's next on my to-do list",
+  });
+  expect(second.output).toMatchObject({ started: true });
+});
+
+test("'check the backlog' reads the backlog, and never starts or resolves the dave project", async () => {
+  const h = harness({ paths: ["/code/dave", "/code/pew2"] });
+  // The model filed it under the dave project; the word "backlog" settles it.
+  const viaDave = await h.call("start_task", { project: "dave", instruction: "check the backlog" });
+  expect(viaDave.output).toMatchObject({
+    started: false,
+    meantBacklog: true,
+    next: "Call check_backlog with about 'priorities'.",
+  });
+  // The model passed the backlog itself as the project.
+  for (const query of ["the backlog", "check the backlog", "what's next on the backlog"]) {
+    const r = await h.call("resolve_project", { query });
+    expect([query, r.output]).toMatchObject([query, { meantBacklog: true }]);
+  }
+  expect(h.store.tasks()).toHaveLength(0);
+  expect(h.seen).toHaveLength(0);
+
+  // And the lookup the model is sent to reads DAVE's ranked queue.
+  const backlog = await h.call("check_backlog", { about: "priorities" });
+  expect(backlog.ok).toBe(true);
+  expect(h.seen.map((s) => s.url)).toEqual(["/api/intel/focus"]);
+});
+
+test("opening or working on the dave project goes to the project, not the backlog", async () => {
+  const h = harness({ paths: ["/code/dave", "/code/pew2"] });
+  const resolved = await h.call("resolve_project", { query: "open the dave project" });
+  expect(resolved.output).toMatchObject({ ambiguous: false, name: "dave" });
+  const work = await h.call("start_task", {
+    project: "dave",
+    instruction: "work on dave: look at the backlog screen and fix its layout",
+  });
+  expect(work.output).toMatchObject({ started: true, task: { project: "dave" } });
+  expect(h.store.tasks()[0]?.cwd).toBe("/code/dave");
+  expect(h.seen).toHaveLength(0);
+});
+
+test("'check the backlog' in another project is that project's work, untouched", async () => {
+  const h = harness({ paths: ["/code/dave", "/code/pew2"] });
+  const r = await h.call("start_task", { project: "pew2", instruction: "check the backlog" });
+  expect(r.output).toMatchObject({ started: true, task: { project: "pew2" } });
+});
+
+test("the instructions and the backlog tool tell the model the backlog is not the dave project", () => {
+  expect(VOICE_INSTRUCTIONS).toContain("The backlog is not the project named dave");
+  expect(VOICE_INSTRUCTIONS).toContain("'check the backlog'");
+  expect(VOICE_INSTRUCTIONS).toContain("'open the dave project'");
+  expect(BACKLOG_TOOLS[0].description).toContain("'check the backlog'");
+  expect(BACKLOG_TOOLS[0].description).toContain("'checking Dave'");
 });
 
 // ---- wiring -----------------------------------------------------------------
 
 test("DAVE tools are offered only when enabled, and the model is told to ask only on request", () => {
   const off = realtimeSession({ voice: "marin" }) as { tools: { name: string }[] };
-  expect(off.tools.map((t) => t.name)).not.toContain("check_with_dave");
-  const on = realtimeSession({ voice: "marin", daveTools: true }) as { tools: { name: string }[] };
-  expect(on.tools).toHaveLength(VOICE_TOOLS.length + DAVE_TOOLS.length);
-  expect(on.tools.map((t) => t.name)).toContain("delegate_dave_task");
+  expect(off.tools.map((t) => t.name)).not.toContain("check_backlog");
+  const on = realtimeSession({ voice: "marin", backlogTools: true }) as {
+    tools: { name: string }[];
+  };
+  expect(on.tools).toHaveLength(VOICE_TOOLS.length + BACKLOG_TOOLS.length);
+  expect(on.tools.map((t) => t.name)).toContain("delegate_backlog_item");
   expect(VOICE_INSTRUCTIONS).toContain("only when the user asks");
+});
+
+test("the backlog tools are not named for dave, and their old names still answer", async () => {
+  const on = realtimeSession({ backlogTools: true }) as { tools: { name: string }[] };
+  const offered = on.tools.map((t) => t.name);
+  expect(offered.filter((name) => /dave/i.test(name))).toEqual([]);
+  expect(offered).toEqual(expect.arrayContaining(["check_backlog", "delegate_backlog_item"]));
+
+  // A session minted before the rename still calls the old names; same answer.
+  const h = harness();
+  const today = await h.call("check_backlog", { about: "priorities" });
+  const legacy = await h.call("check_with_dave", { about: "priorities" });
+  expect(legacy).toEqual(today);
+  const ask = await h.call("delegate_dave_task", { objectiveId: "o1" });
+  expect(ask.output).toMatchObject({ needsConfirmation: true });
+  expect(h.store.tasks()).toHaveLength(0);
 });
 
 test("a DAVE tool with DAVE turned off fails plainly", async () => {
@@ -464,6 +605,6 @@ test("a DAVE tool with DAVE turned off fails plainly", async () => {
     usableProviders: () => [],
     rememberAlias: async () => {},
   });
-  const r = await executor.handle({ callId: "x", name: "check_with_dave", args: {} });
+  const r = await executor.handle({ callId: "x", name: "check_backlog", args: {} });
   expect(r).toMatchObject({ ok: false, error: "DAVE is turned off." });
 });

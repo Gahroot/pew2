@@ -283,7 +283,7 @@ export class VoiceService {
     const session = realtimeSession({
       voice,
       clientVad: request.clientVad === true,
-      daveTools: !!this.deps.dave,
+      backlogTools: !!this.deps.dave,
       instructions: `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}${desk ? `\n\n${desk}` : ""}`,
     });
     // Subscription login first, API key as the fallback.
