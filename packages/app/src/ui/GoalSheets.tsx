@@ -9,6 +9,7 @@ import { AskUserSheet } from "./AskUserSheet";
 import { ChecklistSheet, PlanReviewSheet } from "./GgReview";
 import type { useDaemon } from "../useDaemon";
 import { GOALS_AGENT_OF } from "../goalsAgent";
+import { inboxItemId } from "../voiceCall";
 import type { useGoalControls } from "../useGoalControls";
 
 export function GoalSheets({
@@ -18,9 +19,12 @@ export function GoalSheets({
   newGoalPrefill,
   answerPermission,
   send,
+  onTalk,
 }: {
   daemon: ReturnType<typeof useDaemon>;
   goals: ReturnType<typeof useGoalControls>;
+  /** Start a call focused on an inbox item id; absent without voice. */
+  onTalk?: (focus: string) => void;
   newGoalOpen: boolean;
   newGoalPrefill: string | undefined;
   answerPermission: (requestId: string, optionId: string, deny: boolean) => void;
@@ -47,6 +51,10 @@ export function GoalSheets({
     goalSettingsOpen,
     closeGoalSettings,
   } = goals;
+  // "Talk it through" focuses the call on the inbox item this sheet shows.
+  const talkSession = daemon.sessionId;
+  const talkAbout = (kind: "approval" | "question") =>
+    onTalk && talkSession ? (requestId: string) => onTalk(inboxItemId(talkSession, kind, requestId)) : undefined;
   return (
     <>
       {/* Last of every overlay on purpose. All the sheets share one zIndex, so
@@ -76,10 +84,18 @@ export function GoalSheets({
         online={daemon.status === "online"}
       />
 
-      <ApprovalSheet permission={daemon.permission} onAnswer={answerPermission} />
+      <ApprovalSheet
+        permission={daemon.permission}
+        onAnswer={answerPermission}
+        onTalk={talkAbout("approval")}
+      />
       {/* Same rule as the approval: a question the agent is blocked on sits
           above whatever else is open. Never raised by a replay batch. */}
-      <AskUserSheet ask={askHere} onAnswer={answerAsk} />
+      <AskUserSheet
+        ask={askHere}
+        onAnswer={answerAsk}
+        onTalk={talkAbout("question")}
+      />
       <PlanReviewSheet plan={stripsHere.plan ? planHere?.pending ?? undefined : undefined} busy={daemon.busy} onDecide={decidePlan} />
       <ChecklistSheet
         visible={checklistOpen}

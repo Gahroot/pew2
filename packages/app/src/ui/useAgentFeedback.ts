@@ -5,12 +5,14 @@ import { useEffect, useRef } from "react";
 import { Keyboard } from "react-native";
 import type { PermissionRequest, Turn } from "../useDaemon";
 import { haptics } from "./haptics";
-import { sounds } from "./sounds";
+import { turnFinished, type TurnFrame } from "../turnFinished";
 
 export function useAgentFeedback(
   busy: boolean,
   turns: readonly Turn[],
   permission: PermissionRequest | undefined,
+  sessionId: string | undefined,
+  loading: boolean,
 ) {
   // Feedback for things that happen on their own, rather than because a finger
   // touched the screen. This is the point of a remote control: the agent runs
@@ -18,19 +20,22 @@ export function useAgentFeedback(
   // effect compares against the previous value so nothing fires on mount.
 
   // A turn landed. The single most useful pulse in the app.
-  const wasBusy = useRef(false);
+  // Not every busy → idle is a reply: opening a chat and switching chats look
+  // the same (`turnFinished`).
+  const lastFrame = useRef<TurnFrame | undefined>(undefined);
   useEffect(() => {
-    const finished = wasBusy.current && !busy;
-    wasBusy.current = busy;
+    const frame = { busy, sessionId, loading };
+    const finished = turnFinished(lastFrame.current, frame);
+    // A load keeps its flag until the busy it caused has ended.
+    lastFrame.current = { ...frame, loading: loading || (busy && lastFrame.current?.loading === true && lastFrame.current.sessionId === sessionId) };
     if (!finished) return;
     // A turn that ended in an error already pulsed as a failure below; a success
     // buzz on top of it would contradict what the screen says.
     const last = turns[turns.length - 1];
     if (last?.role !== "system") {
-      haptics.finished();
-      sounds.play("done");
+      haptics.finished("done");
     }
-  }, [busy, turns]);
+  }, [busy, turns, sessionId, loading]);
 
   // The agent is blocked on an approval and cannot continue without one.
   const lastPermissionId = useRef<string | undefined>(undefined);
@@ -39,7 +44,6 @@ export function useAgentFeedback(
     if (requestId && requestId !== lastPermissionId.current) {
       Keyboard.dismiss();
       haptics.attention();
-      sounds.play("attention");
     }
     lastPermissionId.current = requestId;
   }, [permission]);

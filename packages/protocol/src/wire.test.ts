@@ -10,33 +10,15 @@ import { expect, test } from "bun:test";
 import { directionKey, isEnvelope, seal } from "./crypto.js";
 import { ClientMessage, readCursors, ServerMessage, WIRE_VERSION, wireMismatch } from "./wire.js";
 
-test("voice accounts are additive, correlated and cannot carry credentials or claimed ownership", () => {
+test("voice tasks are additive: catch-up, screenshots and a send from the Tasks screen", () => {
   expect(WIRE_VERSION).toBe(2);
   expect(ClientMessage.safeParse({ t: "voice.sync", since: 0 }).success).toBe(true);
-  expect(ClientMessage.safeParse({ t: "voice.account.connect", requestId: "r" }).success).toBe(
-    true,
-  );
-  for (const extra of [{ deviceId: "other" }, { accessToken: "secret" }]) {
-    expect(
-      ClientMessage.safeParse({ t: "voice.account.connect", requestId: "r", ...extra }).success,
-    ).toBe(false);
-  }
-  const state = {
-    t: "voice.account.state",
-    requestId: "r",
-    supported: true,
-    state: "not-connected",
-    voiceReady: false,
-  };
-  expect(ServerMessage.safeParse(state).success).toBe(true);
-  expect(ServerMessage.safeParse({ ...state, refreshToken: "secret" }).success).toBe(false);
-  expect(
-    ClientMessage.safeParse({ t: "voice.account.status", requestId: "x".repeat(101) }).success,
-  ).toBe(false);
-  expect(
-    ClientMessage.safeParse({ t: "voice.account.cancel", requestId: "r", attemptId: "invalid" })
-      .success,
-  ).toBe(false);
+  const send = { t: "voice.send", requestId: "r", attachmentId: "a_1", taskId: "t_1" };
+  expect(ClientMessage.safeParse(send).success).toBe(true);
+  expect(ClientMessage.safeParse({ ...send, taskId: "" }).success).toBe(false);
+  expect(ServerMessage.safeParse({ t: "voice.sent", requestId: "r", ok: true }).success).toBe(true);
+  // The old call frames are gone: the call is `voice.session` / `voice.tool` / `voice.end`.
+  expect(ClientMessage.safeParse({ t: "voice.open", voiceSessionId: "v", source: "in_app" }).success).toBe(false);
 });
 
 test("an outdated hello still parses, so its sender can be told why", () => {
@@ -149,8 +131,8 @@ test("every message the app actually sends is accepted", () => {
     { t: "workspaces", requestId: "r1" },
     { t: "workspaces", requestId: "r1", path: "/Users/someone" },
     { t: "workspace.status", sessionId: "s1", providerId: "claude-code" },
-    // Voice screenshots, as `voiceController.ts` sends them: the upload, the
-    // removal, and a send from the sheet through the model's own tool.
+    // Voice screenshots, as the Tasks screen sends them: the upload, the
+    // removal, and a send to a task.
     {
       t: "voice.attach",
       requestId: "shot-1",
@@ -163,13 +145,7 @@ test("every message the app actually sends is accepted", () => {
     { t: "voice.dismiss", taskIds: ["t_1"] },
     { t: "voice.dismiss", taskIds: ["t_2", "t_3"], projectIds: ["p_1"] },
     { t: "voice.dismiss", allFinished: true },
-    {
-      t: "voice.tool",
-      voiceSessionId: "sheet",
-      callId: "sheet-a_1-t_1-x",
-      name: "attach_screenshot",
-      args: { attachmentId: "a_1", taskId: "t_1", instruction: "Apply it" },
-    },
+    { t: "voice.send", requestId: "send-1", attachmentId: "a_1", taskId: "t_1", instruction: "Apply it" },
   ];
 
   for (const message of messages) {
@@ -309,30 +285,6 @@ test("a push registration is a client message, and needs a real platform", () =>
       platform: "ios",
     }).success,
   ).toBe(true);
-
-  // The voice-call setting is optional (absent = an older app = off) and boolean.
-  const base = { t: "app.push", token: "ExponentPushToken[abc]", platform: "ios" };
-  expect(ClientMessage.safeParse({ ...base, voiceCall: true }).success).toBe(true);
-  expect(ClientMessage.safeParse({ ...base, voiceCall: "yes" }).success).toBe(false);
-
-  // The native call screen is optional too, and its VoIP address must look
-  // like one: the token goes into an APNs URL path and the bundle id into a header.
-  const voip = {
-    token: "ab".repeat(32),
-    environment: "production",
-    bundleId: "io.github.kenkaiii.pew2",
-  };
-  expect(ClientMessage.safeParse({ ...base, nativeCall: true, voip }).success).toBe(true);
-  expect(
-    ClientMessage.safeParse({ ...base, nativeCall: true, voip: { ...voip, token: "../x" } })
-      .success,
-  ).toBe(false);
-  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, bundleId: "a\r\nb" } }).success).toBe(
-    false,
-  );
-  expect(ClientMessage.safeParse({ ...base, voip: { ...voip, environment: "dev" } }).success).toBe(
-    false,
-  );
 
   // The daemon branches on this to decide whether to name an Android channel,
   // and naming one the device never created means nothing is shown at all.

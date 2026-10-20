@@ -24,9 +24,7 @@ import { daemonPort, daemonUrl } from "./doctor.js";
 import { lanAddresses, loadPairing, pairingUrl, qrCode, rotatePairing } from "../pairing.js";
 import { CLI_DEVICE_PREFIX, isRealClaim } from "../device-claim.js";
 import {
-  PALETTE,
   colorLevel,
-  copyToClipboard,
   glyphs,
   onKeypress,
   statusLine,
@@ -317,9 +315,7 @@ export async function cmdPair(flags: Set<string>): Promise<number> {
   }
 
   const view: PairView = {
-    url,
     token: pairing.token,
-    createdAt: pairing.createdAt,
     reach,
     relay: pairing.relay ? { url: pairing.relay, healthy: relayHealthy } : undefined,
     addresses,
@@ -353,7 +349,7 @@ export async function cmdPair(flags: Set<string>): Promise<number> {
 
 /**
  * The live half of the screen: a spinner that resolves the moment a device
- * attaches, plus the two keys worth having while staring at a QR code.
+ * attaches, and `q` to stop waiting.
  */
 async function waitInteractively(
   view: PairView,
@@ -385,15 +381,6 @@ async function waitInteractively(
     (pressed) => {
       const lower = pressed.toLowerCase();
       if (lower === "q") controller.abort();
-      if (lower === "c") {
-        void copyToClipboard(view.url).then((copied) => {
-          spinner.update(
-            copied
-              ? `${style.hex(PALETTE.success, "link copied")} ${style.dim("— waiting for your phone")}`
-              : `${style.dim("could not reach a clipboard — waiting for your phone")}`,
-          );
-        });
-      }
     },
     { onAbort: () => controller.abort() },
   );

@@ -23,9 +23,17 @@ interface ApprovalSheetProps {
   /** The pending request, or undefined once it has been answered. */
   permission?: PermissionRequest;
   onAnswer: (requestId: string, optionId: string, deny: boolean) => void;
+  /** "Talk it through": start a call focused on this request. Absent without voice. */
+  onTalk?: (requestId: string) => void;
+  /**
+   * Shown on a call: the same card, read out by Pew. `from` names the session
+   * asking, `voicePick` is the option Pew is choosing (lit as it goes), and the
+   * card can be put away for the call, which an approval otherwise can't.
+   */
+  call?: { from: string; voicePick?: string; onHide: () => void };
 }
 
-function ApprovalSheetView({ permission, onAnswer }: ApprovalSheetProps) {
+function ApprovalSheetView({ permission, onAnswer, onTalk, call }: ApprovalSheetProps) {
   // Held after the answer so the sheet can animate out with its content intact
   // — clearing on the same frame would empty the card mid-travel.
   const shown = useLastDefined(permission);
@@ -33,9 +41,22 @@ function ApprovalSheetView({ permission, onAnswer }: ApprovalSheetProps) {
 
   // The first choice that isn't a refusal is the one most people want, so it
   // is the lit button; other allows are secondary and refusals are danger.
-  const primaryId = options.find((o) => !isDenyApprovalOption(o))?.optionId;
+  // While Pew is choosing by voice, its choice is the big one: lit if it is an
+  // allow, full-size danger if it is a refusal (a refusal is never lit).
+  const picked = call?.voicePick ? options.find((o) => o.optionId === call.voicePick) : undefined;
+  const primaryId = picked
+    ? isDenyApprovalOption(picked) ? undefined : picked.optionId
+    : options.find((o) => !isDenyApprovalOption(o))?.optionId;
   return (
-    <Sheet visible={permission !== undefined} label="Permission" labelTone="attention" pewMood="talking" title="Approval needed">
+    <Sheet
+      visible={permission !== undefined}
+      label={call ? `Permission · ${call.from}` : "Permission"}
+      labelTone="attention"
+      pewMood="talking"
+      title="Approval needed"
+      onClose={call?.onHide}
+      dismissLabel={call ? "Hide this request" : undefined}
+    >
       <View style={styles.body} accessibilityLiveRegion="assertive">
         <Text style={styles.request}>{shown?.title ?? ""}</Text>
         <View style={styles.buttons}>
@@ -45,17 +66,21 @@ function ApprovalSheetView({ permission, onAnswer }: ApprovalSheetProps) {
             // first and clear the pending permission out from under this row.
             const requestId = shown!.requestId;
             const primary = option.optionId === primaryId;
+            const big = primary || option.optionId === picked?.optionId;
             return (
               <StageButton
                 key={option.optionId}
                 kind={deny ? "danger" : primary ? "primary" : "secondary"}
-                compact={!primary}
+                compact={!big}
                 feel={deny ? "warned" : "sent"}
                 label={option.name}
                 onPress={() => onAnswer(requestId, option.optionId, deny)}
               />
             );
           })}
+          {onTalk && shown && (
+            <StageButton compact kind="secondary" feel="tap" label="Talk it through" onPress={() => onTalk(shown.requestId)} />
+          )}
         </View>
       </View>
     </Sheet>

@@ -22,10 +22,13 @@ import { theme } from "../theme";
 import { Pew } from "../pew/Pew";
 import { pewInk } from "../pew/palette";
 import { haptics } from "./haptics";
+import { sounds } from "./sounds";
+import { agentSound, type SoundName } from "../soundsPolicy";
 import { Led } from "./stage/Led";
 import { DotGrid } from "./stage/DotGrid";
 import { AgentGlow } from "./AgentGlow";
 import { pageForScroll, type PagingHold } from "../carouselPaging";
+import { ScreenHeader, HeaderButton } from "./ScreenHeader";
 import { DotGlyph } from "./stage/DotGlyph";
 import { StageButton } from "./stage/StageButton";
 import { useReducedMotion } from "./useReducedMotion";
@@ -96,6 +99,25 @@ export function AgentCarousel({ agents, currentId, onSelect, onClose, arriveSmil
   const arrowHoldRef = useRef<PagingHold | undefined>(undefined);
   const arrowHold = useCallback((): PagingHold => (arrowHoldRef.current ??= {}), []);
   const arrowTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /**
+   * Landing on an agent: a detent felt, and that agent's own voice heard, the
+   * moment Pew takes its colour. Swiping on cuts the last one short, so a fast
+   * flick through is a run of starts, never a pile-up.
+   */
+  const singing = useRef<SoundName | undefined>(undefined);
+  const land = useCallback(
+    (next: number) => {
+      haptics.detent(null);
+      const voice = agentSound(agents[next]?.id);
+      if (singing.current && singing.current !== voice) sounds.stop(singing.current, 60);
+      singing.current = voice;
+      sounds.play(voice);
+    },
+    [agents],
+  );
+  useEffect(() => {
+    sounds.preload(agents.map((a) => agentSound(a.id)));
+  }, [agents]);
   useEffect(() => () => clearTimeout(arrowTimer.current), []);
   const goTo = useCallback(
     (i: number) => {
@@ -108,9 +130,9 @@ export function AgentCarousel({ agents, currentId, onSelect, onClose, arriveSmil
       }, 700);
       list.current?.scrollToIndex({ index: next, animated: !reduceMotion });
       setPage(next);
-      haptics.detent();
+      land(next);
     },
-    [agents.length, page, reduceMotion, arrowHold],
+    [agents.length, page, reduceMotion, arrowHold, land],
   );
   /** The page a scroll position means, or undefined while an arrow slide is still travelling. */
   const settledPage = useCallback(
@@ -123,10 +145,10 @@ export function AgentCarousel({ agents, currentId, onSelect, onClose, arriveSmil
       const next = settledPage(e.nativeEvent.contentOffset.x);
       if (next !== undefined && next !== page) {
         setPage(next);
-        haptics.detent();
+        land(next);
       }
     },
-    [page, settledPage],
+    [page, settledPage, land],
   );
 
   // The page under the finger, live while dragging, so Pew recolours as you
@@ -136,10 +158,10 @@ export function AgentCarousel({ agents, currentId, onSelect, onClose, arriveSmil
       const next = settledPage(e.nativeEvent.contentOffset.x);
       if (next !== undefined && next !== page) {
         setPage(next);
-        haptics.detent();
+        land(next);
       }
     },
-    [page, settledPage],
+    [page, settledPage, land],
   );
 
   const getItemLayout = useMemo(
@@ -154,20 +176,10 @@ export function AgentCarousel({ agents, currentId, onSelect, onClose, arriveSmil
     // the same Pew carrying on.
     <Animated.View entering={reduceMotion ? undefined : FadeIn.duration(220)} style={[StyleSheet.absoluteFill, styles.root]}>
       <DotGrid />
-      <View style={[styles.top, { paddingTop: insets.top + theme.space(2) }]}>
-        <Led color={ink}>Switch agent</Led>
-        <Pressable
-          onPress={() => {
-            haptics.tap();
-            onClose();
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Close"
-          hitSlop={12}
-        >
-          <DotGlyph name="close" size={20} color={theme.color.text} />
-        </Pressable>
-      </View>
+      <ScreenHeader
+        title="Switch agent"
+        leading={<HeaderButton glyph="close" label="Close" onPress={onClose} />}
+      />
       {/* ONE Pew, fixed in the middle: swiping recolours and renames it rather
           than sliding in a fresh Pew per agent (which all arrived in the same
           rest pose, so the carousel felt static). It keeps whatever it was
@@ -229,7 +241,9 @@ export function AgentCarousel({ agents, currentId, onSelect, onClose, arriveSmil
           <View style={styles.primaryWrap}>
             <StageButton
               color={ink}
-              feel="select"
+              // The agent's own sound already played when it was landed on: the
+              // press is felt (a firm tap when switching) and only ticks.
+              feel={isCurrent ? "tap" : "chosen"}
               label={isCurrent ? `Keep ${agent.name}` : `Switch to ${agent.name}`}
               onPress={() => {
                 if (!isCurrent) onSelect(agent.id);
@@ -259,7 +273,6 @@ const styles = StyleSheet.create({
   root: { backgroundColor: theme.color.bg, zIndex: 50 },
   pewSpot: { width: PEW, height: PEW, alignItems: "center", justifyContent: "center" },
   mirror: { transform: [{ scaleX: -1 }] },
-  top: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: theme.gutter },
   listWrap: { flex: 1 },
   pages: { flex: 1 },
   // Fixed height, so the text pages and the Pew overlay lay out identically.

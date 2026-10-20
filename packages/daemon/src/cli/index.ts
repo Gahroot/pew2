@@ -62,7 +62,6 @@ import { PALETTE, colorLevel, glyphs, statusLine, styler, unicodeOk } from "./ui
 // binary, where there is no package.json next to it to read.
 import pkg from "../../package.json" with { type: "json" };
 import { helpView } from "./help-view.js";
-import { cmdVoice } from "./voice.js";
 
 /** The version this build was cut from, for `pew2 --version`. */
 const VERSION = (pkg as { version: string }).version;
@@ -747,8 +746,6 @@ async function main() {
   if (group === "doctor") return cmdDoctor(flags);
   if (group === "detect") return cmdDetect(flags);
   if (group === "registry") return cmdRegistry(command, flags);
-  // Own argument parsing: `apns` takes flag values, which the split above drops.
-  if (group === "voice") return cmdVoice(argv.slice(1));
 
   if (group !== "providers") {
     console.log(helpView().join("\n"));

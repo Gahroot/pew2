@@ -1,9 +1,12 @@
 /**
- * The voice feature as one object the Daemon owns.
+ * Voice tasks: the orchestrated work behind a call's task tools, as one object
+ * the Daemon owns.
  *
- * Wires the pure modules together: store (state), orchestrator (dispatch),
- * registry (names), batcher (what is worth a push), mint (Realtime secret) and
- * the tool executor. `handler.ts` talks only to this, so both transports get
+ * The call itself (sign-in, minting, ringing, the inbox and the phone's
+ * WebRTC leg) is the `VoiceController`'s. This wires the task side together:
+ * store (state), orchestrator (dispatch), registry (names), batcher (what is
+ * worth telling a call) and the tool executor, and adds its briefing and tools
+ * to each call. `handler.ts` talks only to this, so both transports get
  * identical behaviour.
  */
 import { homedir } from "node:os";
@@ -15,16 +18,6 @@ import { daveChanges, daveCheckinEnabled, daveDigest, type DaveDigest } from "./
 import { focusContext, noteEvent } from "./focus.js";
 import { GoalTracker, goalHooks, goalRunsBase } from "./goalRuns.js";
 import { Orchestrator, type PromptImage, type VoiceHost } from "./dispatcher.js";
-import { AccountAuth, type VoiceAccount } from "./accountAuth.js";
-import type { VoiceAccountStatus } from "../../../protocol/src/voice.js";
-import {
-  DEFAULT_MODEL,
-  DEFAULT_VOICE,
-  mintRealtimeSecret,
-  readVoicePrefs,
-  MINT_MESSAGES,
-  type VoicePrefs,
-} from "./mint.js";
 import { addAlias, buildRegistry, readAliases, repoForPath, repoOf } from "./registry.js";
 import { DEFAULT_APPROVAL_POLICY, speakable, type ApprovalPolicy } from "./safety.js";
 import {
@@ -36,7 +29,7 @@ import {
   type StoredScreenshot,
   type StoredTask,
 } from "./store.js";
-import { projectForPath, realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS } from "./tools.js";
+import { callTools, isTaskTool, projectForPath, TASK_INSTRUCTIONS, ToolExecutor } from "./taskTools.js";
 import type {
   RunningSession,
   VoiceAttachment,
@@ -53,6 +46,7 @@ import {
 } from "../worktree.js";
 import type { CreatedWorktree, Result } from "../worktree-create.js";
 import { placeSpoken } from "./place.js";
+import { liveUpdateNote } from "./liveUpdates.js";
 import {
   checkScreenshot,
   deleteScreenshot,
@@ -83,11 +77,17 @@ export interface VoiceServiceDeps {
   /** What one open conversation is doing now; backs `peek_session`. */
   peekSession?: (sessionId: string) => import("./types.js").SessionPeek | undefined;
   lastUsedProvider?: () => string | undefined;
-  /** Send a push for an event that is worth one. Never awaited by the service. */
-  push?: (event: VoiceEvent) => void | Promise<void>;
-  fetch?: typeof fetch;
-  /** Explicit daemon-owned account; injectable without reading CLI credentials. */
-  account?: VoiceAccount;
+  /**
+   * Tell the call in progress something now (`voice.note`): a task finished,
+   * failed or needs the user. Absent, or no call open: nothing is said.
+   */
+  note?: (callId: string, note: { text: string; speak?: boolean; about?: string }) => void;
+  /**
+   * Whether a briefed call is still in progress. A call whose end never
+   * arrived (the app died) stops counting once this says no. Absent: every
+   * briefed call counts until it ends.
+   */
+  callInProgress?: (callId: string) => boolean;
   /**
    * DAVE: asked from its tools, plus one read of its focus list when a voice
    * session opens, for the check-in (`PEW2_DAVE_CHECKIN=off` stops that read).
@@ -101,18 +101,24 @@ export interface VoiceServiceDeps {
   tickMs?: number;
 }
 
-export interface OpenRequest {
-  voiceSessionId: string;
-  source: string;
-  focusEventId?: number;
-  focusTaskId?: string;
-  /** Optional on arrival: absent means an app that predates client-side barge-in. */
-  clientVad?: boolean;
+/** What a call is about, for its briefing: the chat it was placed from, or a ring's item. */
+export interface BriefRequest {
+  callId: string;
+  /** The chat the call was placed from; a voice task's own session focuses that task. */
+  sessionId?: string;
+}
+
+/** The task half of a call's instructions and tools, added to the call's own. */
+export interface CallBriefing {
+  instructions: string;
+  tools: readonly Record<string, unknown>[];
 }
 
 const PROJECT_TTL_MS = 30_000;
-/** Check-ins held for sessions not yet closed. */
+/** Check-ins held for calls not yet ended. */
 const MAX_PENDING_CHECKINS = 8;
+/** The longest a call's briefing waits on DAVE for the check-in. */
+const DAVE_BRIEF_MS = 1_500;
 /** Events that change what "that" means: results and questions, never chatter. */
 const FOCUS_EVENTS: ReadonlySet<VoiceEvent["kind"]> = new Set([
   "task.completed",
@@ -126,7 +132,8 @@ export class VoiceService {
   readonly orchestrator: Orchestrator;
   readonly tools: ToolExecutor;
   private readonly batcher = new EventBatcher();
-  private readonly open_ = new Set<string>();
+  /** Calls in progress, by `callId`: the highest event each has been told about. */
+  private readonly open_ = new Map<string, number>();
   private projectCache: { at: number; list: VoiceProject[] } | undefined;
   private timer?: ReturnType<typeof setInterval>;
   private readonly now: () => number;
@@ -136,15 +143,12 @@ export class VoiceService {
   private readonly goalBase: string;
   private readonly goalTracker = new GoalTracker();
   private readonly stopping = new AbortController();
-  private accountEpoch = 0;
-  private minting = new AbortController();
-  /** What each open session's check-in covered, saved once the user has heard it (`close`). */
+  /** What each call's check-in covered, saved once the call ends (`callEnded`). */
   private readonly checkins = new Map<string, CheckinState>();
 
   private constructor(
     private readonly deps: VoiceServiceDeps,
     store: VoiceStore,
-    readonly account: VoiceAccount,
   ) {
     this.now = deps.now ?? Date.now;
     this.store = store;
@@ -185,34 +189,14 @@ export class VoiceService {
         this.projectCache = undefined;
       },
     });
-    // Hands-free auto-approval only runs while someone is on a voice session.
-    this.orchestrator.autoApprove = () =>
-      this.open_.size > 0 && this.approvalPolicy.autoApproveSafe;
+    // Hands-free auto-approval only runs while someone is on a call.
+    this.orchestrator.autoApprove = () => this.approvalPolicy.autoApproveSafe && this.liveCalls().length > 0;
     store.subscribe((event, task) => this.onEvent(event, task));
   }
 
   static async create(deps: VoiceServiceDeps): Promise<VoiceService> {
     const store = await VoiceStore.open(join(deps.dataDir, "voice-state.json"), deps.now);
-    const account =
-      deps.account ??
-      (await AccountAuth.create({
-        dataDir: deps.dataDir,
-        fetch: deps.fetch,
-        now: deps.now,
-        probe: async (accessToken, signal) => {
-          const prefs = await readVoicePrefs(deps.dataDir);
-          const result = await mintRealtimeSecret({
-            accessToken,
-            session: {},
-            model: prefs.model,
-            fetch: deps.fetch,
-            signal,
-          });
-          // Only readiness escapes; the probe's ephemeral secret is discarded.
-          return result.ok ? { ok: true } : { ok: false, code: result.code };
-        },
-      }));
-    const service = new VoiceService(deps, store, account);
+    const service = new VoiceService(deps, store);
     service.orchestrator.reconcile();
     await service.backfillRepos().catch(() => undefined);
     await service.pruneScreenshots();
@@ -228,66 +212,6 @@ export class VoiceService {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.stopping.abort();
-    this.accountEpoch++;
-    this.minting.abort();
-    this.account.dispose();
-  }
-
-  /** Rotation/unpair invalidates pending authorization, not coding-agent login. */
-  invalidateAccount() {
-    this.account.invalidate();
-    this.endAccountVoice();
-  }
-
-  private endAccountVoice() {
-    this.accountEpoch++;
-    this.minting.abort();
-    this.minting = new AbortController();
-    for (const voiceSessionId of this.open_) {
-      this.deps.emit({
-        t: "voice.unavailable",
-        voiceSessionId,
-        code: "account-required",
-        message: MINT_MESSAGES["account-required"],
-      });
-    }
-    this.open_.clear();
-    this.checkins.clear();
-    this.approvalPolicy = DEFAULT_APPROVAL_POLICY;
-  }
-
-  async accountRequest(
-    message: {
-      t:
-        | "voice.account.status"
-        | "voice.account.connect"
-        | "voice.account.cancel"
-        | "voice.account.disconnect";
-      requestId: string;
-      attemptId?: string;
-    },
-    owner: string,
-  ): Promise<VoiceAccountStatus> {
-    let status;
-    switch (message.t) {
-      case "voice.account.status":
-        status = await this.account.status(owner, message.attemptId);
-        break;
-      case "voice.account.connect":
-        status = await this.account.connect(owner);
-        break;
-      case "voice.account.cancel":
-        status = await this.account.cancel(owner, message.attemptId ?? "");
-        break;
-      case "voice.account.disconnect": {
-        // Invalidation inside disconnect happens before its first await.
-        const removing = this.account.disconnect();
-        this.endAccountVoice();
-        status = await removing;
-        break;
-      }
-    }
-    return { t: "voice.account.state", requestId: message.requestId, supported: true, ...status };
   }
 
   tick() {
@@ -295,7 +219,7 @@ export class VoiceService {
     // Goal milestones land in goals.json mid-turn; a stat per live goal task
     // until the file moves. Its events go through the batcher like any other.
     void this.pollGoals();
-    for (const event of this.batcher.due(this.now())) this.pushIfIdle(event);
+    for (const event of this.batcher.due(this.now())) this.tellCalls(event);
   }
 
   /** Read live goal tasks' runs once (never overlapping). Resolves with the events emitted; never throws. */
@@ -398,22 +322,35 @@ export class VoiceService {
     if (FOCUS_EVENTS.has(event.kind) || event.goal?.change === "needs_you") {
       this.store.setFocusRefs(noteEvent(this.store.focusRefs(), event, task));
     }
-    for (const ready of this.batcher.add(event, this.now())) this.pushIfIdle(ready);
+    for (const ready of this.batcher.add(event, this.now())) this.tellCalls(ready);
   }
 
-  /** No push while a voice session is open: the user is already hearing it. */
-  private pushIfIdle(event: VoiceEvent) {
-    // Chatter is never worth a banner; the batcher still drains it so it cannot pile up.
-    if (event.class === "informational") return;
-    if (this.open_.size > 0 || !this.deps.push) return;
-    try {
-      void Promise.resolve(this.deps.push(event)).catch(() => {});
-    } catch {
-      // Push is best effort.
+  /**
+   * A finished, failed or waiting task, told to every call in progress that
+   * has not heard it yet. With no call open nothing is sent: the task's own
+   * session already pushed its banner, and the next call's check-in covers it.
+   */
+  private tellCalls(event: VoiceEvent) {
+    // Chatter is never worth interrupting for; the batcher still drains it so it cannot pile up.
+    if (event.class === "informational" || !this.deps.note) return;
+    for (const callId of this.liveCalls()) {
+      const heard = this.open_.get(callId) ?? 0;
+      if (event.eventId <= heard) continue;
+      this.open_.set(callId, event.eventId);
+      const task = this.store.getTask(event.taskId);
+      try {
+        this.deps.note(callId, {
+          text: liveUpdateNote(event, task && toVoiceTask(task)),
+          speak: true,
+          about: placeSpoken(event),
+        });
+      } catch {
+        // A note is best effort: the model can still ask with task_status.
+      }
     }
   }
 
-  async snapshot(request?: Partial<OpenRequest>): Promise<VoiceSnapshot> {
+  async snapshot(request?: { source?: string; focusEventId?: number; focusTaskId?: string }): Promise<VoiceSnapshot> {
     const focusEvent =
       request?.focusEventId !== undefined
         ? this.store
@@ -434,106 +371,52 @@ export class VoiceService {
     });
   }
 
-  async open(request: OpenRequest): Promise<Record<string, unknown>> {
-    const epoch = this.accountEpoch;
-    const prefs = await readVoicePrefs(this.deps.dataDir);
-    if (prefs.enabled === false) {
-      return {
-        t: "voice.unavailable",
-        voiceSessionId: request.voiceSessionId,
-        code: "disabled",
-        message: "Voice is turned off on this computer.",
-      };
-    }
+  /**
+   * The task half of a call's briefing: the guidance for the task tools, what
+   * is going on now (projects, tasks, unheard events, conversations at the
+   * desk), the opening check-in and the working memory. Also opens the call
+   * here, so live updates reach it and auto-approval may run.
+   *
+   * DAVE gets one bounded read for the check-in, and nothing here throws: a
+   * call must never fail to connect because the task side could not answer.
+   */
+  async brief(request: BriefRequest): Promise<CallBriefing> {
     // The one unprompted contact with DAVE: a single read of its focus list for
     // the check-in, started first so it overlaps everything below. Loopback,
-    // GET-only, 1.5 s, project names only, and silent on any failure.
+    // GET-only, bounded, project names only, and silent on any failure.
     const dave =
       this.deps.dave && daveCheckinEnabled(this.deps.env)
-        ? daveDigest(this.deps.dave)
+        ? withTimeout(daveDigest(this.deps.dave), DAVE_BRIEF_MS)
         : Promise.resolve(undefined);
     // Fresh registry, and goal runs as they are on disk, before the model speaks.
     const [projects] = await Promise.all([this.projects(true), this.pollGoals()]);
     const live = this.deps.runningSessions?.() ?? [];
     const desk = deskContext(live, projects);
-    const snapshot = await this.snapshot(request);
-    const voice = prefs.voice ?? DEFAULT_VOICE;
-    const context = `${VOICE_INSTRUCTIONS}\n\nContext now:\n${contextText(snapshot)}${desk ? `\n\n${desk}` : ""}`;
-    const config = (instructions: string) =>
-      realtimeSession({
-        voice,
-        clientVad: request.clientVad === true,
-        backlogTools: !!this.deps.dave,
-        instructions,
-      });
-    // The secret is minted while DAVE answers, so the check-in adds no wait.
-    // The app applies the returned `session` verbatim with `session.update`
-    // (every app since voice shipped), which is what carries the check-in.
-    const [minted, digest] = await Promise.all([this.mint(prefs, config(context)), dave]);
-    if (!minted.ok) {
-      return {
-        t: "voice.unavailable",
-        voiceSessionId: request.voiceSessionId,
-        code: minted.code,
-        message: minted.message,
-      };
-    }
-    if (epoch !== this.accountEpoch || this.stopping.signal.aborted) {
-      return {
-        t: "voice.unavailable",
-        voiceSessionId: request.voiceSessionId,
-        code: "account-required",
-        message: MINT_MESSAGES["account-required"],
-      };
-    }
+    const focus = request.sessionId
+      ? this.store.tasks().find((t) => t.sessionId === request.sessionId && t.dismissedAt === undefined)
+      : undefined;
+    const snapshot = await this.snapshot({ source: "call", ...(focus ? { focusTaskId: focus.taskId } : null) });
+    const digest = await dave.catch(() => undefined);
     const { checkin, covered } = this.checkin(snapshot.eventId, live, digest);
     const memory = focusContext(this.store.focusRefs(), this.store.tasks(), this.now());
-    const session = config(
-      [context, checkin.say ? `Check-in: ${checkin.say}` : "", memory].filter(Boolean).join("\n\n"),
-    );
-    if (this.open_.size === 0) this.approvalPolicy = DEFAULT_APPROVAL_POLICY;
-    this.open_.add(request.voiceSessionId);
-    this.checkins.set(request.voiceSessionId, covered);
-    // A session that never closed (the app died) must not pin its entry for ever.
-    for (const id of this.checkins.keys())
-      if (this.checkins.size > MAX_PENDING_CHECKINS) this.checkins.delete(id);
-    return {
-      t: "voice.ready",
-      voiceSessionId: request.voiceSessionId,
-      realtime: {
-        secret: minted.secret,
-        expiresAt: minted.expiresAt,
-        model: minted.model,
-        voice,
-        session,
-      },
-      snapshot: { ...snapshot, checkin },
-    };
-  }
-
-  /** Only the account explicitly connected to Pew2 may authorize voice. */
-  private async mint(prefs: VoicePrefs, session: Record<string, unknown>) {
-    const epoch = this.accountEpoch;
-    const signal = AbortSignal.any([this.stopping.signal, this.minting.signal]);
-    const account = await this.account.accessToken();
-    if (!account.ok) return account;
-    if (epoch !== this.accountEpoch || signal.aborted) {
-      return {
-        ok: false as const,
-        code: "account-required",
-        message: MINT_MESSAGES["account-required"],
-      };
+    if (this.liveCalls().length === 0) this.approvalPolicy = DEFAULT_APPROVAL_POLICY;
+    this.open_.set(request.callId, snapshot.eventId);
+    this.checkins.set(request.callId, covered);
+    // A call that never ended (the app died) must not pin its entry for ever.
+    for (const id of [...this.checkins.keys()]) {
+      if (this.checkins.size <= MAX_PENDING_CHECKINS) break;
+      this.checkins.delete(id);
+      this.open_.delete(id);
     }
-    const minted = await mintRealtimeSecret({
-      accessToken: account.token,
-      model: prefs.model ?? DEFAULT_MODEL,
-      session,
-      fetch: this.deps.fetch,
-      signal,
-    });
-    if (epoch === this.accountEpoch && !signal.aborted)
-      this.account.noteMint(minted.ok ? undefined : minted.code);
-    return minted;
+    const instructions = [
+      TASK_INSTRUCTIONS,
+      `Tasks now:\n${contextText(snapshot)}${desk ? `\n\n${desk}` : ""}`,
+      checkin.say ? `Check-in: ${checkin.say}` : "",
+      memory,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    return { instructions, tools: callTools({ backlogTools: !!this.deps.dave }) };
   }
 
   /**
@@ -574,26 +457,65 @@ export class VoiceService {
     };
   }
 
+  /** Briefed calls still in progress. */
+  private liveCalls(): string[] {
+    const live = this.deps.callInProgress;
+    return [...this.open_.keys()].filter((callId) => (live ? live(callId) : true));
+  }
+
+  /** Whether `name` is one of the task tools a call was given. */
+  handles(name: string): boolean {
+    return isTaskTool(name);
+  }
+
+  /**
+   * Run one task tool for a call, as the call's `voice.tool` answer: JSON text
+   * for the model, and whether to hang up. `toolCallId` is the Realtime
+   * `call_id`, which the executor journals, so a retry after a restart gets
+   * the stored answer instead of running twice.
+   */
   async tool(message: {
-    voiceSessionId: string;
     callId: string;
+    toolCallId: string;
     name: string;
-    args: Record<string, unknown>;
-  }) {
+    /** The model's JSON arguments, unparsed, as the call sends them. */
+    arguments: string;
+  }): Promise<{ output: string }> {
+    const args = parseArguments(message.arguments);
+    if (!args) return { output: JSON.stringify({ ok: false, error: "The arguments were not valid JSON." }) };
+    const result = await this.tools.handle({ callId: message.toolCallId, name: message.name, args });
+    const body = result.ok ? result.output : { ok: false, error: result.error ?? "The tool failed." };
+    let output: string;
+    try {
+      output = JSON.stringify(body ?? null) ?? "null";
+    } catch {
+      output = JSON.stringify({ ok: false, error: "The result could not be serialised." });
+    }
+    return { output };
+  }
+
+  /**
+   * Send a held screenshot to a task from the Tasks screen, through the same
+   * tool a call uses, so the checks, the journal and the task's history are
+   * identical whichever did it. Answered to the sender.
+   */
+  async send(message: { requestId: string; attachmentId: string; taskId: string; instruction?: string }) {
     const result = await this.tools.handle({
-      callId: message.callId,
-      name: message.name,
-      args: message.args,
+      callId: `send:${message.requestId}`,
+      name: "attach_screenshot",
+      args: {
+        attachmentId: message.attachmentId,
+        taskId: message.taskId,
+        instruction:
+          message.instruction ??
+          "Here is a screenshot the user forwarded, likely a fix from a partner. Look at it and apply it to this task.",
+      },
     });
     return {
-      t: "voice.tool.result",
-      voiceSessionId: message.voiceSessionId,
-      callId: message.callId,
+      t: "voice.sent",
+      requestId: message.requestId,
       ok: result.ok,
-      output: result.output,
-      ...(result.error ? { error: result.error } : null),
-      ...(result.endSession ? { endSession: true } : null),
-      ...(result.openPicker ? { openPicker: true } : null),
+      ...(result.ok ? null : { error: result.error ?? "It could not be sent." }),
     };
   }
 
@@ -706,14 +628,20 @@ export class VoiceService {
     return taskIds;
   }
 
-  close(message: { voiceSessionId: string; heardEventId?: number }) {
-    this.open_.delete(message.voiceSessionId);
-    const covered = this.checkins.get(message.voiceSessionId);
+  /**
+   * A call ended: what its check-in covered and every event it was told about
+   * count as heard, so the next call does not repeat them. An unknown call
+   * (opened before a restart, or never briefed) changes nothing.
+   */
+  callEnded(callId: string): Promise<void> {
+    const heard = this.open_.get(callId);
+    this.open_.delete(callId);
+    const covered = this.checkins.get(callId);
     if (covered) {
-      this.checkins.delete(message.voiceSessionId);
+      this.checkins.delete(callId);
       this.store.setCheckinState({ ...this.store.checkinState(), ...covered });
     }
-    if (message.heardEventId !== undefined) this.store.markHeard(message.heardEventId);
+    if (heard !== undefined) this.store.markHeard(heard);
     return this.store.flush();
   }
 
@@ -808,4 +736,27 @@ export function deskContext(
     return `- ${speakable(s.agentName ?? s.providerId, 40)} in ${speakable(place, 80)} (${state}, started at the computer)${title ? `: ${title}` : ""}`;
   });
   return `Running on the computer now:\n${lines.join("\n")}`;
+}
+
+/** `promise`, or undefined once `ms` pass first. Never rejects. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise.catch(() => undefined), late]).finally(() => clearTimeout(timer));
+}
+
+/** A tool call's arguments as an object; undefined when they are not a JSON object. Empty means none. */
+function parseArguments(raw: string): Record<string, unknown> | undefined {
+  if (raw.trim() === "") return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

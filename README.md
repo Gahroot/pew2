@@ -48,22 +48,18 @@ for remote work. Never share another person's pairing QR or credentials.
 
 Release check (18 October 2026): this fork's latest published binary is **v0.9.21**,
 with macOS arm64/x64, Linux arm64/x64, Windows x64 and corresponding SHA-256 files.
-The source daemon is v0.9.23; the existing release does **not** establish that new
-voice-account functionality is available. A new daemon release and TestFlight
-build are separate shipping steps. The installer and updater in this source tree
-now target `Gahroot/pew2`, not upstream; these changes must themselves ship before
-existing installations will use that destination.
+A new daemon release and TestFlight build are separate shipping steps. The
+installer and updater in this source tree target `Gahroot/pew2`, not upstream;
+these changes must themselves ship before existing installations will use that
+destination.
 
-**Voice accounts in this source build:** open **Connection → Voice account →
-Connect ChatGPT** with the paired computer online. Use your own account; credentials
-stay on that computer, separately from EZ Coder/Codex. Voice does not silently
-fall back to an API key. Login and voice readiness are separate, and provider
-support for Pew2 OAuth-to-Realtime is still unresolved—not a promise that a
-ChatGPT subscription covers voice. Windows voice-account storage currently fails
-closed. Native iOS and live two-user acceptance remain unverified. See
-[voice setup](docs/VOICE.md) and [verification evidence](docs/VOICE-ACCOUNT-EVIDENCE.md).
-The commands below fetch published scripts/binaries, not these uncommitted source
-changes; no new release or TestFlight build has been published by this work.
+**Voice in this source build:** calls with Pew come from upstream (0.9.25):
+tap Talk in a conversation, or let Pew ring you when an agent needs you. On top
+of that, this fork adds voice tasks: on a call, ask Pew to start a task, a goal
+or a commit, check the backlog with DAVE, or ask what is running at the desk.
+Tasks run in their own worktrees and report back during the call; the Tasks
+screen (home's top bar) shows them and holds screenshots to send them. See
+[voice](docs/VOICE.md) and [the app side](docs/VOICE-APP.md). Untested on a device.
 
 ### 2. The computer bit
 

@@ -39,9 +39,18 @@ interface AskUserSheetProps {
   /** The open question, or undefined once answered. */
   ask?: AskRequest;
   onAnswer: (requestId: string, result: AskResult) => void;
+  /** "Talk it through": start a call focused on this question. Absent without voice. */
+  onTalk?: (requestId: string) => void;
+  /**
+   * Shown on a call: the same card, read out by Pew. `from` names the session
+   * asking (the call spans all of them), `voicePick` is what Pew is choosing
+   * right now, drawn on the card as it goes, and closing puts the card away
+   * for the call instead of declining the question.
+   */
+  call?: { from: string; voicePick?: AskDraft; onHide: () => void };
 }
 
-function AskUserSheetView({ ask, onAnswer }: AskUserSheetProps) {
+function AskUserSheetView({ ask, onAnswer, onTalk, call }: AskUserSheetProps) {
   const held = useRef(ask);
   if (ask) held.current = ask;
   const shown = held.current;
@@ -49,6 +58,18 @@ function AskUserSheetView({ ask, onAnswer }: AskUserSheetProps) {
   const requestId = shown?.requestId;
   // A new question starts blank.
   useEffect(() => setDraft(EMPTY_DRAFT), [requestId]);
+  // Pew's spoken answer lands on the card the moment it's decided, so the
+  // user sees the pick before it goes (and can tap a different one if Pew
+  // misheard: the tap answers first).
+  // Keyed by content: the call screen re-renders on a clock, and a fresh but
+  // equal pick each tick must not keep resetting the card.
+  const voicePick = call?.voicePick;
+  const pickKey = voicePick ? JSON.stringify(voicePick) : "";
+  const pickRef = useRef(voicePick);
+  pickRef.current = voicePick;
+  useEffect(() => {
+    if (pickKey && pickRef.current) setDraft(pickRef.current);
+  }, [pickKey]);
 
   const result = shown ? buildAskResult(shown.questions, draft) : undefined;
   const single = (shown?.questions.length ?? 0) === 1;
@@ -56,13 +77,14 @@ function AskUserSheetView({ ask, onAnswer }: AskUserSheetProps) {
   return (
     <Sheet
       visible={ask !== undefined}
-      label="Question"
+      label={call ? `Question · ${call.from}` : "Question"}
       labelTone="attention"
       pewMood="talking"
       title={single ? "One question" : `${shown?.questions.length ?? 0} questions`}
-      dismissLabel="Skip these questions"
+      dismissLabel={call ? "Hide this question" : "Skip these questions"}
       onClose={() => {
-        if (ask) onAnswer(ask.requestId, CANCEL_RESULT);
+        if (call) call.onHide();
+        else if (ask) onAnswer(ask.requestId, CANCEL_RESULT);
       }}
     >
       <StageScroll style={styles.scroll} contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
@@ -79,12 +101,15 @@ function AskUserSheetView({ ask, onAnswer }: AskUserSheetProps) {
           style={styles.submit}
           disabled={!result}
           feel="sent"
-          label={result ? "Send answer" : "Choose an answer"}
+          label={result ? "Send answer" : call ? "Say it or choose" : "Choose an answer"}
           onPress={() => {
             if (!shown || !result) return;
             onAnswer(shown.requestId, result);
           }}
         />
+        {onTalk && shown && (
+          <StageButton compact kind="secondary" feel="tap" label="Talk it through" onPress={() => onTalk(shown.requestId)} />
+        )}
       </StageScroll>
     </Sheet>
   );

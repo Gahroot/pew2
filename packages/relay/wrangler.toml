@@ -17,3 +17,10 @@ new_sqlite_classes = ["PairingRoom"]
 
 [observability]
 enabled = true
+
+# APNs VoIP push (POST /voip). The signing key itself is the secret APNS_KEY
+# (`wrangler secret put APNS_KEY` with the .p8 PEM text); these are not secret.
+[vars]
+APNS_KEY_ID = "G9J85F9X9S"
+APNS_TEAM_ID = "396M7LY29W"
+APNS_BUNDLE_ID = "io.github.kenkaiii.pew2"

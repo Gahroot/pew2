@@ -12,7 +12,7 @@
  *
  * The daemon's list (`voice.attachments`) is the authority on what is held and
  * where each went; uploads in flight exist only here, until their answer comes
- * back. Pure, so `bun test` can load it; `voiceController.ts` does the wiring.
+ * back. Pure, so `bun test` can load it; `ui/taskController.ts` does the wiring.
  */
 import type { VoiceTask } from "./types";
 
@@ -128,21 +128,4 @@ export function sendTarget(tasks: Readonly<Record<string, VoiceTask>>): VoiceTas
   return all
     .filter((t) => t.state !== "cancelled")
     .sort((a, b) => b.updatedAt - a.updatedAt || a.taskId.localeCompare(b.taskId))[0];
-}
-
-/**
- * What the voice model is told when one arrives mid-conversation. It never
- * sees the picture (everything given to the model is redacted text), so this
- * is what lets it say "got it" and ask where it goes.
- */
-export function arrivalNote(shot: Pick<HeldScreenshot, "attachmentId" | "name">): string {
-  return [
-    `[Screenshot] The user just shared a screenshot "${shot.name}" (attachmentId ${shot.attachmentId}).`,
-    "Say you have it in a few words. Unless they already said where it goes, ask which project or task it is for, then send it with start_task or follow_up attachmentIds, or attach_screenshot.",
-  ].join("\n");
-}
-
-/** And when the user sends it from the sheet themselves, so the model is not surprised. */
-export function sentNote(shot: Pick<HeldScreenshot, "attachmentId" | "name">, task: Pick<VoiceTask, "taskId" | "title">): string {
-  return `[Screenshot] The user sent "${shot.name}" (attachmentId ${shot.attachmentId}) to task ${task.taskId}, "${task.title}", from the screen. Acknowledge it briefly; do not send it again.`;
 }

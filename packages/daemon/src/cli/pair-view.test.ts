@@ -1,9 +1,9 @@
 /**
  * The pairing screen is the first thing a new user sees, so its failure modes
  * are worth pinning down: a status line that overstates reachability, colour
- * that carries meaning no plain-text reader can recover, and a URL broken
- * across lines are all bugs that produce a support conversation rather than a
- * stack trace.
+ * that carries meaning no plain-text reader can recover, and a secret left on
+ * screen are all bugs that produce a support conversation rather than a stack
+ * trace.
  */
 import { expect, test } from "bun:test";
 import {
@@ -17,15 +17,13 @@ import {
   statusRows,
   type PairView,
 } from "./pair-view.js";
-import { fingerprint, glyphs, relativeAge, stripAnsi, styler, to256, width } from "./ui.js";
+import { glyphs, relativeAge, stripAnsi, styler, to256, width } from "./ui.js";
 
 const plain = { style: styler(0), glyph: glyphs(true), columns: 80 };
 
 function view(overrides: Partial<PairView> = {}): PairView {
   return {
-    url: "wss://relay.example.com/connect?pairing=" + "a".repeat(48) + "&role=app&deviceId=phone",
     token: "a".repeat(48),
-    createdAt: new Date("2026-01-01T00:00:00Z").toISOString(),
     reach: "anywhere",
     relay: { url: "wss://relay.example.com", healthy: true },
     addresses: ["192.168.1.24"],
@@ -43,12 +41,11 @@ test("reachability is reported from the health check, not from configuration", (
     .map(stripAnsi)
     .join("\n");
 
-  expect(down).toContain("no route to this machine");
-  expect(down).toContain("not responding");
+  expect(down).toContain("relay not responding");
   expect(down).not.toContain("anywhere");
 
   const up = statusRows(view(), plain).map(stripAnsi).join("\n");
-  expect(up).toContain("anywhere");
+  expect(up).toContain("works anywhere");
   expect(up).toContain("relay.example.com");
 });
 
@@ -63,42 +60,43 @@ test("a LAN-only pairing says so in words, not only in colour", () => {
   expect(text).not.toContain("relay");
 });
 
-test("the token is elided in the status block", () => {
-  const secret = "b".repeat(48);
-  const rows = statusRows(view({ token: secret }), plain).map(stripAnsi).join("\n");
-
-  expect(rows).not.toContain(secret);
-  expect(rows).toContain(fingerprint(secret));
-  // Enough to compare against another machine, not enough to retype.
-  expect(fingerprint(secret).length).toBeLessThan(secret.length / 2);
+test("the status is one line", () => {
+  for (const v of [view(), view({ reach: "local", relay: undefined }), view({ daemonRunning: false })]) {
+    expect(statusRows(v, plain)).toHaveLength(1);
+  }
 });
 
-test("the pairing URL is printed on one unbroken line", () => {
-  // A hard wrap produces a URL that fails to parse when pasted, which is the
-  // fallback path for anyone whose camera will not cooperate.
-  const rendered = renderPair(view(), undefined, { ...plain, columns: 40 });
-  const urlLine = rendered.map(stripAnsi).find((line) => line.includes("wss://"));
+test("nothing secret is ever on screen: no link, no token, no part of either", () => {
+  // The QR is the only way a pairing leaves this screen. The link was printed
+  // beside it and ended up in screenshots, and a pairing admits whichever
+  // device claims it first.
+  const secret = "c0ffee".repeat(8);
+  for (const v of [view({ token: secret }), view({ token: secret, rotated: true, supersededDevice: "Kens-iPhone" })]) {
+    const text = renderPair(v, undefined, plain).map(stripAnsi).join("\n");
+    expect(text).not.toContain("c0ffee");
+    expect(text).not.toContain("ws://");
+    expect(text).not.toContain("wss://");
+    expect(text).not.toContain("pairing=");
+    expect(text).not.toContain("link");
+  }
+});
 
-  expect(urlLine).toBeDefined();
-  // The line hangs two spaces in under its section, so that indent comes off
-  // before comparing. What this guards is that nothing was inserted *into* the
-  // URL, which is still exactly as true with a prefix as without one.
-  const url = urlLine!.replace(/^\s+/, "");
-  expect(url).toBe(view().url);
-  expect(new URL(url).searchParams.get("pairing")).toBe("a".repeat(48));
+test("the screen says what to do in the app's own words", () => {
+  const text = renderPair(view(), undefined, plain).map(stripAnsi).join("\n");
+  expect(text).toContain("Scan this with pew2");
 });
 
 test("a stopped daemon is called out with the command that fixes it", () => {
   const rows = statusRows(view({ daemonRunning: false }), plain).map(stripAnsi).join("\n");
   expect(rows).toContain("not running");
   expect(rows).toContain("pew2 service install");
+  // A stopped daemon is the only thing worth saying; reach would be noise.
+  expect(rows).not.toContain("anywhere");
 });
 
 test("rotation warns that existing devices are now unpaired", () => {
   const text = renderPair(view({ rotated: true }), undefined, plain).map(stripAnsi).join("\n");
   expect(text).toContain("must scan again");
-  // Age is meaningless for a token minted a millisecond ago.
-  expect(text).toContain("just rotated");
 });
 
 test("a code that replaced another phone names the one it unpaired", () => {
@@ -114,7 +112,7 @@ test("a code that replaced another phone names the one it unpaired", () => {
     .map(stripAnsi)
     .join("\n");
 
-  expect(text).toContain("Kens-iPhone is unpaired and must scan again");
+  expect(text).toContain("Kens-iPhone must scan again");
 });
 
 test("a rotation with nothing to supersede stays general", () => {
@@ -124,7 +122,7 @@ test("a rotation with nothing to supersede stays general", () => {
     .map(stripAnsi)
     .join("\n");
 
-  expect(text).toContain("devices paired before now must scan again");
+  expect(text).toContain("paired phones must scan again");
 });
 
 test("the QR is centred without touching its own escape sequences", () => {
@@ -155,19 +153,14 @@ test("the paired line names the device and how long it took", () => {
 
 test("ASCII output degrades without losing any information", () => {
   const ascii = { style: styler(0), glyph: glyphs(false), columns: 80 };
-  const text = renderPair(view({ reach: "local", relay: undefined }), undefined, ascii).join("\n");
+  const text = renderPair(view({ reach: "local", relay: undefined, rotated: true }), undefined, ascii).join("\n");
 
-  // Nothing outside ASCII at all: box drawing, braille, circled digits and the
-  // ellipsis are all rendered as replacement boxes by the Windows console, and
-  // degrading only some of them is the same bug with a smaller blast radius.
-  // The URL is excluded because it is data, not decoration.
-  const decoration = text.split("\n").filter((line) => !line.includes("://")).join("\n");
-  expect(/[^\x00-\x7f]/.test(decoration)).toBe(false);
-
+  // Nothing outside ASCII at all: box drawing, braille and the ellipsis are all
+  // rendered as replacement boxes by the Windows console, and degrading only
+  // some of them is the same bug with a smaller blast radius.
+  expect(/[^\x00-\x7f]/.test(text)).toBe(false);
   expect(text).toContain("same Wi-Fi only");
-  expect(text).toContain("1.");
-  // The token is still elided, just with an ASCII ellipsis.
-  expect(decoration).toContain("aaaaaa...aaaa");
+  expect(text).toContain("must scan again");
 });
 
 test("hostOf survives a malformed relay origin", () => {

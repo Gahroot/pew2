@@ -21,8 +21,6 @@ import { discardAttachments } from "./attachments.js";
 import { folderName } from "./workspace.js";
 import { writeConfigPref } from "./config-prefs.js";
 import { writeSessionPrefs } from "./session-prefs.js";
-import { pushVoiceEvent } from "./push.js";
-import { VoipSender } from "./voip.js";
 import { readKnownProjects } from "./known-projects.js";
 import { createWorktree } from "./worktree-create.js";
 import { foldProjects } from "./projects.js";
@@ -31,14 +29,23 @@ import { daveClient } from "./voice/dave.js";
 import type { VoiceHost } from "./voice/dispatcher.js";
 import type { RunningSession, SessionPeek } from "./voice/types.js";
 import { DesktopActivityWatcher, defaultDeskRoots, toWire } from "./desktop-activity/watcher.js";
-import { dirname } from "node:path";
 import type { wire } from "@pew2/protocol";
 import { DaemonConnectSession } from "./daemon/connect-session.js";
+import { pushVoiceRing } from "./push.js";
+import { VoiceController } from "./voice/controller.js";
+import { voicePaths } from "./voice/credentials.js";
+import { ThreadStore, threadKey } from "./voice/threads.js";
+import { dirname, join } from "node:path";
+import type { SessionStatus } from "./voice/session.js";
+import type { VoiceChat } from "./voice/chats.js";
+import { permissionOptionsFrom, type PermissionOption } from "./voice/tools.js";
+import { lastAgentLines, currentActivity } from "./voice/replies.js";
 import {
   GOALS_BACKENDS,
   REPLAY_BATCH_SIZE,
   goalsBackend,
   goalsProviderFrom,
+  isGoalsId,
   queuedForWire,
   rememberTurnText,
   type ActiveSession,
@@ -60,6 +67,8 @@ export class Daemon extends DaemonConnectSession {
   /** Point the daemon at a transport. Called with the relay socket's `send`. */
   attach(send: (message: unknown) => void) {
     this.send = send;
+    // Created here so the call policy runs from boot, not from the first voice frame.
+    void this.voice;
     // Started here rather than in the constructor so building a Daemon in a test
     // does not leave a timer running. `unref` for the same reason: this must
     // never be the thing keeping the process alive.
@@ -129,6 +138,145 @@ export class Daemon extends DaemonConnectSession {
     // gone. Best effort, and in the tempdir either way.
     void discardAttachments(session.log.sessionId);
     this.sessions.delete(sessionId);
+    this.voiceController?.sessionClosed(sessionId);
+    this.touchInbox();
+  }
+
+  /** The voice layer: inbox, call policy, sign-in and minting. Created on first use. */
+  get voice(): VoiceController {
+    this.voiceController ??= new VoiceController(
+      {
+        inboxSources: () =>
+          [...this.sessions.values()].map((session) => ({
+            sessionId: session.log.sessionId,
+            ...this.sessionNotice(session.log.sessionId),
+            permissions: session.permissions,
+            asks: session.asks,
+            plan: session.plan,
+          })),
+        boardSources: () =>
+          [...this.sessions.values()]
+            .filter((session) => session.live)
+            .map((session) => {
+              const { folder, agentName } = this.sessionNotice(session.log.sessionId);
+              return {
+                sessionId: session.log.sessionId,
+                providerId: session.providerId,
+                ...(folder ? { folder } : {}),
+                ...(agentName ? { agentName } : {}),
+                working: session.working === true,
+                permissions: session.permissions,
+                asks: session.asks,
+                plan: session.plan,
+                events: session.log.events,
+              };
+            }),
+        broadcast: (message) => this.send(message),
+        ring: (push) =>
+          void pushVoiceRing(this.pushTargets, { ...push, badge: this.waitingOnYou() }, { relay: this.ringRelay, log: (line) => console.log(line) }),
+        threadFor: (sessionId) => {
+          const session = this.sessions.get(sessionId);
+          if (!session?.agentSessionId) return undefined;
+          return { key: threadKey(session.providerId, session.agentSessionId), label: folderName(session.cwd) };
+        },
+      },
+      {
+        paths: voicePaths(this.env),
+        log: (line) => console.log(line),
+        threads: new ThreadStore(join(dirname(userProvidersDir(this.env)), "voice-threads.json")),
+      },
+    );
+    return this.voiceController;
+  }
+
+  /** What each live session is doing, for the voice briefing and `get_status`. */
+  /**
+   * Every conversation Pew may reach by voice, newest first: each usable
+   * agent's stored history (the uncapped list, read from the probe cache, so
+   * listing never starts an agent), with the live session id when it is open
+   * right now. GG Goals is left out: its sessions belong to goal folders.
+   */
+  async voiceChats(): Promise<VoiceChat[]> {
+    const live = new Map<string, string>();
+    for (const session of this.sessions.values()) {
+      if (session.agentSessionId) live.set(`${session.providerId}\u0000${session.agentSessionId}`, session.log.sessionId);
+    }
+    const chats: VoiceChat[] = [];
+    for (const provider of this.providers) {
+      const providerId = provider.manifest.id;
+      if (isGoalsId(providerId) || !this.isEnabled(providerId) || !isAvailable(provider)) continue;
+      if (provider.manifest.pew.experimental && !this.includeExperimental) continue;
+      for (const stored of await this.projectsWithHistory(providerId)) {
+        const liveId = live.get(`${providerId}\u0000${stored.sessionId}`);
+        chats.push({
+          providerId,
+          agentName: provider.manifest.name,
+          agentSessionId: stored.sessionId,
+          cwd: stored.cwd,
+          ...(stored.title ? { title: stored.title } : {}),
+          ...(stored.updatedAt ? { updatedAt: stored.updatedAt } : {}),
+          ...(liveId ? { liveSessionId: liveId } : {}),
+        });
+      }
+    }
+    return chats.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+  }
+
+  /** An agent's display name ("Claude Code"), or undefined for one this daemon doesn't have. */
+  providerName(providerId: string): string | undefined {
+    return this.providers.find((p) => p.manifest.id === providerId)?.manifest.name;
+  }
+
+  /** The agents Pew may start a chat with: id and display name. */
+  voiceAgents(): { providerId: string; agentName: string }[] {
+    return this.providers
+      .filter((p) => !isGoalsId(p.manifest.id) && this.isEnabled(p.manifest.id) && isAvailable(p))
+      .filter((p) => !p.manifest.pew.experimental || this.includeExperimental)
+      .map((p) => ({ providerId: p.manifest.id, agentName: p.manifest.name }));
+  }
+
+  /**
+   * A project path Pew named from this daemon's own history: filed as chosen,
+   * so the app's later requests naming it (it re-sends the cwd for days) are
+   * recognised for any agent, not only the one whose history it came from.
+   */
+  async acceptVoiceProject(cwd: string): Promise<string> {
+    return this.rememberProject(cwd);
+  }
+
+  voiceStatuses(sessionId?: string): SessionStatus[] {
+    return [...this.sessions.values()]
+      .filter((session) => session.live && (!sessionId || session.log.sessionId === sessionId))
+      .map((session) => {
+        const { folder, agentName } = this.sessionNotice(session.log.sessionId);
+        return {
+          sessionId: session.log.sessionId,
+          ...(folder ? { folder } : {}),
+          ...(agentName ? { agentName } : {}),
+          working: session.working === true,
+          // One session asked for by name: enough of its reply to answer
+          // "what did it find?". The whole list: a line or three each.
+          lastLines: lastAgentLines(session.log.events, sessionId ? 8 : 3),
+          ...(session.working ? { activity: currentActivity(session.log.events) } : {}),
+        };
+      });
+  }
+
+  /** The options of a still-open permission, or undefined once it is answered. */
+  voicePermissionOptions(sessionId: string, requestId: string): PermissionOption[] | undefined {
+    const params = this.sessions.get(sessionId)?.permissions?.get(requestId);
+    return params === undefined ? undefined : permissionOptionsFrom(params);
+  }
+
+  /** An open `ask_user`'s questions, for the voice model to read the choices out. */
+  voiceAskQuestions(sessionId: string, requestId: string): unknown[] | undefined {
+    return this.sessions.get(sessionId)?.asks?.get(requestId);
+  }
+
+  /** Whether a turn is running, so a voice message knows it will queue. */
+  isWorking(sessionId: string): boolean | undefined {
+    const session = this.sessions.get(sessionId);
+    return session ? session.working === true : undefined;
   }
 
   /**
@@ -246,7 +394,7 @@ export class Daemon extends DaemonConnectSession {
     for (const [key, spare] of this.spares) {
       if (this.isEnabled(spare.providerId)) continue;
       clearTimeout(spare.timer);
-      spare.handle.close();
+      this.retire(spare.handle);
       this.spares.delete(key);
     }
     for (const [sessionId, session] of this.sessions) {
@@ -323,6 +471,9 @@ export class Daemon extends DaemonConnectSession {
     this.voiceReady?.orchestrator.onSessionPayload(session.log.sessionId, payload);
     rememberTurnText(session, payload);
     const event = session.log.append(payload);
+    const kind = (payload as { kind?: unknown } | null)?.kind;
+    if (kind === "permission_request" || kind === "ask_user" || kind === "ask_user_closed") this.touchInbox();
+    else this.touchBoard();
     if (!session.live) return;
     if (!session.streamingReplay) {
       this.send(event);
@@ -568,7 +719,7 @@ export class Daemon extends DaemonConnectSession {
     // — a stale sheet from a previous turn, or a second client answering one
     // that was already resolved — and forgetting it here on that basis would
     // hide a *different*, still-open request from the next catch-up.
-    if (answered) session.permissions?.delete(requestId);
+    if (answered && session.permissions?.delete(requestId)) this.touchInbox();
     return answered;
   }
 
@@ -791,31 +942,17 @@ export class Daemon extends DaemonConnectSession {
 
   // ---- voice orchestration -------------------------------------------------
 
-  private voipSender?: VoipSender;
-
-  /** Sends iPhone rings when `pew2 voice apns` is configured; reads that config per ring, so setup needs no restart. */
-  private get voip(): VoipSender {
-    this.voipSender ??= new VoipSender({ dataDir: dirname(userProvidersDir(this.env)) });
-    return this.voipSender;
-  }
-
   private voiceReady?: VoiceService;
   private voiceStarting?: Promise<VoiceService>;
   private voiceStopped = false;
-  private voicePairingEpoch = 0;
-
-  invalidateVoiceAccount() {
-    this.voicePairingEpoch++;
-    this.voiceReady?.invalidateAccount();
-  }
 
   /**
-   * The voice service, created on first use and also at boot (`attach`) so a
-   * task the previous process was running is reconciled as soon as the daemon
-   * is up rather than when someone first speaks.
+   * Voice tasks: the orchestrated work, goals and DAVE behind a call's task
+   * tools. Created on first use and also at boot (`attach`), so a task the
+   * previous process was running is reconciled as soon as the daemon is up
+   * rather than when someone first calls. The call itself is `voice`.
    */
-  voice(): Promise<VoiceService> {
-    const pairingEpoch = this.voicePairingEpoch;
+  voiceTasks(): Promise<VoiceService> {
     this.voiceStarting ??= VoiceService.create({
       dataDir: dirname(userProvidersDir(this.env)),
       env: this.env,
@@ -836,10 +973,10 @@ export class Daemon extends DaemonConnectSession {
       },
       peekSession: (sessionId) => this.peekSession(sessionId),
       dave: daveClient(this.env),
-      push: (event) => pushVoiceEvent(this.pushTargets, event, fetch, { voip: this.voip }),
+      note: (callId, note) => this.voice.noteCall(callId, note),
+      callInProgress: (callId) => this.voice.callInProgress(callId),
     }).then((service) => {
       if (this.voiceStopped) service.dispose();
-      else if (pairingEpoch !== this.voicePairingEpoch) service.invalidateAccount();
       this.voiceReady = service;
       return service;
     });
@@ -847,7 +984,7 @@ export class Daemon extends DaemonConnectSession {
   }
 
   private startVoice() {
-    void this.voice().catch((error: unknown) => {
+    void this.voiceTasks().catch((error: unknown) => {
       console.error("[voice] could not start:", error);
     });
   }
@@ -914,6 +1051,7 @@ export class Daemon extends DaemonConnectSession {
     this.voiceStopped = true;
     this.desk?.stop();
     this.desk = undefined;
+    this.voiceController?.stop();
     if (this.reaper) {
       clearInterval(this.reaper);
       this.reaper = undefined;
@@ -936,6 +1074,8 @@ export class Daemon extends DaemonConnectSession {
     return session;
   }
 }
+
+export { lastAgentLines } from "./voice/replies.js";
 
 if (import.meta.main) {
   const daemon = new Daemon({ id: "local", name: "this machine" });

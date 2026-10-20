@@ -14,17 +14,24 @@ import {
   SCALE,
   TAU,
   blink,
+  cheerBurst,
+  cheerPhase,
   clamp,
   effectiveMood,
   fract,
-  gridCols,
-  gridRows,
+  goodbyeSoft,
+  goodbyeWave,
+  goodbyeWink,
   hash,
   motion,
-  pewCount,
+  readLine,
+  readSweep,
   sleepClock,
+  slowBlink,
   smooth,
   talkOpen,
+  typeKey,
+  typeTap,
   type Motion,
   type MoodState,
   type PewBody,
@@ -176,25 +183,98 @@ function sleepFace(u: number, w: number, T: number, sl: number): number {
   }
 }
 
-/**
- * Is the LED at face coordinates (u, w) part of the face for this mood? 0..1
- *
- * `rows` is the globe's row count (`gridRows`), for the features counted in
- * whole dots rather than drawn as a shape.
- */
-export function ledFace(u: number, w: number, mood: PewMood, open: number, t: number, sleepIn?: number, rows = 28): number {
+/** The voice-call moods, which blend their gaze across a change (the older moods snap, as they always have). */
+function callMood(m: PewMood | ""): boolean {
+  "worklet";
+  return m === "listening" || m === "typing" || m === "reading" || m === "dialing" || m === "celebrate" || m === "goodbye" || m === "muted";
+}
+
+/** Where the face looks, in face units, for this mood: `out` = [u, w]. `ku`/`kw` scale the free gaze. */
+function gazeInto(out: number[], mood: PewMood | "", B: PewBody, t: number, ku: number, kw: number): void {
+  "worklet";
+  let gu = clamp(B.lookX, -1, 1) * ku;
+  let gw = -clamp(B.lookY, -1, 1) * kw;
+  switch (mood) {
+    case "thinking":
+      gu = ku > 0.075 ? 0.1 : 0.09;
+      gw = 0.08;
+      break;
+    case "listening":
+      gu *= 0.4;
+      gw = 0.07;
+      break;
+    case "typing":
+      gu = -0.1;
+      gw = -0.08;
+      break;
+    case "reading":
+      gu = -0.12 + 0.24 * readSweep(t);
+      gw = 0.05 - 0.07 * readLine(t);
+      break;
+    case "dialing":
+      gu *= 0.4;
+      gw *= 0.4;
+      break;    default:
+      break;
+  }
+  out[0] = gu;
+  out[1] = gw;
+}
+
+/** Eye half-height and half-width (face units) for the open-eyed moods. */
+function eyeSize(mood: PewMood, T: number, out: number[]): void {
+  "worklet";
+  let h = 0.21;
+  let wd = 0.14;
+  switch (mood) {
+    case "working":
+      h = 0.1;
+      break;
+    case "listening":
+      h = 0.25;
+      wd = 0.155;
+      break;
+    case "typing":
+    case "muted":
+      h = 0.15;
+      break;
+    case "reading":
+      h = 0.14;
+      wd = 0.13;
+      break;
+    case "dialing":
+      h = 0.2;
+      break;
+    case "goodbye":
+      h = 0.21 * (1 - 0.45 * goodbyeSoft(T));
+      break;    default:
+      break;
+  }
+  out[0] = h;
+  out[1] = wd;
+}
+
+const EYE = [0, 0];
+
+/** Is the LED at face coordinates (u, w) part of the face for this mood? 0..1 */
+export function ledFace(u: number, w: number, mood: PewMood, open: number, t: number, sleepIn?: number): number {
   "worklet";
   if (mood === "sleepy") return sleepFace(u, w, t, sleepIn ?? 0);
   for (let side = -1; side <= 1; side += 2) {
     const ex = side * 0.32;
     const ey = 0.17;
-    if (mood === "happy") {
+    if (mood === "happy" || mood === "celebrate") {
       const d = Math.hypot(u - ex, w - (ey - 0.05));
       if (Math.abs(d - 0.13) < 0.065 && w > ey - 0.06) return 1;
+    } else if (mood === "goodbye" && side === 1 && goodbyeWink(t) > 0.5) {
+      // The wink: a shut eye, a short curve.
+      const d = Math.hypot(u - ex, w - (ey + 0.1));
+      if (Math.abs(d - 0.14) < 0.055 && w < ey + 0.02) return 1;
     } else {
       const big = mood === "oops" ? 1.25 : 1;
-      const rh = (mood === "working" ? 0.1 : 0.21) * Math.max(0.12, open) * big;
-      const du = (u - ex) / (0.14 * big);
+      eyeSize(mood, t, EYE);
+      const rh = EYE[0]! * Math.max(0.12, open) * big;
+      const du = (u - ex) / (EYE[1]! * big);
       const dw = (w - ey) / rh;
       if (du * du + dw * dw < 1) return 1;
     }
@@ -210,20 +290,12 @@ export function ledFace(u: number, w: number, mood: PewMood, open: number, t: nu
       return Math.abs(d - 0.15) < 0.06 && w < my + 0.03 && Math.abs(u) < 0.15 ? 1 : 0;
     }
     case "talking": {
-      // One row of dots: a single dot between syllables, three in a line on
-      // one. Measured in the grid's own steps (a band one row of latitude
-      // tall, and k steps of the row's longitude wide), a window always holds
-      // exactly one row and exactly k dots however far the globe has turned,
-      // so it snaps between one and three and never shows a lopsided two.
-      const step = Math.PI / rows;
-      const lat = Math.asin(clamp(w, -1, 1));
-      const ring = Math.cos(lat);
-      const lon = Math.asin(clamp(u / Math.max(1e-6, ring), -1, 1));
-      // Open on about a third of frames, some 1.5 syllables a second, with the
-      // phrase pauses talkOpen already has.
-      const wide = talkOpen(t) > 0.25 ? 1.5 : 0.5;
-      const row = Math.abs(lat - Math.asin(my - 0.03)) < step / 2;
-      return row && Math.abs(lon) < ((wide * 2) * Math.PI) / gridCols(rows, ring) ? 1 : 0;
+      const o = talkOpen(t);
+      const rw = 0.11;
+      const rh = 0.035 + 0.08 * o;
+      const du = u / rw;
+      const dw = (w - (my + 0.01)) / rh;
+      return du * du + dw * dw < 1 ? 1 : 0;
     }
     case "oops": {
       const d = Math.hypot(u, w - my);
@@ -233,11 +305,33 @@ export function ledFace(u: number, w: number, mood: PewMood, open: number, t: nu
       return Math.abs(w - my) < 0.055 && Math.abs(u) < 0.12 ? 1 : 0;
     case "thinking":
       return Math.abs(w - (my + u * 0.25)) < 0.055 && u > -0.05 && u < 0.16 ? 1 : 0;
+    case "listening": {
+      const du = u / 0.1;
+      const dw = (w - my) / 0.075;
+      return du * du + dw * dw < 1 ? 1 : 0;
+    }
+    case "typing":
+      return Math.abs(w - (my - u * 0.15)) < 0.065 && u > -0.14 && u < 0.06 ? 1 : 0;
+    case "reading":
+      return Math.abs(w - my) < 0.05 && Math.abs(u) < 0.08 ? 1 : 0;
+    case "dialing":
+    case "goodbye": {
+      const d = Math.hypot(u, w - (my + 0.09));
+      return Math.abs(d - 0.15) < 0.06 && w < my + 0.03 && Math.abs(u) < 0.15 ? 1 : 0;
+    }
+    case "celebrate":
+      // A big open grin.
+      return w < my + 0.08 && Math.hypot(u, w - (my + 0.08)) < 0.21 ? 1 : 0;
+    case "muted":
+      return Math.abs(w - my) < 0.065 && Math.abs(u) < 0.21 ? 1 : 0;
   }
   return 0;
 }
 
 const C1: RGB = [0, 0, 0];
+const C2: RGB = [0, 0, 0];
+const GZ = [0, 0];
+const GZ_OLD = [0, 0];
 /** Seconds a face takes to dissolve into the next mood's. */
 const FACE_BLEND = 0.35;
 
@@ -248,20 +342,36 @@ function paintLeds(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: numbe
   const s = B.scr;
   const p = B.p;
   const mood = st.mood;
-  let gu = clamp(B.lookX, -1, 1) * 0.08;
-  let gw = -clamp(B.lookY, -1, 1) * 0.06;
-  if (mood === "thinking") {
-    gu = 0.1;
-    gw = 0.08;
-  }
-  const lit = mood === "oops" ? PEW_AMBER : pal.base;
-  const ledFaceOn = B.n >= LED_FACE_MIN;
-  const rows = gridRows(pewCount(B.S));
-  const T = mood === "sleepy" ? sleepClock(B, t) : t;
   // How much of the previous face is still showing: 1 at the change, eased to
   // 0 over FACE_BLEND seconds.
   const prev: PewMood = B.prevMood === "" ? mood : B.prevMood;
   const blendOld = prev !== mood ? 1 - smooth(0, FACE_BLEND, st.age) : 0;
+  gazeInto(GZ, mood, B, t, 0.08, 0.06);
+  if (blendOld > 0 && (callMood(mood) || callMood(prev))) {
+    gazeInto(GZ_OLD, prev, B, t, 0.08, 0.06);
+    GZ[0] = GZ[0]! + (GZ_OLD[0]! - GZ[0]!) * blendOld;
+    GZ[1] = GZ[1]! + (GZ_OLD[1]! - GZ[1]!) * blendOld;
+  }
+  const gu = GZ[0]!;
+  const gw = GZ[1]!;
+  // Muted: the whole light turns down, the halo most of all.
+  const dim = mood === "muted" ? 1 - blendOld : prev === "muted" ? blendOld : 0;
+  const lit = mood === "oops" ? PEW_AMBER : dim > 0 ? mixInto(C2, pal.base, pal.off, 0.3 * dim) : pal.base;
+  const glowK = 1 - 0.65 * dim;
+  const ledFaceOn = B.n >= LED_FACE_MIN;
+  const T = mood === "sleepy" ? sleepClock(B, t) : mood === "goodbye" || mood === "celebrate" ? st.age : t;
+  const Tp = prev === "sleepy" ? sleepClock(B, t) : prev === "goodbye" || prev === "celebrate" ? st.age : t;
+  // Per-frame values the call moods' light patterns share.
+  const tap = mood === "typing" ? typeTap(t) : 0;
+  const key = mood === "typing" ? typeKey(t) : 0;
+  const burst = mood === "celebrate" ? cheerBurst(cheerPhase(st.age)) : 0;
+  const wave = mood === "goodbye" ? goodbyeWave(st.age) : 0;
+  const ring = fract(t);
+  const tick = Math.floor(t * 20);
+  let smallGlow = mood === "sleepy" ? SMALL_GLOW_SLEEPY : SMALL_GLOW;
+  if (mood === "muted") smallGlow = 0.32;
+  else if (mood === "dialing") smallGlow = 0.42 + 0.3 * Math.exp(-ring * 4);
+  else if (mood === "celebrate") smallGlow = 0.6 + 0.3 * burst;
   for (let oi = 0; oi < B.order.length; oi++) {
     const i = B.order[oi]!;
     const o = i * 7;
@@ -281,11 +391,11 @@ function paintLeds(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: numbe
     const r = B.rnd[i]!;
     let on = 0;
     if (ledFaceOn && facing > 0.2) {
-      on = ledFace(u - gu, w - gw, mood, open, T, B.sleep, rows);
+      on = ledFace(u - gu, w - gw, mood, open, T, B.sleep);
       // Mid-change, the old face fades out as the new one fades in, so the
       // lit dots cross-dissolve instead of the face snapping.
       if (blendOld > 0) {
-        const old = ledFace(u - gu, w - gw, prev, open, prev === "sleepy" ? sleepClock(B, t) : t, B.sleep, rows);
+        const old = ledFace(u - gu, w - gw, prev, open, Tp, B.sleep);
         on = on * (1 - blendOld) + old * blendOld;
       }
     }
@@ -316,11 +426,54 @@ function paintLeds(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: numbe
       case "oops":
         if (hash(i * 3.1 + Math.floor(t * 14)) > 0.86) on = Math.max(on, 0.8 * st.decay + 0.15);
         break;
+      case "listening": {
+        // Rings of light drawn in toward the face, a gentle rhythm.
+        const d = Math.acos(clamp(facing, -1, 1));
+        if (d > 0.3 && fract(d * 0.75 + t * 0.85) < 0.09) on = Math.max(on, 0.8 * (1 - 0.6 * (d / Math.PI)));
+        break;
+      }
+      case "typing":
+        // A row of keys low on the front; one at a time flickers as it's hit.
+        if (w < -0.5 && w > -0.68 && facing > 0.25) {
+          const k = Math.floor((u + 0.6) * 6.66);
+          on = Math.max(on, k === key && tap > 0 ? 0.55 + 0.45 * tap : 0.16);
+        }
+        break;
+      case "reading": {
+        // A soft band sweeping down the body, top to bottom.
+        const d = Math.sin(lat) - (1 - 2 * fract(t / 2.6));
+        on = Math.max(on, Math.exp(-(d * d) / 0.02) * 0.55);
+        break;
+      }
+      case "dialing": {
+        // One ring of light a second, out from the centre of the face.
+        const d = Math.acos(clamp(facing, -1, 1)) - ring * 2.6;
+        on = Math.max(on, Math.exp(-(d * d) / 0.03) * 0.9 * (1 - ring * 0.6));
+        break;
+      }
+      case "celebrate":
+        if (burst > 0.05 && hash(i * 2.3 + tick) > 1 - 0.16 * burst) on = Math.max(on, 0.95);
+        else if (fract(t * 0.6 + r * 5.1) < 0.03) on = Math.max(on, 0.5);
+        break;
+      case "goodbye":
+        // A wave rippling across the right side.
+        if (wave > 0 && u > 0.2 && Math.sin(lat * 6 - t * 12) > 0.8) on = Math.max(on, 0.7 * wave);
+        break;      case "muted":
+        break;
     }
     // A small Pew has no LED face to light, so the Matrix look (a dark globe
     // with a lit face) would read as a dark ball: its body glows faintly in its
     // colour instead, which is what tells one agent's chip from another's.
-    if (!ledFaceOn) on = Math.max(on, mood === "sleepy" ? SMALL_GLOW_SLEEPY : SMALL_GLOW);
+    if (!ledFaceOn) on = Math.max(on, smallGlow);
+    // Under a finger the dots light up, brightest in the middle: you can see
+    // where you're pressing, like pressing on a panel of LEDs.
+    if (B.press > 0.02 && front >= 0.5) {
+      const tx = s[o]! - B.touchX;
+      const ty = s[o + 1]! - B.touchY;
+      const reach = B.S * 0.2;
+      const d2 = (tx * tx + ty * ty) / (reach * reach);
+      if (d2 < 1) on = Math.max(on, (1 - d2) * (1 - d2) * 0.85 * B.press);
+    }
     if (front < 0.5) {
       mixInto(C1, pal.off, lit, on * 0.6);
       P.dot(s[o]!, s[o + 1]!, base * f * 0.55, C1, 0.22);
@@ -332,7 +485,7 @@ function paintLeds(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: numbe
     C1[1] *= k;
     C1[2] *= k;
     P.dot(s[o]!, s[o + 1]!, base * f * (0.62 + 0.38 * front), C1, 0.35 + 0.65 * front);
-    if (on > 0.45) P.glow(s[o]!, s[o + 1]!, base * f * 2.6, lit, on * 0.55 * front);
+    if (on > 0.45) P.glow(s[o]!, s[o + 1]!, base * f * 2.6, lit, on * 0.55 * front * glowK);
   }
 }
 
@@ -366,12 +519,10 @@ function drawFace(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: number
   // `fade` < 1 while this face is dissolving out (or in) across a mood change.
   const vis = smooth(0.02, 0.32, V.facing) * fade;
   if (vis <= 0) return;
-  let gu = clamp(B.lookX, -1, 1) * 0.07;
-  let gw = -clamp(B.lookY, -1, 1) * 0.05;
-  if (mood === "thinking") {
-    gu = 0.09;
-    gw = 0.08;
-  } else if (mood === "sleepy") {
+  gazeInto(GZ, mood, B, t, 0.07, 0.05);
+  let gu = GZ[0]!;
+  let gw = GZ[1]!;
+  if (mood === "sleepy") {
     gu = 0;
     gw = -0.02;
   }
@@ -379,6 +530,8 @@ function drawFace(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: number
   const fx = Math.max(0.3, V.facing);
   const col = oops ? PEW_AMBER : pal.eye;
   const gc = oops ? PEW_AMBER : pal.glow;
+  const fv = mood === "muted" ? vis * 0.75 : vis;
+  const TA = st.age;
   const halo = R * 0.2;
   const rot = V.m.rot;
   const E: Projected = { sx: 0, sy: 0, z: 0, f: 1, x1: 0, y2: 0 };
@@ -386,7 +539,9 @@ function drawFace(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: number
   for (let side = -1; side <= 1; side += 2) {
     faceProj(side * 0.3 + gu, 0.16 + gw, V, E);
     const k = E.f;
-    if (mood === "happy") {
+    if (mood === "goodbye" && side === 1 && goodbyeWink(TA) > 0.5) {
+      P.line(arc(E.sx, E.sy - R * 0.06 * k, R * 0.1 * fx * k, R * 0.09 * k, rot, Math.PI * 0.15, Math.PI * 0.85, 6), R * 0.06 * k, col, vis, halo, gc);
+    } else if (mood === "happy" || mood === "celebrate") {
       P.line(arc(E.sx, E.sy + R * 0.06 * k, R * 0.12 * fx * k, R * 0.12 * k, rot, Math.PI * 1.1, Math.PI * 1.9, 8), R * 0.08 * k, col, vis, halo, gc);
     } else if (mood === "sleepy") {
       const sl = B.sleep;
@@ -402,8 +557,11 @@ function drawFace(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: number
       }
     } else {
       const big = oops ? 1.25 : 1;
-      const hh = mood === "working" ? 0.075 : 0.13;
-      P.oval(E.sx, E.sy, R * 0.09 * big * fx * k, R * hh * big * Math.max(0.1, open) * k, rot, col, vis, halo, gc);
+      // The drawn eye is the LED eye's size scaled to the drawn face.
+      eyeSize(mood, TA, EYE);
+      const hh = mood === "working" ? 0.075 : (EYE[0]! / 0.21) * 0.13;
+      const ww = (EYE[1]! / 0.14) * 0.09;
+      P.oval(E.sx, E.sy, R * ww * big * fx * k, R * hh * big * Math.max(0.1, open) * k, rot, col, fv, halo, gc);
     }
   }
   faceProj(gu * 0.6, -0.2 + gw * 0.5, V, E);
@@ -429,6 +587,25 @@ function drawFace(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: number
       break;
     case "thinking":
       P.line([E.sx - R * 0.02 * fx * k, E.sy + R * 0.01 * k, E.sx + R * 0.08 * fx * k, E.sy - R * 0.025 * k], lw, col, vis, halo, gc);
+      break;
+    case "listening":
+      P.oval(E.sx, E.sy, R * 0.04 * fx * k, R * 0.032 * k, rot, col, vis, halo, gc);
+      break;
+    case "typing":
+      P.line([E.sx - R * 0.07 * fx * k, E.sy + R * 0.01 * k, E.sx + R * 0.02 * fx * k, E.sy - R * 0.005 * k], lw, col, vis, halo, gc);
+      break;
+    case "reading":
+      P.line([E.sx - R * 0.045 * fx * k, E.sy, E.sx + R * 0.045 * fx * k, E.sy], lw, col, vis, halo, gc);
+      break;
+    case "muted":
+      P.line([E.sx - R * 0.09 * fx * k, E.sy, E.sx + R * 0.09 * fx * k, E.sy], lw, col, fv, halo * 0.5, gc);
+      break;
+    case "dialing":
+    case "goodbye":
+      P.line(arc(E.sx, E.sy - R * 0.06 * k, R * 0.09 * fx * k, R * 0.09 * k, rot, Math.PI * 0.25, Math.PI * 0.75, 8), lw, col, vis, halo, gc);
+      break;
+    case "celebrate":
+      P.poly(arc(E.sx, E.sy - R * 0.04 * k, R * 0.13 * fx * k, R * 0.12 * k, rot, 0, Math.PI, 10), col, vis);
       break;
     case "sleepy":
       switch (B.sleep) {
@@ -535,8 +712,29 @@ function extras(B: PewBody, V: View, pal: PewPalette, st: MoodState, t: number, 
       P.dot(x, y + R * 0.095 * sc, R * 0.035 * sc, AMBER_INK, 1);
       break;
     }
-    case "idle":
-    case "talking":
+    case "dialing": {
+      // A ring of light leaving the body once a second, like a phone ringing.
+      for (let i = 0; i < 2; i++) {
+        const p = fract(t - i * 0.5);
+        const r = R * (1.08 + p * 0.55);
+        P.line(arc(V.cx, V.cy, r, r, 0, 0, TAU, 28), R * 0.05 * (1 - p * 0.5), pal.glow, (1 - p) * (i === 0 ? 0.55 : 0.25), R * 0.1, pal.glow);
+      }
+      break;
+    }
+    case "celebrate": {
+      const p = cheerPhase(st.age);
+      const b = cheerBurst(p);
+      if (b < 0.03) break;
+      const q = 1 - b;
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU + 0.3;
+        const d = R * (1.0 + q * 0.75);
+        const r = R * 0.15 * b * (i % 2 ? 0.7 : 1);
+        if (r > 0.2) P.poly(star(V.cx + Math.cos(a) * d, V.cy + Math.sin(a) * d * 0.9, r), i % 2 ? pal.glow : WHITE, Math.min(1, b * 1.4));
+      }
+      break;
+    }
+    default:
       break;
   }
 }
@@ -584,7 +782,7 @@ export function paintPew(B: PewBody, t: number, mood: PewMood, pal: PewPalette, 
     sr: Math.sin(m.rot),
     facing: Math.cos(yaw) * Math.cos(pitch),
   };
-  const open = blink(t);
+  const open = st.mood === "muted" ? slowBlink(t) : blink(t);
   const air = clamp(m.hop / (S * 0.06), 0, 1);
   P.shadow(S / 2, ground, R * (1 - 0.25 * air), R * 0.18, 0.5 * (1 - 0.4 * air));
   projectAll(B, V);

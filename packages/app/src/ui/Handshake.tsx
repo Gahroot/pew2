@@ -25,6 +25,7 @@ import { haptics } from "./haptics";
 export type HandshakePhase = "waiting" | "pairing" | "paired" | "failed";
 
 const PEW = 104;
+/** Room between a Pew's label and whatever sits under the handshake. */
 const PACKET = 6;
 
 function Packet({ width, offset }: { width: SharedValue<number>; offset: number }) {
@@ -42,9 +43,13 @@ function Packet({ width, offset }: { width: SharedValue<number>; offset: number 
 
 interface Props {
   phase: HandshakePhase;
+  /** Each Pew's size (default 104). */
+  size?: number;
+  /** The phone's colour (the agent last used). */
+  color?: string;
 }
 
-export function Handshake({ phase }: Props) {
+export function Handshake({ phase, size = PEW, color }: Props) {
   const reduce = useReducedMotion();
   const width = useSharedValue(0);
   const paired = phase === "paired";
@@ -52,8 +57,8 @@ export function Handshake({ phase }: Props) {
 
   return (
     <View style={styles.row}>
-      <View style={styles.end}>
-        <Pew size={PEW} mood={paired ? "happy" : "idle"} interactive onPress={() => haptics.poke()} accessibilityLabel="This phone" style={styles.pew} />
+      <View style={[styles.end, { width: size }]}>
+        <Pew size={size} mood={paired ? "celebrate" : phase === "pairing" ? "talking" : "idle"} color={color} interactive onPress={() => haptics.poke()} accessibilityLabel="This phone" style={styles.pew} />
         <Led tone="dim">Phone</Led>
       </View>
 
@@ -78,10 +83,10 @@ export function Handshake({ phase }: Props) {
         ) : null}
       </View>
 
-      <View style={styles.end}>
+      <View style={[styles.end, { width: size }]}>
         <Pew
-          size={PEW}
-          mood={paired ? "happy" : failed ? "oops" : "sleepy"}
+          size={size}
+          mood={paired ? "happy" : failed ? "oops" : phase === "pairing" ? "listening" : "sleepy"}
           color={paired ? theme.color.success : failed ? theme.color.danger : theme.color.textFaint}
           accessibilityLabel="Your computer"
           style={styles.pew}
@@ -93,11 +98,11 @@ export function Handshake({ phase }: Props) {
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", marginTop: theme.space(4) },
-  end: { alignItems: "center", width: PEW },
+  row: { flexDirection: "row", alignItems: "center", alignSelf: "stretch" },
+  end: { alignItems: "center", gap: theme.space(2) },
   // The globe fills ~60% of its box, so its box already leaves air under it;
   // the label sits just below that with a little more.
-  pew: { marginBottom: theme.space(1) },
+  pew: {},
   wire: { flex: 1, height: PACKET, justifyContent: "center", marginBottom: theme.space(4) },
   lineSolid: {
     height: 2,

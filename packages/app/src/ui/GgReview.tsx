@@ -175,7 +175,11 @@ function GgControlStripView({
           accessibilityState={{ checked: on }}
           accessibilityLabel="Autopilot"
           style={({ pressed }) => [styles.chip, on && styles.chipOn, pressed && styles.pressed]}
-          onPress={onToggleAutopilot}
+          onPress={() => {
+            if (on) haptics.toggleOff();
+            else haptics.toggleOn();
+            onToggleAutopilot();
+          }}
         >
           <Pew size={22} style={styles.pew} color={KEN_COLOR} mood={autopilot?.reviewing ? "thinking" : on ? "idle" : "sleepy"} paused={!on} />
           <Text style={[styles.chipText, on && styles.chipTextOn]}>

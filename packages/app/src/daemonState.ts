@@ -324,16 +324,9 @@ export const NOTICE_BUFFER = 2000;
 export interface PushAddress {
   token: string;
   platform: "ios" | "android";
-  voiceCall?: boolean;
 }
 
 export interface DaemonOptions {
-  /**
-   * Every decoded `voice.*` message, and `unknown_message` errors (an older
-   * daemon answering `voice.open`). Routed out whole: voice state lives in
-   * `ui/useVoice.ts`, not in this file.
-   */
-  onVoiceMessage?: (message: any) => void;
   /** Called once per finished turn, for any session — not just the open one. */
   onTurnFinished?: (turn: TurnFinished) => void;
   /**
@@ -359,4 +352,10 @@ export interface DaemonOptions {
    * it keeps raising the local banner instead of going silent.
    */
   onPushRegistered?: (registered: boolean) => void;
+  /**
+   * Every opened daemon frame, before this hook acts on it. Voice calls
+   * (`ui/useVoice.ts`) listen here rather than adding their state to this
+   * hook: a call lives beside the conversations, not inside them.
+   */
+  onFrame?: (message: unknown) => void;
 }

@@ -7,7 +7,7 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { client, ndJsonStream } from "@agentclientprotocol/sdk";
-import { humanError } from "../errors.js";
+import { humanError, agentStoppedMessage } from "../errors.js";
 import type { StoredAttachment } from "../attachments.js";
 import { promptBlocks, type PromptCapabilities } from "./promptBlocks.js";
 import { SESSION_HISTORY_LIMIT } from "../session-history.js";
@@ -126,8 +126,11 @@ export async function connectProvider(options: ConnectOptions): Promise<AcpSessi
   // its death to the session currently living on it, not the first one.
   let exitHandler = options.onExit;
   let exited = false;
+  /** How the process ended, for explaining a request it took down with it. */
+  let exitStatus: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   child.on("exit", (code, signal) => {
     exited = true;
+    exitStatus = { code, signal };
     if (pid !== undefined) void unregisterChild(pid);
     exitHandler?.(code, signal);
   });
@@ -353,6 +356,21 @@ export async function connectProvider(options: ConnectOptions): Promise<AcpSessi
     );
 
   const connection = app.connect(stream);
+
+  /**
+   * A request the agent's process took down with it rejects as the SDK's bare
+   * "ACP connection closed", which is what the phone showed: no agent, no
+   * reason. Waits a moment for the exit to land, then names the agent, how it
+   * ended, and the last thing it printed (where the real reason is: a crash,
+   * a missing build, an out-of-memory kill).
+   */
+  const explainClosed = <T,>(request: Promise<T>): Promise<T> =>
+    request.catch(async (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/ACP connection closed/i.test(message)) throw error;
+      for (let i = 0; i < 10 && !exitStatus; i++) await new Promise((r) => setTimeout(r, 50));
+      throw new Error(agentStoppedMessage(provider.manifest.name, exitStatus, stderrTail), { cause: error });
+    });
 
   // How the agent was started, and whatever it said before failing. Both
   // failures below are otherwise unattributable: "ACP connection closed" does
@@ -734,7 +752,7 @@ export async function connectProvider(options: ConnectOptions): Promise<AcpSessi
     },
     promptCapabilities,
     prompt: (text: string, attachments: readonly StoredAttachment[] = [], promptOptions = {}) =>
-      promptOptions.goalTurn || promptOptions.planDecision
+      explainClosed(promptOptions.goalTurn || promptOptions.planDecision
         ? // A GG Goals turn or a plan decision: empty prompt, the turn kind rides in `_meta`.
           connection.agent.request<unknown>("session/prompt", {
             sessionId: current.sessionId,
@@ -748,9 +766,9 @@ export async function connectProvider(options: ConnectOptions): Promise<AcpSessi
         : connection.agent.request("session/prompt", {
             sessionId: current.sessionId,
             prompt: promptBlocks(text, attachments, promptCapabilities),
-          }),
+          })),
     extRequest: <T,>(method: string, params: Record<string, unknown>) =>
-      connection.agent.request<T>(method, params),
+      explainClosed(connection.agent.request<T>(method, params)),
     answerAsk(requestId, result) {
       const resolve = asksPending.get(requestId);
       if (!resolve) return false;

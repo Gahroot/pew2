@@ -42,9 +42,7 @@ const syncResult: SyncResult = {
 };
 
 const pairView: PairView = {
-  url: "wss://r.dev/connect?pairing=" + "a".repeat(48) + "#k=key",
   token: "b".repeat(48),
-  createdAt: new Date().toISOString(),
   reach: "anywhere",
   relay: { url: "wss://r.dev", healthy: true },
   addresses: ["10.0.0.2"],

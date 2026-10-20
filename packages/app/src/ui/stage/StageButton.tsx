@@ -29,7 +29,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { theme } from "../../theme";
 import { SPRING, withAlpha } from "../../motion";
-import { haptics } from "../haptics";
+import { haptics, type Feel } from "../haptics";
 import { useReducedMotion } from "../useReducedMotion";
 import { useAgentColor } from "./agentColor";
 import { DotGrid } from "./DotGrid";
@@ -44,7 +44,7 @@ export interface StageButtonProps {
   color?: string;
   disabled?: boolean;
   /** Haptic on press; `none` when the screen it opens makes its own. */
-  feel?: keyof typeof haptics | "none";
+  feel?: Feel | "none";
   /** Something before the label: a DotGlyph, a spinner. */
   icon?: ReactNode;
   accessibilityLabel?: string;
@@ -56,7 +56,8 @@ export interface StageButtonProps {
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const SINK = SPRING.press;
-const HEIGHT = 50;
+export const STAGE_BUTTON_HEIGHT = 50;
+const HEIGHT = STAGE_BUTTON_HEIGHT;
 const COMPACT = 42;
 
 function StageButtonView({

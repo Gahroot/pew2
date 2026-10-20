@@ -10,3 +10,4 @@ export { SecureChannel, envelopeHeader, type ChannelRole } from "./channel.js";
 export { summarise, noticeTitle, noticeBody, endsTurn, type NoticeKind, type NoticeOrigin } from "./notice.js";
 // Both sides parse payloads from agents they do not control.
 export { asRecord, asString } from "./record.js";
+export { plainText } from "./plain.js";

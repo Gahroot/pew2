@@ -5,9 +5,13 @@
  * reachable from a link (see the `scheme` note in app.json), and the optional
  * focus fields are only hints the daemon validates against its own state.
  *
- * Pure: `ui/useVoice.ts` binds `Linking`.
+ * Pure: `Pew2Screen.tsx` binds `Linking`; a link places a call with Pew.
  */
-import { VoiceSourceSchema, type VoiceSource } from "./types";
+/** How the user got into a call. Kept for the link's own sake: a call opens the same either way. */
+const SOURCES = ["airpods", "action_button", "siri_shortcut", "notification", "in_app", "lock_screen"] as const;
+export type VoiceSource = (typeof SOURCES)[number];
+
+const isSource = (value: string): value is VoiceSource => SOURCES.some((source) => source === value);
 
 export interface VoiceActivation {
   source: VoiceSource;
@@ -30,8 +34,7 @@ const ALIASES: Record<string, VoiceSource> = {
 function sourceOf(raw: string | undefined): VoiceSource {
   if (!raw) return "in_app";
   const key = raw.trim().toLowerCase();
-  const direct = VoiceSourceSchema.safeParse(key);
-  if (direct.success) return direct.data;
+  if (isSource(key)) return key;
   return ALIASES[key] ?? "in_app";
 }
 

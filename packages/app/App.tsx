@@ -16,10 +16,10 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { theme } from "./src/theme";
 import { Pew2 } from "./src/Pew2Screen";
 import { ErrorBoundary } from "./src/ui/ErrorBoundary";
-import { PairingScreen } from "./src/ui/PairingScreen";
-import { LaunchScreen } from "./src/ui/LaunchScreen";
+import { Onboarding } from "./src/ui/Onboarding";
+import { devStep, gate, nextStep, type Gate, type Progress, type Step } from "./src/onboarding";
 import { clearPairing, loadPairing, savePairing, type Pairing } from "./src/pairing";
-import { clearCachedProviders } from "./src/preferences";
+import { clearCachedProviders, loadOnboarding, saveOnboarding } from "./src/preferences";
 import * as SplashScreen from "expo-splash-screen";
 import { clearCrash, readCrash } from "./src/crashLog";
 import * as Clipboard from "expo-clipboard";
@@ -36,6 +36,9 @@ import { useFonts } from "expo-font";
 import { BitcountPropSingle_400Regular } from "@expo-google-fonts/bitcount-prop-single/400Regular";
 import { BitcountPropSingle_600SemiBold } from "@expo-google-fonts/bitcount-prop-single/600SemiBold";
 import { BitcountPropSingle_700Bold } from "@expo-google-fonts/bitcount-prop-single/700Bold";
+
+/** `EXPO_PUBLIC_DEV_ONBOARDING=<step>`: show that page, leaving the stored pairing alone. */
+const DEV_STEP = __DEV__ ? devStep(process.env.EXPO_PUBLIC_DEV_ONBOARDING) : undefined;
 
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({
@@ -120,24 +123,29 @@ export default function App() {
 function Root() {
   const [pairing, setPairing] = useState<Pairing | null>(null);
   const [checked, setChecked] = useState(false);
-  // Whether the user has moved past the launch screen. Not persisted: it only
-  // exists between opening the app and pairing, and a stored pairing skips it
-  // entirely.
-  const [connecting, setConnecting] = useState(false);
+  // The onboarding page on screen, or undefined for the app (`onboarding.ts`).
+  const [onboard, setOnboard] = useState<Gate>({ step: undefined, repair: false });
 
   useEffect(() => {
     let alive = true;
-    void loadPairing()
+    void Promise.all([loadPairing()
       .catch(() => {
         // The same reasoning `pair` uses below, which already guards the write
         // side: a locked or unavailable keychain has to read as "not paired",
         // not as a rejection. Without this the promise rejects, `setChecked`
         // never runs, and the app sits on its loading screen with no way out.
         return null;
-      })
-      .then((stored) => {
+      }), loadOnboarding()])
+      .then(([stored, progress]) => {
         if (!alive) return;
         setPairing(stored);
+        const forced = DEV_STEP;
+        if (forced) setOnboard({ step: forced, repair: false });
+        else {
+          setOnboard(gate(progress, stored !== null));
+          // An existing user: remembered as done, so a later forget goes to Pair alone.
+          if (progress === undefined && stored) void saveOnboarding("finished");
+        }
         setChecked(true);
       });
     return () => {
@@ -165,14 +173,34 @@ function Root() {
     return () => cancelAnimationFrame(frame);
   }, [checked]);
 
-  const pair = useCallback((next: Pairing) => {
-    // Connect regardless of whether the keychain accepted it. A locked or
-    // unavailable keychain costs the user a re-pair next launch; blocking on it
-    // would strand them on this screen with a spinner and no way forward.
-    void savePairing(next)
-      .catch(() => {})
-      .then(() => setPairing(next));
+  const go = useCallback((progress: Progress, next: Gate) => {
+    // A dev-forced page never writes, so the stored state survives screenshots.
+    if (!DEV_STEP) void saveOnboarding(progress);
+    setOnboard(next);
   }, []);
+
+  const advance = useCallback(
+    (from: Step, repair: boolean) => {
+      const next = nextStep(from, repair);
+      go(next ?? "finished", { step: next, repair: false });
+    },
+    [go],
+  );
+
+  const pair = useCallback(
+    (next: Pairing, repair: boolean) => {
+      // Connect regardless of whether the keychain accepted it. A locked or
+      // unavailable keychain costs the user a re-pair next launch; blocking on
+      // it would strand them on this screen with a spinner and no way forward.
+      void savePairing(next)
+        .catch(() => {})
+        .then(() => {
+          setPairing(next);
+          advance("pair", repair);
+        });
+    },
+    [advance],
+  );
 
   const unpair = useCallback(() => {
     // Same reasoning inverted: forget it locally even if the delete failed, or
@@ -185,16 +213,26 @@ function Root() {
       .catch(() => {})
       .then(() => {
         setPairing(null);
-        // Back to the launch screen rather than straight to the form, so
-        // disconnecting lands somewhere deliberate.
-        setConnecting(false);
+        // Back to the first state, Welcome: forgetting the computer starts over.
+        go("welcome", { step: "welcome", repair: false });
       });
-  }, []);
+  }, [go]);
 
   if (!checked) return <View style={{ flex: 1, backgroundColor: theme.color.bg }} />;
-  // A paired device never sees the launch screen: it has a machine already, and
-  // an extra tap on every cold start would be pure friction.
+  const { step, repair } = onboard;
+  if (step)
+    return (
+      <Onboarding
+        step={step}
+        repair={repair}
+        onNext={() => advance(step, repair)}
+        onBack={(to) => go(to, { step: to, repair: false })}
+        onPaired={(next) => pair(next, repair)}
+        // DEVELOPMENT ONLY: step through every page without saving progress.
+        onDevGo={__DEV__ ? (to) => setOnboard({ step: to, repair: false }) : undefined}
+      />
+    );
   if (pairing) return <Pew2 pairing={pairing} onUnpair={unpair} />;
-  if (!connecting) return <LaunchScreen onConnect={() => setConnecting(true)} />;
-  return <PairingScreen onPaired={pair} onBack={() => setConnecting(false)} />;
+  // Unreachable through `gate`, but never a blank screen.
+  return <Onboarding step="pair" repair onNext={() => {}} onBack={() => {}} onPaired={(next) => pair(next, true)} />;
 }

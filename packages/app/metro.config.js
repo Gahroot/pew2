@@ -1,27 +1,22 @@
 /**
- * Metro, taught that this app lives in a workspace.
+ * Metro for an app that lives in a workspace.
  *
- * Dependencies are hoisted to the repo root, so Metro must watch that root and
- * resolve through both `node_modules` folders. Without this an installed package
- * still fails with "Unable to resolve module".
+ * Expo's defaults already know the layout (SDK 52 and on): they watch the root
+ * `node_modules` and every workspace package, and resolve through both
+ * `node_modules` folders, so nothing here restates them. `expo doctor` flags
+ * any override of those as a risk, and the hand-written ones had drifted from
+ * the defaults. Duplicate copies of React or Reanimated (the reason a copy
+ * here once disabled hierarchical lookup) are prevented where they would come
+ * from instead: bun hoists one copy of each, and the doctor's duplicate check
+ * fails the build if a second ever appears.
  */
 const fs = require("node:fs");
 const path = require("node:path");
 const { getDefaultConfig } = require("expo/metro-config");
 
 const projectRoot = __dirname;
-const workspaceRoot = path.resolve(projectRoot, "../..");
 
 const config = getDefaultConfig(projectRoot);
-
-config.watchFolders = [workspaceRoot];
-config.resolver.nodeModulesPaths = [
-  path.resolve(projectRoot, "node_modules"),
-  path.resolve(workspaceRoot, "node_modules"),
-];
-// Resolve each package once. Two copies of React or Reanimated in one bundle is
-// a hook-order crash, not a slow build.
-config.resolver.disableHierarchicalLookup = true;
 
 /**
  * Evaluate each module the first time it is actually used, not at startup.

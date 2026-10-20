@@ -173,3 +173,31 @@ export function humanError(error: unknown): string {
   if (code !== undefined && BY_CODE[code]) return BY_CODE[code];
   return "Something went wrong.";
 }
+
+/**
+ * "GG Coder stopped while working (it crashed, code 1): Cannot find module …"
+ * from how an agent's process ended and the tail of what it printed. The last
+ * meaningful stderr line is usually the reason; stack frames and blank lines
+ * are skipped.
+ */
+export function agentStoppedMessage(
+  name: string,
+  exit: { code: number | null; signal: string | null } | undefined,
+  stderrTail: readonly string[],
+): string {
+  const how =
+    exit?.signal === "SIGKILL"
+      ? "it was killed, often for running out of memory"
+      : exit?.signal
+        ? `it was stopped by ${exit.signal}`
+        : exit && exit.code !== null && exit.code !== 0
+          ? `it crashed, code ${exit.code}`
+          : exit
+            ? "it exited"
+            : "the connection to it closed";
+  const reason = [...stderrTail]
+    .reverse()
+    .map((line) => line.trim())
+    .find((line) => line && !/^at\s|^\^+$|^node:internal|^Node\.js v|^\{|^\}|requireStack|code: '/.test(line) && /[a-z]{3}/i.test(line));
+  return truncate(`${name} stopped while working (${how})${reason ? `: ${reason}` : "."}`);
+}

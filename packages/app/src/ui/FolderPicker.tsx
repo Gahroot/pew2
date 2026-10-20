@@ -104,7 +104,10 @@ function FolderPickerView({ chosen, onChange, browse, onBrowse: browseTo, online
             accessibilityRole="button"
             accessibilityLabel={`Remove ${lastSegment(path)}`}
             hitSlop={12}
-            onPress={() => onChange(chosen.filter((entry) => entry !== path))}
+            onPress={() => {
+              haptics.tap();
+              onChange(chosen.filter((entry) => entry !== path));
+            }}
           >
             <Ionicons name="close" size={14} color={theme.color.textDim} />
           </Pressable>
@@ -158,7 +161,7 @@ function FolderPickerView({ chosen, onChange, browse, onBrowse: browseTo, online
         <>
         <View style={styles.bar}>
           {browse?.parent !== undefined ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="Up one folder" hitSlop={10} onPress={() => onBrowse(browse.parent)}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Up one folder" hitSlop={10} onPress={() => { haptics.tap(); onBrowse(browse.parent); }}>
               <Ionicons name="arrow-up" size={16} color={theme.color.textDim} />
             </Pressable>
           ) : null}
@@ -182,7 +185,13 @@ function FolderPickerView({ chosen, onChange, browse, onBrowse: browseTo, online
                 accessibilityRole="button"
                 accessibilityLabel={entry.kind === "file" ? `Add ${entry.name}` : `Open ${entry.name}`}
                 // A file is never browsed into: tapping it chooses it instead.
-                onPress={() => (entry.kind === "file" ? add(entry.path) : onBrowse(entry.path))}
+                onPress={() => {
+                  if (entry.kind === "file") add(entry.path);
+                  else {
+                    haptics.select();
+                    onBrowse(entry.path);
+                  }
+                }}
               >
                 <Ionicons
                   name={entry.kind === "file" ? "document-text-outline" : entry.repo ? "git-branch-outline" : "folder-outline"}

@@ -135,3 +135,50 @@ test("worklets never call a helper declared below them", () => {
     void name;
   }
 });
+
+describe("calling glow", () => {
+  const scene = { w: 393, h: 852, cx: 196, cy: 426, kenR: 60 };
+  const pal = { bg: [10, 10, 12], base: [217, 119, 87], light: [255, 200, 180], off: [52, 54, 62] } as const;
+  const record = () => {
+    const calls = { dot: 0, glow: 0, ring: 0, cover: 0, radial: 0, maxA: 0 };
+    const painter = {
+      dot: (_x: number, _y: number, _r: number, _c: unknown, a: number) => { calls.dot++; calls.maxA = Math.max(calls.maxA, a); },
+      glow: () => { calls.glow++; },
+      ring: () => { calls.ring++; },
+      cover: () => { calls.cover++; },
+      radial: (_x: number, _y: number, _r: number, _c: unknown, a: number) => { calls.radial++; calls.maxA = Math.max(calls.maxA, a); },
+    };
+    return { calls, painter };
+  };
+
+  test("paints the ring and incoming particles, never the launch's full-screen burst", async () => {
+    const { paintCalling, RING_DOTS } = await import("./launchFx");
+    const { calls, painter } = record();
+    paintCalling(scene, 2.3, 1, pal, painter);
+    expect(calls.cover).toBe(0);
+    expect(calls.radial).toBe(1);
+    expect(calls.dot).toBeGreaterThan(RING_DOTS);
+  });
+
+  test("strength 0 paints nothing; it fades with strength", async () => {
+    const { paintCalling } = await import("./launchFx");
+    const none = record();
+    paintCalling(scene, 2.3, 0, pal, none.painter);
+    expect(none.calls.dot + none.calls.radial).toBe(0);
+    const half = record();
+    paintCalling(scene, 2.3, 0.5, pal, half.painter);
+    const full = record();
+    paintCalling(scene, 2.3, 1, pal, full.painter);
+    expect(half.calls.maxA).toBeLessThan(full.calls.maxA);
+  });
+
+  test("it breathes: frames a beat apart differ, frames a whole beat apart match", async () => {
+    const { paintCalling } = await import("./launchFx");
+    const radials: number[] = [];
+    for (const t of [0, 0.5, 1]) {
+      paintCalling(scene, t, 1, pal, { dot() {}, glow() {}, ring() {}, cover() {}, radial: (_x, _y, r) => radials.push(r) });
+    }
+    expect(radials[1]).not.toBeCloseTo(radials[0]!, 3);
+    expect(radials[2]).toBeCloseTo(radials[0]!, 3);
+  });
+});

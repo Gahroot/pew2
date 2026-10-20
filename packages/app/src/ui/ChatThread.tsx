@@ -10,7 +10,10 @@
  * pushes the rows above it, and `startRenderingFromBottom` means the very first
  * painted frame is already at the newest message — no reveal, no catch-up scroll.
  */
-import { createEntranceLifetime, type DissolveKind, type EntranceLifetime } from "../motion";
+import { createEntranceLifetime, DUR, type DissolveKind, type EntranceLifetime } from "../motion";
+import { OPEN_REVEAL_MS, OPEN_REVEAL_RISE, UNLOCK_BEAT_MS, UNLOCK_EXIT_MS, restoreReveal } from "../restoreState";
+import Animated, { cancelAnimation, Easing, useAnimatedStyle, useSharedValue, withDelay, withTiming } from "react-native-reanimated";
+import { useReducedMotion } from "./useReducedMotion";
 import { Dissolve } from "./motion/Dissolve";
 import {
   createContext,
@@ -20,6 +23,7 @@ import {
   useContext,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -75,7 +79,10 @@ function EarlierCell() {
   const more = Math.min(count, TRANSCRIPT_PAGE);
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => {
+        haptics.tap();
+        onPress();
+      }}
       hitSlop={theme.space(2)}
       accessibilityRole="button"
       accessibilityLabel={`Load ${more} earlier messages, ${count} hidden`}
@@ -167,7 +174,7 @@ function ChatThreadView(
   // Each key's entrance is decided once: the first batch the thread sees (a
   // restore replacing the skeleton) dissolves together; later turns animate
   // only if newer than the high-water mark; everything else renders settled.
-  const entrance = useRef<{ session: string | undefined; lifetime: EntranceLifetime; seen: Map<string, { kind: DissolveKind | null; at: number }> } | undefined>(undefined);
+  const entrance = useRef<{ session: string | undefined; batch: number; lifetime: EntranceLifetime; seen: Map<string, { kind: DissolveKind | null; at: number }> } | undefined>(undefined);
   const firstKey = turns[0] ? keyExtractor(turns[0]) : undefined;
   const session = firstKey?.slice(0, firstKey.lastIndexOf(":"));
   if (!entrance.current || entrance.current.session !== session) {
@@ -178,9 +185,12 @@ function ChatThreadView(
       lifetime.settle(i);
       // `at: -1`: the entrance window starts when the cell first asks (below),
       // which keeps the clock out of render.
-      seen.set(keyExtractor(turn), { kind: restoreBatch > 0 ? "restore" : null, at: -1 });
+      // Settled per cell: the first batch is revealed as one layer (below),
+      // because cells laid out while FlashList is still hidden would finish
+      // their own dissolve unseen and then cut in.
+      seen.set(keyExtractor(turn), { kind: null, at: -1 });
     });
-    entrance.current = { session, lifetime, seen };
+    entrance.current = { session, batch: restoreBatch, lifetime, seen };
   }
   const entranceFor = (key: string, index: number): DissolveKind | null => {
     const state = entrance.current;
@@ -196,6 +206,120 @@ function ChatThreadView(
     state.seen.set(key, { kind, at: entranceClock() });
     return kind;
   };
+
+  // The hand-over from "Reopening" to the conversation: one beat. The list is
+  // held transparent until FlashList's first layout (it paints nothing before
+  // that anyway), then dissolves in as a whole while the loader, if it was
+  // ever shown, fades out above it. Opacity only: scroll stays FlashList's.
+  const reduceMotion = useReducedMotion();
+  const listOpacity = useSharedValue(1);
+  // 0 settled, 1 lowered: the conversation rises the last few points as it fades in.
+  const listRise = useSharedValue(0);
+  const ghostOpacity = useSharedValue(0);
+  const ghostScale = useSharedValue(1);
+  // How long the list waits before rising in: the unlock beat, when Pew is on screen.
+  const revealDelay = useRef(0);
+  /** Pew is celebrating the unlock and leaves when the conversation starts to rise (`reveal`). */
+  const unlockPending = useRef(false);
+  const unlockClear = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(unlockClear.current), []);
+  /**
+   * The loading Pew, drawn in the overlay from the first frame of the wait to
+   * the end of the unlock: one element throughout, so the Pew that unlocks
+   * the conversation is the one that waited (a copy was reborn small and in
+   * another spot). Cleared once it has gone.
+   */
+  const [loader, setLoader] = useState<ConversationRestoreProps | undefined>(undefined);
+  const waiting = turns.length === 0 && (restore?.state === "loading" || restore?.state === "reconnecting");
+  const loadingSince = useRef<number | undefined>(undefined);
+  const pendingReveal = useRef(false);
+  const beat = reduceMotion ? DUR.reduced : DUR.dissolve;
+  const reveal = useCallback(() => {
+    if (!pendingReveal.current) return;
+    pendingReveal.current = false;
+    // A soft, slow ease-out: most of the arrival early, then a long settle.
+    const settle = Easing.bezier(0.16, 1, 0.3, 1);
+    const duration = reduceMotion ? DUR.reduced : OPEN_REVEAL_MS;
+    const wait = revealDelay.current;
+    revealDelay.current = 0;
+    listOpacity.value = withDelay(wait, withTiming(1, { duration, easing: settle }));
+    listRise.value = reduceMotion ? 0 : withDelay(wait, withTiming(0, { duration, easing: settle }));
+    // Pew leaves on the same frame the conversation starts to rise: a true
+    // cross-fade, with no gap between them and no wait for him.
+    if (unlockPending.current) {
+      unlockPending.current = false;
+      const out = Easing.bezier(0.4, 0, 1, 1);
+      ghostOpacity.value = withTiming(0, { duration: UNLOCK_EXIT_MS, easing: out });
+      ghostScale.value = withTiming(1.35, { duration: UNLOCK_EXIT_MS, easing: out });
+      clearTimeout(unlockClear.current);
+      unlockClear.current = setTimeout(() => setLoader(undefined), UNLOCK_EXIT_MS + 50);
+    }
+  }, [reduceMotion, listOpacity, listRise, ghostOpacity, ghostScale]);
+  useLayoutEffect(() => {
+    // Only an *opened* conversation (its first batch arrived at once, from a
+    // load) reveals as a whole: a brand-new chat's first turn arrives live,
+    // typed here, and must not blink out and fade back in.
+    const opened = loadingSince.current !== undefined || (restore !== undefined && restore.state !== "starting");
+    const batch = opened ? entrance.current?.batch ?? 0 : 0;
+    const plan = restoreReveal(batch, loadingSince.current, entranceClock());
+    if (!plan.holdList) return;
+    listOpacity.value = 0;
+    listRise.value = reduceMotion ? 0 : 1;
+    pendingReveal.current = true;
+    // `onLoad` fires once per list, so a second reopen relies on this: two
+    // frames is FlashList's measure-then-show.
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(reveal);
+    });
+    let clear: ReturnType<typeof setTimeout> | undefined;
+    if (plan.fadeLoader && !reduceMotion) {
+      // Pew unlocks the conversation: a quick celebrate where he was, then he
+      // swells and dissolves while the conversation opens out behind him.
+      setLoader((current) => current && { ...current, settled: true, unlocking: true });
+      // A little pop of joy while the conversation lays out; he leaves with it.
+      ghostScale.value = withTiming(1.06, { duration: UNLOCK_BEAT_MS, easing: Easing.bezier(0.16, 1, 0.3, 1) });
+      // The conversation never waits for him.
+      revealDelay.current = 0;
+      unlockPending.current = true;
+    } else if (plan.fadeLoader) {
+      setLoader((current) => current && { ...current, settled: true });
+      ghostOpacity.value = withTiming(0, { duration: beat });
+      clear = setTimeout(() => setLoader(undefined), beat + 50);
+    } else {
+      // Fast enough that Pew never showed: nothing to unlock.
+      setLoader(undefined);
+    }
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+      if (clear) clearTimeout(clear);
+    };
+    // `restore` is read only to tell an opened conversation from a new one,
+    // once per session: re-running on its every change would replay the reveal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, reveal, beat, listOpacity, listRise, reduceMotion, ghostOpacity, ghostScale]);
+  useEffect(() => {
+    if (waiting && restore) {
+      loadingSince.current ??= entranceClock();
+      const { title, state, error, onRetry } = restore;
+      setLoader((current) => (current && !current.unlocking && current.title === title && current.state === state ? current : { title, state, error, onRetry }));
+      cancelAnimation(ghostOpacity);
+      cancelAnimation(ghostScale);
+      ghostOpacity.value = 1;
+      ghostScale.value = 1;
+    } else {
+      loadingSince.current = undefined;
+      // The wait ended with nothing to show (failed, empty): that message is
+      // the list's own, so the loader goes at once.
+      if (turns.length === 0) setLoader(undefined);
+    }
+  }, [waiting, restore, turns.length, ghostOpacity, ghostScale]);
+  const listStyle = useAnimatedStyle(() => ({
+    opacity: listOpacity.value,
+    transform: listRise.value === 0 ? [] : [{ translateY: listRise.value * OPEN_REVEAL_RISE }],
+  }));
+  const ghostStyle = useAnimatedStyle(() => ({ opacity: ghostOpacity.value, transform: [{ scale: ghostScale.value }] }));
 
   const [win, setWin] = useState<TranscriptWindow | undefined>(undefined);
   const settledWin = nextWindow(win, session, turns.length);
@@ -382,8 +506,11 @@ function ChatThreadView(
   return (
     <EarlierContext.Provider value={earlierValue}>
     <FooterContext.Provider value={footerValue}>
+    <View style={styles.fill}>
+    <Animated.View style={[styles.fill, listStyle]}>
     <FlashList
       ref={list}
+      onLoad={reveal}
       data={rows}
       renderItem={renderItem}
       keyExtractor={keyExtractor}
@@ -399,7 +526,9 @@ function ChatThreadView(
       // history keeps their place while the reply streams on below.
       maintainVisibleContentPosition={MAINTAIN_POSITION}
       ListHeaderComponent={restore?.state === "failed" && turns.length > 0 ? <ConversationRestore {...restore} /> : SpacerOnly}
-      ListEmptyComponent={restore ? <ConversationRestore {...restore} /> : null}
+      // The loading Pew is drawn in the overlay below (one instance for the
+      // wait and the unlock); the list shows only the other restore states.
+      ListEmptyComponent={restore && !waiting && !loader ? <ConversationRestore {...restore} /> : null}
       ListHeaderComponentStyle={headerStyle}
       // Kept beside the explicit dismiss above as the native backstop: it needs
       // no JS, so a drag during a heavy streaming frame still puts the keyboard
@@ -447,6 +576,13 @@ function ChatThreadView(
       onStartReached={earlier > 0 ? reachedTop : undefined}
       onStartReachedThreshold={0.2}
     />
+    </Animated.View>
+    {loader && (
+      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { paddingTop: threadTop }, ghostStyle]}>
+        <ConversationRestore {...loader} />
+      </Animated.View>
+    )}
+    </View>
     </FooterContext.Provider>
     </EarlierContext.Provider>
   );
@@ -504,6 +640,7 @@ const SpacerOnly = () => (
 );
 
 const styles = StyleSheet.create({
+  fill: { flex: 1 },
   row: { paddingTop: theme.space(5), paddingHorizontal: theme.gutter },
   firstRow: { paddingTop: 0, paddingHorizontal: theme.gutter },
   // Same reserved height and top gap as ActivityLine and TurnReceipt.

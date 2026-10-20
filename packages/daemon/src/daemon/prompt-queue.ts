@@ -48,6 +48,7 @@ export abstract class DaemonPromptQueue extends DaemonGg {
     session.lastUsedAt = Date.now();
     session.working = true;
     session.cancelling = false;
+    this.touchBoard();
     // Read before the loop clears the flag: the turn's end is the only point
     // that knows it was a stop, and the push it decides on comes after.
     let cancelled = false;
@@ -99,6 +100,7 @@ export abstract class DaemonPromptQueue extends DaemonGg {
           if (session.cancelling) cancelled = true;
           session.cancelling = false;
           session.permissions?.clear();
+          this.touchInbox();
           next = await this.takeQueuedTurn(session);
         }
       } catch (error) {
@@ -110,12 +112,14 @@ export abstract class DaemonPromptQueue extends DaemonGg {
     } finally {
       session.working = false;
       session.cancelling = false;
+      this.touchBoard();
       // A turn cannot end while the agent is still waiting to be let past a
       // tool: it is blocked on that answer. So anything left here was killed
       // with the turn — cancelled, or the agent errored out — and offering it
       // to the next client to reconnect would be an approve button wired to a
       // request no one is listening for any more.
       session.permissions?.clear();
+      this.touchInbox();
       // Open asks are NOT cleared: GG Coder keeps an ask_user request open past
       // the turn that raised it, and a late answer comes back as a returned
       // queue item. They go when answered, withdrawn by the agent, or closed.

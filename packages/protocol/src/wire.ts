@@ -748,31 +748,22 @@ export const PushRegister = z.object({
    */
   token: z.string().min(1),
   platform: z.enum(["ios", "android"]),
-  /**
-   * The phone's "voice call" setting: ring (word the push as a call) for
-   * finished / blocked / approval. Optional so an older app, which never sends
-   * it, reads as off; an older daemon strips it and simply never rings.
-   */
-  voiceCall: z.boolean().optional(),
-  /**
-   * The phone's "Native call screen" setting: ring with the system call UI
-   * (CallKit / Telecom) instead of a banner. Absent (an older app) means off,
-   * and an older daemon strips it, so nothing rings that did not before.
-   */
-  nativeCall: z.boolean().optional(),
-  /**
-   * iOS only: this phone's PushKit (VoIP) address, sent only while
-   * `nativeCall` is on. iOS kills an app that gets a VoIP push without
-   * reporting a call, so a phone that turned the setting off stops sending
-   * this, and the daemon forgets it on the next registration.
-   */
-  voip: z
-    .object({
-      token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
-      environment: z.enum(["production", "sandbox"]),
-      bundleId: z.string().regex(/^[A-Za-z0-9.-]{1,155}$/),
-    })
-    .optional(),
+});
+
+/**
+ * App -> daemon. This phone can ring like a phone call: its PushKit (VoIP)
+ * token, for a CallKit incoming call when Pew needs the user. Sent only by an
+ * iPhone where CallKit is allowed (never in China) and once the user agreed
+ * to voice calls; `token: null` withdraws it. The daemon sends rings through
+ * the relay, which holds the Apple key; anything it can't ring this way gets
+ * the time-sensitive banner as before. An older daemon answers
+ * `unknown_message`, and the phone simply keeps getting banners.
+ */
+export const VoipRegister = z.object({
+  t: z.literal("app.voip"),
+  token: z.string().regex(/^[0-9a-f]{64,200}$/).nullable(),
+  /** Which APNs a token belongs to: development builds get sandbox tokens. */
+  env: z.enum(["sandbox", "production"]),
 });
 
 /**
@@ -894,6 +885,336 @@ export const AskReply = z.object({
   sessionId: z.string(),
   requestId: z.string(),
   result: AskResult,
+});
+
+// ── Voice ("Ken on the line") ──────────────────────────────
+
+/**
+ * Voice calls with a cloud realtime model about the user's agents.
+ *
+ * The voice model is NOT the coding agent: it is a small realtime assistant
+ * that reads the daemon's inbox of things waiting on the user and acts on them
+ * through the daemon's existing methods (approve, answer, decide a plan,
+ * prompt). Audio goes phone <-> provider directly over WebRTC; the relay never
+ * carries it. The daemon holds the credentials, mints a short-lived client
+ * secret per call, and executes every tool call (`voice.tool`), so behaviour
+ * ships on the daemon's rail, not the App Store's.
+ *
+ * Credentials are found, not configured: an OpenAI login an agent on this
+ * machine already holds (GG Coder, Codex) is used when present; only when none
+ * exists does the user sign in from the phone (`voice.login`, device code).
+ *
+ * Every field is optional on arrival and an older daemon answers these with
+ * `unknown_message`, which the app reads as "voice not available here".
+ */
+
+/** Where the daemon's voice credentials came from. */
+export const VoiceSource = z.enum(["ggcoder", "codex", "pew2", "apikey"]);
+
+/** A device-code sign-in in progress: the user opens `verificationUrl` and types `userCode`. */
+export const VoiceLoginPending = z.object({
+  userCode: z.string(),
+  verificationUrl: z.string(),
+  /** Epoch ms. */
+  expiresAt: z.number().int().optional(),
+});
+
+/**
+ * Daemon -> app. Whether a call can be placed, and why not.
+ * Answer to `voice.status` / `voice.login` (with `requestId`), and broadcast
+ * unprompted when it changes (a login completes, a token dies).
+ */
+export const VoiceStatus = z.object({
+  t: z.literal("voice.status"),
+  requestId: z.string().optional(),
+  available: z.boolean(),
+  source: VoiceSource.optional(),
+  /** Account email or label for the settings row, when known. */
+  account: z.string().optional(),
+  /** One plain sentence when unavailable, e.g. "Sign in to OpenAI to use voice." */
+  reason: z.string().optional(),
+  /** True when signing in from the phone would fix `available: false`. */
+  canLogin: z.boolean().optional(),
+  login: VoiceLoginPending.optional(),
+  /** The call policy's current settings. Absent from a daemon without the policy. */
+  prefs: z.lazy(() => VoicePrefsValues).optional(),
+  /** Sessions allowed to ring. Absent: an older daemon (it rings for any session in `onthego`). */
+  armed: z.array(z.lazy(() => VoiceArmed)).optional(),
+});
+
+/**
+ * When the daemon may reach the user about waiting items.
+ *  - `off`: never (today's banners still arrive as before).
+ *  - `notify`: today's banners, plus a "Talk" action on them.
+ *  - `onthego`: batched calls: one "pew2 needs you · Talk" alert for everything
+ *    that blocked within `batchSeconds`, at most one call at a time, then quiet
+ *    for `cooldownMinutes` unless something has waited a long time.
+ */
+export const VoicePrefsValues = z.object({
+  mode: z.enum(["off", "notify", "onthego"]),
+  batchSeconds: z.number().int().min(0).max(600).optional(),
+  cooldownMinutes: z.number().int().min(0).max(240).optional(),
+  maxCallsPerHour: z.number().int().min(1).max(20).optional(),
+  /**
+   * Epoch ms when `onthego` switches itself back to `notify`; 0 = until the
+   * user turns it off. A forgotten switch must never ring at 3 am.
+   */
+  ringUntil: z.number().int().min(0).optional(),
+  /** No rings in this window (the banners still arrive). */
+  quietHours: z.lazy(() => VoiceQuietHours).optional(),
+  /** Arm every session the phone starts (see `voice.arm`). */
+  armNewSessions: z.boolean().optional(),
+  /**
+   * Which chats may ring: every one ("all"), or only those armed with
+   * `voice.arm` ("chosen"). Absent from an older daemon, which knows only
+   * armed chats.
+   */
+  ringScope: z.enum(["all", "chosen"]).optional(),
+});
+
+/** A daily window, in the phone's own time zone, when rings become banners. */
+export const VoiceQuietHours = z.object({
+  on: z.boolean(),
+  /** Minutes after local midnight. `from > to` wraps past midnight (22:00-08:00). */
+  from: z.number().int().min(0).max(1439),
+  to: z.number().int().min(0).max(1439),
+  /** IANA time zone of the phone, e.g. "Europe/London". Absent: the computer's. */
+  tz: z.string().max(64).optional(),
+});
+
+/**
+ * App -> daemon. Let this session ring the user (`on`), or stop it. A session
+ * rings only while armed; arming ends by itself when the session closes or
+ * after 12 hours. Answered with a `voice.status` broadcast carrying `armed`.
+ * An older app never arms anything, so a newer daemon never rings it.
+ */
+export const VoiceArm = z.object({
+  t: z.literal("voice.arm"),
+  sessionId: z.string().min(1).max(200),
+  on: z.boolean(),
+});
+
+/** An armed session, as `voice.status` lists it. */
+export const VoiceArmed = z.object({
+  sessionId: z.string(),
+  /** Epoch ms when arming ends by itself. */
+  until: z.number().int(),
+});
+
+/** App -> daemon. Change the call policy; answered with a `voice.status` broadcast. */
+export const VoicePrefs = z.object({
+  t: z.literal("voice.prefs"),
+  prefs: VoicePrefsValues.partial(),
+});
+
+/**
+ * App -> daemon. Forget every voice thread (what was said on earlier calls,
+ * kept per chat on the computer so the next call carries on). An older
+ * daemon keeps none and ignores this.
+ */
+export const VoiceForget = z.object({
+  t: z.literal("voice.forget"),
+});
+
+/** App -> daemon. Ask for `voice.status`. */
+export const VoiceStatusRequest = z.object({
+  t: z.literal("voice.status"),
+  requestId: z.string(),
+});
+
+/**
+ * App -> daemon. pew2's own OpenAI sign-in, used only when no agent's login exists.
+ *  - `start`: begin a device-code login; the reply's `login` carries the code.
+ *  - `cancel`: abandon a pending login.
+ *  - `logout`: forget pew2's own login (never touches an agent's credentials).
+ */
+export const VoiceLogin = z.object({
+  t: z.literal("voice.login"),
+  requestId: z.string(),
+  action: z.enum(["start", "cancel", "logout"]),
+});
+
+/** One thing an agent is stopped on, as the voice layer and the call policy see it. */
+export const VoiceInboxItem = z.object({
+  /** Stable for the life of the request: `${sessionId}:${kind}:${requestId}`. */
+  id: z.string(),
+  sessionId: z.string(),
+  kind: z.enum(["approval", "question", "plan"]),
+  /** The daemon's request id for the underlying permission / ask / plan generation. */
+  requestId: z.string(),
+  folder: z.string().optional(),
+  agentName: z.string().optional(),
+  /** One line: the tool to approve, the first question, or "Plan ready for review". */
+  title: z.string(),
+  /** Epoch ms when it started waiting. */
+  since: z.number().int(),
+  /**
+   * A question's full questions, so the call screen can show the same card as
+   * the chat and the user can tap an answer while Pew reads it out. Absent from
+   * an older daemon (the call then stays voice-only) and on other kinds.
+   */
+  questions: z.array(AskQuestion).optional(),
+  /** An approval's choices, for the same card. Absent: older daemon, or not an approval. */
+  options: z.array(z.object({ optionId: z.string(), name: z.string(), kind: z.string().optional() })).optional(),
+  /** An approval's whole request, uncapped (`title` is one capped line). */
+  detail: z.string().optional(),
+});
+
+/**
+ * Daemon -> app. Everything waiting on the user, across every session.
+ * Full list each time (replace, never patch); broadcast on change, never logged.
+ * A phone in a call tells the voice model about items that appear mid-call, so
+ * a second agent blocking while you're talking joins this call, not a new one.
+ */
+export const VoiceInbox = z.object({
+  t: z.literal("voice.inbox"),
+  items: z.array(VoiceInboxItem),
+});
+
+/**
+ * One line of a session's live feed on the call screen.
+ *  - `text`: the agent said something (its latest line of prose).
+ *  - `tool`: the agent started a tool (its title, e.g. "Edit checkout/cart.tsx").
+ *  - `result`: a tool finished; `text` is short ("42 passed", or the tool title).
+ *  - `ask` / `perm`: the agent is now waiting on a question / an approval.
+ *  - `pew`: what Pew (the voice assistant) typed into this session, verbatim.
+ *  - `note`: something Pew did to it ("Approved once: npm publish").
+ */
+export const VoiceBoardLine = z.object({
+  kind: z.enum(["text", "tool", "result", "ask", "perm", "pew", "note"]),
+  text: z.string(),
+  /** Epoch ms. */
+  at: z.number().int(),
+});
+
+/** One agent session as Pew's call screen shows it. */
+export const VoiceBoardSession = z.object({
+  sessionId: z.string(),
+  /** For the agent's brand colour, which the app already has from `providers`. */
+  providerId: z.string().optional(),
+  folder: z.string().optional(),
+  agentName: z.string().optional(),
+  /**
+   * What it is doing. `done` = finished a turn since the call started (or in the
+   * last 10 minutes) and waiting on nothing; `idle` = neither working nor recently done.
+   */
+  status: z.enum(["working", "asks", "needs", "done", "idle"]),
+  /** Epoch ms the status last changed. */
+  since: z.number().int(),
+  /** Epoch ms Pew last acted on or briefed this session; 0 = never this call. */
+  touchedAt: z.number().int(),
+  /** Newest last, at most 12. */
+  lines: z.array(VoiceBoardLine),
+});
+
+/**
+ * Daemon -> app. The live board behind the call screen: every session worth
+ * showing, most relevant first (touched by Pew, then waiting on the user, then
+ * working, then recently done). Full list each time (replace, never patch),
+ * broadcast while a call is open and throttled; never logged. The app shows
+ * at most four and folds the rest. Absent from an older daemon: the app falls
+ * back to lanes built from `voice.inbox`.
+ */
+export const VoiceBoard = z.object({
+  t: z.literal("voice.board"),
+  callId: z.string().optional(),
+  sessions: z.array(VoiceBoardSession),
+});
+
+/**
+ * App -> daemon. Mint a realtime session for a call.
+ * `focus` names the item the user tapped (a push, a sheet); the briefing leads with it.
+ */
+export const VoiceSessionRequest = z.object({
+  t: z.literal("voice.session"),
+  requestId: z.string(),
+  focus: z.string().optional(),
+  /**
+   * The conversation open on the phone when the call started: the project the
+   * user most likely wants to talk about. Absent from an older app (Pew then
+   * asks).
+   */
+  sessionId: z.string().max(200).optional(),
+  /**
+   * The project and agent on screen when no conversation exists yet (a new
+   * chat with nothing sent): without them Pew knew nothing about where the
+   * call came from. `cwd` is honoured only via `knownProject()`. Absent from
+   * an older app.
+   */
+  cwd: z.string().max(4096).optional(),
+  providerId: z.string().max(200).optional(),
+});
+
+/**
+ * Daemon -> app, during a call. Something Pew should know now: a session it
+ * prompted finished (and what it said), or started working. The app adds it
+ * to the realtime conversation as a system message and, with `speak`, lets
+ * Pew say it at the next pause. Composed on the daemon so what Pew hears
+ * ships on the daemon's rail; an older app ignores it (Pew can still ask
+ * `get_status`).
+ */
+export const VoiceNote = z.object({
+  t: z.literal("voice.note"),
+  callId: z.string(),
+  text: z.string().max(4000),
+  speak: z.boolean().optional(),
+  /** The session's name as Pew says it, so the app can pace and de-duplicate news. Absent: an older daemon. */
+  about: z.string().max(200).optional(),
+});
+
+/** Daemon -> app. A call is ready to connect, or why not. */
+export const VoiceSession = z.object({
+  t: z.literal("voice.session"),
+  requestId: z.string(),
+  ok: z.boolean(),
+  error: z.string().optional(),
+  /** "openai" for now. The app picks its transport by this. */
+  provider: z.literal("openai").optional(),
+  /** Ephemeral client secret; instructions and tools are already bound to it. */
+  secret: z.string().optional(),
+  /** Epoch ms after which `secret` can no longer open a call. */
+  expiresAt: z.number().int().optional(),
+  model: z.string().optional(),
+  /** Daemon-minted id for this call; echo it on `voice.tool` and `voice.end`. */
+  callId: z.string().optional(),
+  /** The inbox the briefing was built from, so the app can show the same list. */
+  items: z.array(VoiceInboxItem).optional(),
+});
+
+/** App -> daemon. The voice model called a tool; the daemon runs it. */
+export const VoiceTool = z.object({
+  t: z.literal("voice.tool"),
+  requestId: z.string(),
+  callId: z.string(),
+  /** The realtime function call id, echoed back so the app can answer the model. */
+  toolCallId: z.string(),
+  name: z.string(),
+  /** The model's JSON arguments, unparsed. */
+  arguments: z.string(),
+});
+
+/** Daemon -> app. A tool's result, to hand back to the model as `function_call_output`. */
+export const VoiceToolResult = z.object({
+  t: z.literal("voice.tool"),
+  requestId: z.string(),
+  callId: z.string(),
+  toolCallId: z.string(),
+  /** JSON text for the model. */
+  output: z.string(),
+  /** The app should hang up after the model speaks its goodbye. */
+  hangUp: z.boolean().optional(),
+});
+
+/**
+ * App -> daemon. A call ended. Feeds the call policy's cooldown, and carries the
+ * user's "call me back in N minutes" when they asked for one.
+ */
+export const VoiceEnd = z.object({
+  t: z.literal("voice.end"),
+  callId: z.string(),
+  reason: z.enum(["hangup", "missed", "declined", "failed"]).optional(),
+  /** Spoken transcript lines, for the record; optional and capped by the daemon. */
+  transcript: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string() })).optional(),
 });
 
 // ── Goals (GG Coder) ───────────────────────────────────────
@@ -1238,6 +1559,15 @@ export const ClientMessage = z.discriminatedUnion("t", [
   PlanDecide,
   AutopilotSet,
   ChecklistRequest,
+  VoiceStatusRequest,
+  VoiceLogin,
+  VoiceSessionRequest,
+  VoiceTool,
+  VoiceEnd,
+  VoicePrefs,
+  VoiceArm,
+  VoipRegister,
+  VoiceForget,
   ...VoiceClientMessages,
 ]);
 
@@ -1263,6 +1593,12 @@ export const ServerMessage = z.discriminatedUnion("t", [
   PlanState,
   AutopilotState,
   Checklist,
+  VoiceStatus,
+  VoiceInbox,
+  VoiceBoard,
+  VoiceNote,
+  VoiceSession,
+  VoiceToolResult,
   ErrorMessage,
   ...VoiceServerMessages,
 ]);
@@ -1275,6 +1611,29 @@ export type AskQuestion = z.output<typeof AskQuestion>;
 export type AskRequest = z.output<typeof AskRequest>;
 export type AskResult = z.output<typeof AskResult>;
 export type AskReply = z.output<typeof AskReply>;
+export type VoiceSource = z.output<typeof VoiceSource>;
+export type VoiceLoginPending = z.output<typeof VoiceLoginPending>;
+export type VoiceStatus = z.output<typeof VoiceStatus>;
+export type VoiceStatusRequest = z.output<typeof VoiceStatusRequest>;
+export type VoiceLogin = z.output<typeof VoiceLogin>;
+export type VoiceInboxItem = z.output<typeof VoiceInboxItem>;
+export type VoiceInbox = z.output<typeof VoiceInbox>;
+export type VoiceBoardLine = z.output<typeof VoiceBoardLine>;
+export type VoiceBoardSession = z.output<typeof VoiceBoardSession>;
+export type VoiceBoard = z.output<typeof VoiceBoard>;
+export type VoiceSessionRequest = z.output<typeof VoiceSessionRequest>;
+export type VoiceSession = z.output<typeof VoiceSession>;
+export type VoiceTool = z.output<typeof VoiceTool>;
+export type VoiceToolResult = z.output<typeof VoiceToolResult>;
+export type VoiceEnd = z.output<typeof VoiceEnd>;
+export type VoicePrefsValues = z.output<typeof VoicePrefsValues>;
+export type VoicePrefs = z.output<typeof VoicePrefs>;
+export type VoiceForget = z.output<typeof VoiceForget>;
+export type VoiceArm = z.output<typeof VoiceArm>;
+export type VoipRegister = z.output<typeof VoipRegister>;
+export type VoiceNote = z.output<typeof VoiceNote>;
+export type VoiceArmed = z.output<typeof VoiceArmed>;
+export type VoiceQuietHours = z.output<typeof VoiceQuietHours>;
 export type GoalStatus = z.output<typeof GoalStatus>;
 export type GoalContextItem = z.output<typeof GoalContextItem>;
 export type GoalSummary = z.output<typeof GoalSummary>;

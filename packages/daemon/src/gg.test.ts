@@ -344,6 +344,29 @@ test("goals replaces a parked GG Coder that has exited instead of reusing its cl
   expect(answer.goals).toEqual([]);
 });
 
+test("a capability refresh replacing the parked GG Coder does not kill a goals request running on it", async () => {
+  const { daemon, sent, send } = await ggDaemon();
+  // Read by the agent at spawn, so set before the first one boots.
+  setEnv("PEW2_TEST_GG_LIST_DELAY_MS", "400");
+  await send({ t: "goals", requestId: "r1" });
+  expect(sent.find((m) => m.requestId === "r1")).toMatchObject({ goals: [] });
+  const spares = (daemon as any).spares as Map<string, { handle: AcpSessionHandle }>;
+  const parked = [...spares.values()][0]!.handle;
+
+  // The app asks for its goals and refreshes capabilities in the same breath
+  // on every reconnect; the refresh boots a new GG Coder and parks it in the
+  // same slot, which used to SIGTERM the process the list was running on.
+  const listing = send({ t: "goals", requestId: "r2" });
+  await Bun.sleep(100);
+  await (daemon as any).probeProvider("ggcoder", { refresh: true });
+  await listing;
+  const answer = sent.find((m) => m.requestId === "r2");
+  expect(answer.error ?? answer.message).toBeUndefined();
+  expect(answer.goals).toEqual([]);
+  // Retired once the request was done with it, not leaked.
+  await until(() => parked.child.exitCode !== null || parked.child.signalCode !== null, "old spare exit");
+});
+
 test("an older GG Coder answers goals with an error, not a crash", async () => {
   const { sent, send } = await ggDaemon({ old: true });
   await send({ t: "goals", requestId: "r1" });

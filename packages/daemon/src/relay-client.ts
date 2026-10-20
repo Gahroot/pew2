@@ -33,6 +33,8 @@ export interface RelayClientOptions {
   deviceId: string;
   cwd?: string;
   onStatus?: (status: RelayStatus, detail?: string) => void;
+  /** A device's handshake was accepted over the relay (for the log). */
+  onHello?: (deviceId: string) => void;
   /**
    * Also deliver relay-originated broadcasts to locally connected clients.
    *
@@ -52,7 +54,12 @@ export interface RelayClientOptions {
    */
   admitDevice?: (deviceId: string) => { ok: boolean; message?: string };
   /** Injectable for tests. Defaults to the global WebSocket. */
-  createSocket?: (url: string) => WebSocket;
+  createSocket?: (url: string, headers: Record<string, string>) => WebSocket;
+  /**
+   * This machine's reconnect key (`loadResumeKey`), sent so the relay lets it
+   * replace its own lingering socket at once. Absent: admitted as before.
+   */
+  resumeKey?: string;
 }
 
 export type RelayStatus = "connecting" | "online" | "offline";
@@ -174,7 +181,12 @@ export class RelayClient {
 
     let socket: WebSocket;
     try {
-      socket = (this.options.createSocket ?? ((url) => new WebSocket(url)))(this.endpoint);
+      // The reconnect key goes in a header, never the URL (which is what
+      // request logs keep), and stops once another daemon on this machine has
+      // taken the room (`yielded`).
+      const headers: Record<string, string> =
+        this.options.resumeKey && !this.yielded ? { "x-pew2-resume": this.options.resumeKey } : {};
+      socket = (this.options.createSocket ?? ((url, extra) => new WebSocket(url, { headers: extra } as never)))(this.endpoint, headers);
     } catch (error) {
       // A malformed URL throws synchronously. Treat it as any other failure so
       // a typo'd relay does not kill the daemon.
@@ -294,6 +306,7 @@ export class RelayClient {
           return;
         }
         this.channel.acceptHandshake(deviceId);
+        this.options.onHello?.(deviceId);
 
         // The app may have been waiting here long before this machine woke up,
         // so re-announce rather than assume it saw the last list.
@@ -363,8 +376,18 @@ export class RelayClient {
       // two sockets for one failure.
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event: { code?: number; reason?: string }) => {
       this.clearTimers();
+      // Replaced while this socket was up: another pew2 on this machine (the
+      // same key) took the room. Stop pressing the key, or the two would
+      // evict each other in turn for ever; plain admission waits until that
+      // one goes quiet, as it did before.
+      if (event?.code === 1012 && this.socket === socket) this.yielded = true;
+      // Why, in the log: a relay refusal (a live daemon already there, a full
+      // room) and a dropped network look identical otherwise, and they have
+      // different fixes.
+      const why = [event?.code, event?.reason].filter((part) => part !== undefined && part !== "").join(" ");
+      this.lastClose = why || undefined;
       // Only tear down state that still belongs to *this* socket. `rekey`
       // closes the old one and immediately opens a new one, and `onclose`
       // arrives after that \u2014 so an unconditional reset here would null the new
@@ -373,9 +396,14 @@ export class RelayClient {
       if (this.socket !== socket) return;
       this.socket = null;
       this.channel = null;
-      this.scheduleRetry();
+      this.scheduleRetry(this.lastClose);
     };
   }
+
+  /** Code and reason of the last close, for the offline log line. */
+  private lastClose: string | undefined;
+  /** Another daemon on this machine took the room: reconnect without the key. */
+  private yielded = false;
 
   private startHeartbeat() {
     this.clearHeartbeat();

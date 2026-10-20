@@ -112,13 +112,7 @@ export function handleSealedFrame(refs: FrameRefs, connection: FrameConnection, 
   // phone no longer holds the key for. Silently ignored — there is nothing
   // useful to show and nothing safe to act on.
   if (message === undefined) return;
-
-  if (typeof message.t === "string" && message.t.startsWith("voice.")) {
-    optionsRef.current.onVoiceMessage?.(message);
-    return;
-  }
-  // Also folded into the session list below; voice only listens.
-  if (message.t === "desktop.activity") optionsRef.current.onVoiceMessage?.(message);
+  optionsRef.current.onFrame?.(message);
 
   // Only authenticated, visible prose may wait. Control/replay/background
   // frames flush before any notification or state transition below.
@@ -610,7 +604,6 @@ export function handleSealedFrame(refs: FrameRefs, connection: FrameConnection, 
   // safe read: the alternative is a set that never empties, so choosing
   // that project again would be ignored for the life of the socket.
   if (message.t === "error" && message.code === "unknown_message") {
-    optionsRef.current.onVoiceMessage?.(message);
     pendingProjectSessions.current.clear();
   }
   // A refused push token, for any of the three reasons it can be refused:

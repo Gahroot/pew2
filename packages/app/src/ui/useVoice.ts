@@ -1,277 +1,364 @@
 /**
- * React side of voice: owns the controller, activation (deep link, notification),
- * audio-session events, cursor persistence and sync-on-reconnect.
- * UNTESTED ON DEVICE.
+ * Voice on this daemon: whether it can call, the machine-wide inbox, the
+ * sign-in and prefs actions, and the call itself.
+ *
+ * The decisions are `voiceCall.ts`'s; this hook only runs the effects it
+ * returns — daemon messages, the WebRTC transport, timers — outside any state
+ * updater, so a twice-run updater can never send a frame twice.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Linking } from "react-native";
-import { randomUUID } from "expo-crypto";
-import { RTCAudioSession } from "react-native-webrtc";
-import { isRepeatLink, parseVoiceLink, type VoiceActivation } from "../voice/deepLink";
-import { isOpen } from "../voice/voiceMachine";
-import { loadVoiceCursor, saveVoiceCursor } from "../preferences";
-import { listenToAudioSession } from "./audioSession";
-import { createVoiceController, type DismissRequest, type VoiceController, type VoiceView } from "./voiceController";
-import { onVoiceNotificationChoice } from "./voiceNotifier";
-import { setVoicePresence } from "./notifier";
-import { emptyStore } from "../voice/voiceStore";
-import { initialState } from "../voice/voiceMachine";
-import { pickPhotos } from "./attachmentPicker";
-import type { ScreenshotCard } from "../voice/screenshots";
-import { activationFor, OUTGOING_CALLER } from "../voice/callPush";
-import { disableNativeCalls, enableNativeCalls, endNativeCall, startOutgoingCall } from "./callkit";
-import { listenForegroundRings } from "./androidRing";
+import type { wire } from "@pew2/protocol";
+import {
+  CALL_ERRORS,
+  IDLE_CALL,
+  VOICE_UNKNOWN,
+  callActive,
+  foldVoiceStatus,
+  readInboxItems,
+  stepCall,
+  type CallEffect,
+  type CallInput,
+  type CallPlace,
+  type CallState,
+  type VoiceInboxItem,
+  type VoiceKnowledge,
+  type VoiceMode,
+} from "../voiceCall";
+import { IDLE_BOARD, boardFromInbox, foldBoard, type BoardState } from "../voiceBoard";
+import { openTransport, type VoiceTransport } from "./voiceTransport";
+import { cancelsEcho, onRouteChange, setProximity, setVoiceChatMode } from "../../modules/pew-audio-route";
+import { setOnCall } from "./notifier";
+import { sounds } from "./sounds";
+import { setAudioModeAsync } from "expo-audio";
+import { useSharedValue } from "react-native-reanimated";
+import { NEW_CLOCK, tickClock, type SpeechClock } from "../speechSync";
 
-interface Options {
-  send: (message: Record<string, unknown>) => boolean;
-  online: boolean;
-  /** The "Native call screen" setting: CallKit / Telecom carry the conversation. */
-  nativeCall: boolean;
-  /** Display name for a provider id, used in desk-activity notes. */
-  agentName?: (providerId: string) => string | undefined;
+/**
+ * The call's audio session, set before the mic opens: expo-audio maps this to
+ * AVAudioSession playAndRecord with allowBluetooth (HFP, so AirPods carry both
+ * directions), no defaultToSpeaker, background audio so a locked screen keeps
+ * the call. expo-audio cannot set a session *mode*; voiceChat (hardware echo
+ * cancellation) is applied by the WebRTC framework's audio unit when it starts.
+ */
+/** After a call, app sounds stay quiet this long while WebRTC releases the audio session. */
+const AUDIO_SETTLE_MS = 1500;
+/** The hang-up tone's length: the call's audio stays up (silent) until it is over. */
+const END_TONE_MS = 1200;
+
+function enterCallAudio(): Promise<void> {
+  return setAudioModeAsync({
+    playsInSilentMode: true,
+    allowsRecording: true,
+    interruptionMode: "doNotMix",
+    shouldPlayInBackground: true,
+    shouldRouteThroughEarpiece: false,
+  })
+    // Voice chat mode (system echo cancellation), still before the mic opens.
+    .then(() => void setVoiceChatMode())
+    .catch(() => {});
 }
 
-export function useVoice({ send, online, nativeCall, agentName }: Options) {
-  const [view, setView] = useState<VoiceView>({ machine: initialState, store: emptyStore, transcript: [], screenshots: [], pickerRequests: 0 });
-  const [sheetOpen, setSheetOpen] = useState(false);
-  // Bumped on every activation: with the sheet already open, setSheetOpen(true) changes nothing, so the queued request would never run.
-  const [activationTick, setActivationTick] = useState(0);
-  const sendRef = useRef(send);
-  sendRef.current = send;
-  const agentNameRef = useRef(agentName);
-  agentNameRef.current = agentName;
-  const controller = useRef<VoiceController | null>(null);
-  const pending = useRef<VoiceActivation | undefined>(undefined);
-  const lastLink = useRef<{ url: string; at: number } | undefined>(undefined);
-  const endedAt = useRef<number | undefined>(undefined);
-  /** The system call (CallKit / Telecom) carrying the current conversation, if any. */
-  const nativeCallId = useRef<string | undefined>(undefined);
+interface Options {
+  post: (message: unknown) => boolean;
+  online: boolean;
+}
 
-  const get = (): VoiceController => {
-    controller.current ??= createVoiceController({
-      send: (m) => sendRef.current(m),
-      onChange: setView,
-      agentName: (id) => agentNameRef.current?.(id),
-      onEnded: () => {
-        endedAt.current = Date.now();
-      },
-    });
-    return controller.current;
-  };
-
-  const activate = useCallback((activation: VoiceActivation) => {
-    pending.current = activation;
-    setSheetOpen(true);
-    setActivationTick((t) => t + 1);
+export function useVoice({ post, online }: Options) {
+  const [knowledge, setKnowledge] = useState<VoiceKnowledge>(VOICE_UNKNOWN);
+  const knowledgeRef = useRef<VoiceKnowledge>(VOICE_UNKNOWN);
+  const [inbox, setInbox] = useState<VoiceInboxItem[]>([]);
+  const [call, setCall] = useState<CallState>(IDLE_CALL);
+  /** Mission control's lanes: `voice.board`, or `voice.inbox` from an older daemon. */
+  const [board, setBoardState] = useState<BoardState>(IDLE_BOARD);
+  const boardRef = useRef<BoardState>(IDLE_BOARD);
+  const setBoard = useCallback((next: BoardState) => {
+    if (next === boardRef.current) return;
+    boardRef.current = next;
+    setBoardState(next);
   }, []);
+  const callRef = useRef<CallState>(IDLE_CALL);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const transport = useRef<VoiceTransport | undefined>(undefined);
+  /** The call's audio session being applied; the transport waits for it. */
+  const audioReady = useRef<Promise<unknown>>(Promise.resolve());
+  /**
+   * The previous call's teardown (`VoiceTransport.released`). A new call sets
+   * its audio session only after it: configured while WebRTC was still
+   * stopping the last call's audio unit and releasing the session ("Call
+   * again" straight from the end card), the new call's audio raced the old
+   * one's shutdown.
+   */
+  const lastReleased = useRef<Promise<void>>(Promise.resolve());
+  /** The mic's loudness, 0..1, for the listening animation; -1 when unknown. */
+  const micLevel = useSharedValue(-1);
+  /** Pew's speaking clock (ms its voice has sounded), read by the call screen's captions. */
+  const speech = useRef<SpeechClock>(NEW_CLOCK);
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const counter = useRef(0);
+  const postRef = useRef(post);
+  postRef.current = post;
 
-  // Runs a queued activation once the daemon is reachable: a cold-start link
-  // arrives before the socket does.
-  useEffect(() => {
-    const next = pending.current;
-    if (!next || !online) return;
-    pending.current = undefined;
-    get().start(next);
-  }, [online, sheetOpen, activationTick]);
+  const nextId = useCallback(() => `voice-${Date.now().toString(36)}-${++counter.current}`, []);
 
-  // Cursor: restore once, persist on change.
-  useEffect(() => {
-    void loadVoiceCursor().then((c) => get().restore(c.cursor, c.heardEventId));
-  }, []);
-  useEffect(() => {
-    if (view.store.cursor > 0) {
-      void saveVoiceCursor({ cursor: view.store.cursor, heardEventId: view.store.heardEventId });
-    }
-  }, [view.store.cursor, view.store.heardEventId]);
-
-  // Catch up whenever the socket comes back, and when a gap was seen.
-  useEffect(() => {
-    if (online) get().sync();
-  }, [online]);
-  useEffect(() => {
-    if (online && view.store.needsSync) get().sync();
-  }, [online, view.store.needsSync]);
-  useEffect(() => {
-    get().setOnline(online);
-  }, [online]);
-
-  // Deep links, cold and warm.
-  useEffect(() => {
-    const handle = (url: string | null) => {
-      if (!url) return;
-      const parsed = parseVoiceLink(url);
-      if (!parsed) return;
-      if (isRepeatLink(lastLink.current, url, Date.now())) return;
-      lastLink.current = { url, at: Date.now() };
-      activate(parsed);
-    };
-    void Linking.getInitialURL().then(handle);
-    const sub = Linking.addEventListener("url", (e) => handle(e.url));
-    return () => sub.remove();
-  }, [activate]);
-
-  // Notification taps and actions.
-  useEffect(
-    () =>
-      onVoiceNotificationChoice((route) => {
-        if (route.kind === "voice") {
-          activate({ source: "notification", focusEventId: route.focusEventId, focusTaskId: route.focusTaskId });
-        } else {
-          setSheetOpen(true);
+  const dispatchRef = useRef<(input: CallInput) => void>(() => {});
+  const run = useCallback((effects: CallEffect[]) => {
+    const dispatch = (input: CallInput) => dispatchRef.current(input);
+    for (const effect of effects) {
+      switch (effect.kind) {
+        case "daemon":
+          if (!postRef.current(effect.message) && effect.message.t === "voice.session") {
+            dispatch({ type: "failed", error: CALL_ERRORS.offline });
+          }
+          break;
+        case "connect":
+          transport.current?.close();
+          transport.current = openTransport(
+            effect.secret,
+            effect.expiresAt,
+            {
+              onOpen: () => dispatch({ type: "open" }),
+              onEvent: (event) => dispatch({ type: "server", event }),
+              onFailed: (error) => dispatch({ type: "failed", error }),
+            },
+            audioReady.current,
+          );
+          break;
+        case "realtime":
+          transport.current?.send(effect.event);
+          break;
+        case "mute":
+          transport.current?.setMuted(effect.muted);
+          break;
+        case "timer": {
+          const existing = timers.current.get(effect.key);
+          if (existing) clearTimeout(existing);
+          timers.current.set(
+            effect.key,
+            setTimeout(() => {
+              timers.current.delete(effect.key);
+              dispatch(effect.input);
+            }, effect.ms),
+          );
+          break;
         }
-      }),
-    [activate],
+        case "cancelTimer": {
+          const existing = timers.current.get(effect.key);
+          if (existing) clearTimeout(existing);
+          timers.current.delete(effect.key);
+          break;
+        }
+        case "close":
+          // The hang-up tone is already playing (see `dispatch`); the call
+          // goes silent now and its audio shuts down once the tone is over.
+          if (transport.current) {
+            transport.current.close(END_TONE_MS);
+            lastReleased.current = transport.current.released;
+          }
+          transport.current = undefined;
+          // Restore: the next chime re-applies the app's ambient, mixing mode.
+          // Not at once: WebRTC is still shutting its audio down, and an app
+          // sound played now (the end card's swish, a tap) waits on the audio
+          // session synchronously, which froze the screen for seconds. The
+          // call's own end cue plays natively and is unaffected.
+          clearTimeout(settleTimer.current);
+          settleTimer.current = setTimeout(() => {
+            if (!callActive(callRef.current)) sounds.setListening(false);
+          }, AUDIO_SETTLE_MS);
+          break;
+      }
+    }
+  }, []);
+
+  const dispatch = useCallback(
+    (input: CallInput) => {
+      const before = callRef.current.phase;
+      const step = stepCall(callRef.current, input);
+      // The hang-up tone first, while the call's audio is still up: played
+      // after the connection closes, it waited seconds for WebRTC to let go.
+      const after = step.state.phase;
+      if ((after === "ended" && (before === "live" || before === "ending")) || (after === "failed" && before !== "failed")) {
+        sounds.callCue("call-end");
+      }
+      callRef.current = step.state;
+      setCall(step.state);
+      run(step.effects);
+    },
+    [run],
+  );
+  dispatchRef.current = dispatch;
+
+  const setKnown = useCallback((next: VoiceKnowledge) => {
+    if (next === knowledgeRef.current) return;
+    knowledgeRef.current = next;
+    setKnowledge(next);
+  }, []);
+
+  /** Every opened daemon frame; wired through `useDaemon`'s `onFrame`. */
+  const onFrame = useCallback(
+    (message: unknown) => {
+      if (typeof message !== "object" || message === null) return;
+      const t = (message as { t?: unknown }).t;
+      if (t !== "error" && (typeof t !== "string" || !t.startsWith("voice."))) return;
+      setKnown(foldVoiceStatus(knowledgeRef.current, message));
+      if (t === "voice.inbox") {
+        const items = readInboxItems((message as { items?: unknown }).items);
+        if (items) setInbox(items);
+      }
+      if (t === "voice.board" || t === "voice.inbox") setBoard(foldBoard(boardRef.current, message, Date.now()));
+      dispatch({ type: "daemon", message });
+    },
+    [dispatch, setKnown, setBoard],
   );
 
-  // Audio interruptions, route changes, headset button.
+  // The call's real output route, from iOS: the state machine closes the mic
+  // while Pew talks on the loudspeaker, and the speaker button shows it.
+  const inCall = call.phase === "connecting" || call.phase === "live" || call.phase === "ending";
+  useEffect(() => {
+    if (!inCall) return;
+    const subscription = onRouteChange((speaker) => dispatch({ type: "route", speaker }));
+    // Screen off at the ear for the whole call, back on when it ends.
+    setProximity(true);
+    return () => {
+      subscription?.remove();
+      setProximity(false);
+    };
+  }, [inCall, dispatch]);
+
+  // Back online mid-call: resend tool requests the drop may have lost.
+  useEffect(() => {
+    if (online) dispatch({ type: "reconnected" });
+  }, [online, dispatch]);
+
+  // Ask on every (re)connect: the login may have changed while away. A daemon
+  // that never answers leaves this "unknown", and voice stays hidden.
+  useEffect(() => {
+    if (!online) return;
+    const requestId = nextId();
+    if (!postRef.current({ t: "voice.status", requestId })) return;
+    if (knowledgeRef.current.kind === "unknown") setKnown({ kind: "unknown", asked: requestId });
+  }, [online, nextId, setKnown]);
+
+  // Leaving the screen ends the call and every timer with it.
   useEffect(
-    () =>
-      listenToAudioSession({
-        onInterruption: (action) => {
-          const c = get();
-          if (action.kind === "suspend") c.dispatch({ type: "interruptionBegan", now: Date.now() });
-          else {
-            c.dispatch({
-              type: "interruptionEnded",
-              shouldResume: action.resume,
-              now: Date.now(),
-              voiceSessionId: `v-${Date.now().toString(36)}`,
-            });
-          }
-        },
-        onRoute: (action) => {
-          if (action === "end") get().dispatch({ type: "routeLost" });
-        },
-        onRemoteToggle: () => get().end(),
-      }),
+    () => () => {
+      transport.current?.close();
+      transport.current = undefined;
+      for (const timer of timers.current.values()) clearTimeout(timer);
+      timers.current.clear();
+    },
     [],
   );
 
+  /**
+   * `system`: answered on the system's call screen (CallKit). CallKit already
+   * rang and owns the audio session, so no dial tone and no session change
+   * here (the native side set voice chat before it activated the session).
+   */
+  const startCall = useCallback(
+    (focus?: string, system = false, sessionId?: string, place?: CallPlace) => {
+      if (callActive(callRef.current)) return;
+      clearTimeout(settleTimer.current);
+      sounds.setListening(true);
+      const previous = lastReleased.current;
+      audioReady.current = system ? previous : previous.then(enterCallAudio);
+      // The dialing ring, once the call's audio session is in place (it is
+      // played inside that session, never switching it).
+      if (!system) {
+        void audioReady.current.then(() => {
+          if (callRef.current.phase === "connecting") sounds.callCue("call-dial");
+        });
+      }
+      // A new call starts from the inbox in hand; the daemon's board replaces it within a frame.
+      setBoard(boardFromInbox(callRef.current.inbox ?? []));
+      dispatch({ type: "start", requestId: nextId(), focus, sessionId, ...(place ? { place } : {}), echoGuard: !cancelsEcho() });
+    },
+    [dispatch, nextId, setBoard],
+  );
+  const hangUp = useCallback(() => dispatch({ type: "hangup" }), [dispatch]);
+  // DEV: hang up by itself N ms after going live, to time the end of a call.
+  const devHangup = __DEV__ ? Number(process.env.EXPO_PUBLIC_DEV_HANGUP_MS ?? 0) : 0;
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (s) => {
-      // A system call keeps the app running in the background, so a
-      // conversation it carries is not at risk mid-connect.
-      if (s !== "active" && !nativeCallId.current) get().background();
-    });
-    return () => sub.remove();
-  }, []);
+    if (!devHangup || call.phase !== "live") return;
+    const timer = setTimeout(() => hangUp(), devHangup);
+    return () => clearTimeout(timer);
+  }, [devHangup, call.phase, hangUp]);
+  const setMuted = useCallback((muted: boolean) => dispatch({ type: "mute", muted }), [dispatch]);
+  const dismiss = useCallback(() => dispatch({ type: "reset" }), [dispatch]);
+  /** Tap Pew mid-sentence: stop it and listen (the mic is closed while it talks). */
+  const interrupt = useCallback(() => dispatch({ type: "interrupt" }), [dispatch]);
+  /** The user answered the call screen's card by tapping: send it, and tell Pew. */
+  const answerOnScreen = useCallback(
+    (input: Omit<Extract<CallInput, { type: "answeredOnScreen" }>, "type">) => dispatch({ type: "answeredOnScreen", ...input }),
+    [dispatch],
+  );
+  const login = useCallback(
+    (action: "start" | "cancel" | "logout") => postRef.current({ t: "voice.login", requestId: nextId(), action }),
+    [nextId],
+  );
+  const setMode = useCallback((mode: VoiceMode) => postRef.current({ t: "voice.prefs", prefs: { mode } }), []);
+  /** Forget what was said on earlier calls (the threads kept per chat on the computer). */
+  const forgetHistory = useCallback(() => postRef.current({ t: "voice.forget" } satisfies wire.VoiceForget), []);
+  /** Change any of the call policy's settings; the `voice.status` broadcast confirms. */
+  const setPrefs = useCallback(
+    (prefs: Partial<wire.VoicePrefsValues>) => postRef.current({ t: "voice.prefs", prefs } satisfies wire.VoicePrefs),
+    [],
+  );
+  /** Let a conversation ring (or stop it). Answered by a `voice.status` with `armed`. */
+  const arm = useCallback(
+    (sessionId: string, on: boolean) => postRef.current({ t: "voice.arm", sessionId, on } satisfies wire.VoiceArm),
+    [],
+  );
 
-  // Native call screen: answering a ring opens voice, hanging up from the
-  // system UI ends it, and its mute button mutes the mic. Off means CallKit
-  // and Telecom are never touched (see `callkit.ts`).
+  // The call's cues, on its moments: connected, ended (the dial is started
+  // with the call). The dial is cut as soon as the call picks up or fails.
+  const phase = call.phase;
+  const lastPhase = useRef(phase);
   useEffect(() => {
-    if (!nativeCall) {
-      disableNativeCalls();
-      if (nativeCallId.current) endNativeCall(nativeCallId.current);
-      nativeCallId.current = undefined;
+    const from = lastPhase.current;
+    lastPhase.current = phase;
+    if (from === phase) return;
+    if (from === "connecting") sounds.stopCue("call-dial");
+    if (phase === "live") sounds.callCue("call-connect");
+  }, [phase]);
+
+  // Loaded while nothing is playing (off a call), so the first ring isn't late.
+  const voiceAvailable = knowledge.kind === "known" && knowledge.status.available;
+  useEffect(() => {
+    if (voiceAvailable && !callActive(callRef.current)) sounds.prepareCues(["call-dial", "call-connect", "call-end"]);
+  }, [voiceAvailable]);
+
+  // No banners over the call (they still reach Notification Center).
+  const onCallNow = callActive(call);
+  useEffect(() => {
+    setOnCall(onCallNow);
+    return () => setOnCall(false);
+  }, [onCallNow]);
+
+  // Read the mic's level about 12 times a second while the call is live, for
+  // the listening waves. Stats calls are cheap but not free: only while live.
+  const live = call.phase === "live";
+  useEffect(() => {
+    if (!live) {
+      micLevel.value = -1;
       return;
     }
-    enableNativeCalls({
-      onAnswer: (callId, call) => {
-        nativeCallId.current = callId;
-        activate(call ? activationFor(call) : { source: "notification" });
-      },
-      onEnd: (callId) => {
-        if (nativeCallId.current !== callId) return;
-        nativeCallId.current = undefined;
-        get().end();
-      },
-      // CallKit owns the audio session during a system call; WebRTC must be told
-      // when it is live, or the microphone records silence.
-      onAudioSession: (active) => {
-        if (active) RTCAudioSession.audioSessionDidActivate();
-        else RTCAudioSession.audioSessionDidDeactivate();
-      },
-      onMute: (callId, muted) => {
-        if (nativeCallId.current === callId) get().setMuted(muted);
-      },
-    });
-    return listenForegroundRings();
-  }, [nativeCall, activate]);
+    let stopped = false;
+    // 20 times a second: the speaking clock decides when a caption word
+    // appears, so its resolution is the captions' sync.
+    const timer = setInterval(() => {
+      void transport.current?.levels().then((levels) => {
+        if (stopped) return;
+        micLevel.value = levels.mic ?? -1;
+        speech.current = tickClock(speech.current, levels.outEnergy, levels.outDuration);
+      });
+    }, 50);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [live, micLevel]);
 
-  // A conversation started in the app becomes a system call too (iOS), and the
-  // system call ends when the conversation does. Only an open -> closed edge
-  // ends it: an answered call exists before voice has opened.
-  const live = isOpen(view.machine.phase);
-  const wasLive = useRef(false);
-  useEffect(() => {
-    if (live && nativeCall && !nativeCallId.current) {
-      const callId = randomUUID().toLowerCase();
-      if (startOutgoingCall(callId, OUTGOING_CALLER)) nativeCallId.current = callId;
-    }
-    if (!live && wasLive.current && nativeCallId.current) {
-      endNativeCall(nativeCallId.current);
-      nativeCallId.current = undefined;
-    }
-    wasLive.current = live;
-  }, [live, nativeCall]);
-
-  // Tells the notification handler what the user is hearing or seeing.
-  useEffect(() => {
-    setVoicePresence({
-      voiceActive: isOpen(view.machine.phase),
-      voiceSheetOpen: sheetOpen,
-      heardEventId: view.store.heardEventId,
-      voiceEndedAt: endedAt.current,
-    });
-  }, [view.machine.phase, sheetOpen, view.store.heardEventId]);
-
-  /**
-   * Pick one screenshot and upload it. Uses the chat composer's picker, so it
-   * is downscaled to a vision model's working size before its bytes are read.
-   * One at a time: each is something to say where it goes.
-   */
-  const pickingRef = useRef(false);
-  const pickScreenshot = useCallback(async () => {
-    if (pickingRef.current) return;
-    pickingRef.current = true;
-    try {
-      const outcome = await pickPhotos(1);
-      if (outcome.status === "picked") {
-        for (const file of outcome.attachments) get().attachScreenshot(file);
-      } else if (outcome.status === "denied" || outcome.status === "error") {
-        get().screenshotFailed("Screenshot", outcome.message);
-      }
-    } finally {
-      pickingRef.current = false;
-    }
-  }, []);
-
-  // The model asked for one (`request_screenshot`): open the sheet and the picker.
-  const lastPickerRequest = useRef(0);
-  useEffect(() => {
-    if (view.pickerRequests === lastPickerRequest.current) return;
-    lastPickerRequest.current = view.pickerRequests;
-    setSheetOpen(true);
-    void pickScreenshot();
-  }, [view.pickerRequests, pickScreenshot]);
-
-  // Whatever arrives while the sheet is open or voice is live has been seen.
-  useEffect(() => {
-    if (sheetOpen || isOpen(view.machine.phase)) get().fold({ type: "heard", eventId: view.store.cursor });
-  }, [sheetOpen, view.machine.phase, view.store.cursor]);
-
-  return {
-    view,
-    sheetOpen,
-    open: () => setSheetOpen(true),
-    /** Starts a conversation from the in-app button. */
-    talk: () => activate({ source: "in_app" }),
-    end: () => get().end(),
-    /** Closes the sheet; a live conversation keeps going (and can be ended from the sheet). */
-    close: () => {
-      setSheetOpen(false);
-      const phase = get().view().machine.phase;
-      if (phase === "error" || phase === "closed") get().reset();
-    },
-    handleMessage: (message: Record<string, unknown>) => get().handleMessage(message),
-    /** Opens the photo picker and uploads what is chosen. Fire-and-forget: failures become a card. */
-    pickScreenshot: () => void pickScreenshot(),
-    removeScreenshot: (card: ScreenshotCard) => get().removeScreenshot(card),
-    sendScreenshot: (attachmentId: string, taskId: string) => get().sendScreenshot(attachmentId, taskId),
-    /** Clears finished tasks here and on every other screen; see `voiceController.dismiss`. */
-    dismiss: (request: DismissRequest) => get().dismiss(request),
-    /** On unpair: forget everything tied to that machine. */
-    clear: () => get().clear(),
-  };
+  return { knowledge, inbox, call, board, micLevel, speech, startCall, hangUp, setMuted, dismiss, interrupt, answerOnScreen, login, setMode, setPrefs, arm, forgetHistory, onFrame };
 }
+
+export type Voice = ReturnType<typeof useVoice>;

@@ -3,7 +3,7 @@ import { Orchestrator, type VoiceHost } from "./dispatcher.js";
 import { buildRegistry, resolveProject } from "./registry.js";
 import { assessApproval } from "./safety.js";
 import { VoiceStore } from "./store.js";
-import { didYouMean, ToolExecutor, VOICE_INSTRUCTIONS, VOICE_TOOLS } from "./tools.js";
+import { didYouMean, isTaskTool, TASK_INSTRUCTIONS, ToolExecutor } from "./taskTools.js";
 
 const cwd = "/code/pew2";
 
@@ -139,8 +139,7 @@ test("ambiguous project names come back with a one-line question", async () => {
 });
 
 test("instructions stay short-answer and the new tools are defined", () => {
-  expect(VOICE_INSTRUCTIONS).toContain("one short sentence");
-  const names = VOICE_TOOLS.map((t) => t.name);
-  expect(names).toContain("approve_safe");
-  expect(names).toContain("set_approval_policy");
+  expect(TASK_INSTRUCTIONS).toContain("one short sentence");
+  expect(isTaskTool("approve_safe")).toBe(true);
+  expect(isTaskTool("set_approval_policy")).toBe(true);
 });

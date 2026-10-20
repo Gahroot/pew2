@@ -108,7 +108,10 @@ function ProjectMenuView({
         style={[styles.scrim, { opacity: progress }]}
         accessibilityRole="button"
         accessibilityLabel="Close project menu"
-        onPress={onClose}
+        onPress={() => {
+          haptics.tap();
+          onClose();
+        }}
       />
       {/* Scaled, never faded. Opacity below 1 on a view containing a blur
           forces an offscreen composite and the material stops resolving for the

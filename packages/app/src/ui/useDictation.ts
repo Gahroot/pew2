@@ -78,14 +78,16 @@ export function useDictation({ draft, onDraftChange, onMessage }: UseDictationOp
       session.current?.stop();
       session.current = undefined;
       setListening(false);
-      haptics.finished();
+      // The mic switching off: same feel as before, a switch's sound.
+      haptics.finished("toggle-off");
       return;
     }
 
     wanted.current = true;
     state.current = beginDictation(draftRef.current());
     setListening(true);
-    haptics.sent();
+    // The mic switching on (not "sent": nothing has gone anywhere yet).
+    haptics.sent("toggle-on");
 
     void startDictation({
       onTranscript: (transcript) => {

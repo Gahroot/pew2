@@ -11,7 +11,6 @@ import { returnedDraft } from "./queue";
 import type { AskResult } from "./askUser";
 import type { ComposerDockHandle } from "./ui/ComposerDock";
 import { haptics } from "./ui/haptics";
-import { sounds } from "./ui/sounds";
 
 export function useGoalControls({
   daemon,
@@ -58,7 +57,6 @@ export function useGoalControls({
   useEffect(() => {
     if (askId && askId !== lastAskId.current) {
       haptics.attention();
-      sounds.play("attention");
     }
     lastAskId.current = askId;
   }, [askId]);

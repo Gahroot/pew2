@@ -332,9 +332,10 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
 
   /** The charge completed (the blast already started on the UI thread). */
   const fire = () => {
+    // The burst is the sound; the two pulses are felt under it.
     sounds.play("burst");
-    haptics.attention();
-    later(90, haptics.sent);
+    haptics.attention(null);
+    later(90, () => haptics.sent(null));
     firedAt.current = Date.now();
     launchedRef.current = true;
     setLaunched(true);
@@ -360,12 +361,12 @@ function NewGoalScreen({ visible, onClose, onCreate, results, onCreated, browse,
           every step meant closing the keyboard to reach the next one. */}
       <View style={styles.bar}>
         <View style={styles.barSide}>
-          <CircleButton label="Close new goal" size={40} onPress={onClose}>
+          <CircleButton label="Close new goal" onPress={onClose}>
             <DotGlyph name="close" size={14} />
           </CircleButton>
           {index > 0 && (
             <Reanimated.View entering={reduce ? undefined : FadeIn.duration(DUR.enter)} exiting={reduce ? undefined : FadeOut.duration(DUR.exit)}>
-              <CircleButton label="Back" size={40} feel={() => undefined} onPress={() => go(index - 1)}>
+              <CircleButton label="Back" feel={() => undefined} onPress={() => go(index - 1)}>
                 <DotGlyph name="back" size={16} />
               </CircleButton>
             </Reanimated.View>
@@ -519,12 +520,14 @@ const REVEAL_MS = 900;
 const SESSION_MOUNT_MS = 260;
 
 /** Close + Back on the left, Next on the right. */
-const BAR_SIDE = 40 + theme.space(2) + 40;
+// Two header controls and their gap: the same as every page header (`ScreenHeader`, `navActionsGoal`).
+const BAR_SIDE = theme.size.control * 2 + theme.space(2);
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   screen: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.color.bg },
-  bar: { flexDirection: "row", alignItems: "center", gap: theme.space(3), paddingHorizontal: theme.gutter, paddingVertical: theme.space(2) },
+  // The page header's own rail (`styles.topBar`): gutter, `headerInset`, 44pt controls.
+  bar: { flexDirection: "row", alignItems: "center", gap: theme.space(2), paddingHorizontal: theme.gutter, paddingVertical: theme.headerInset },
   // Both sides one width, so the progress dots stay centred whichever
   // buttons are showing.
   barSide: { width: BAR_SIDE, flexDirection: "row", alignItems: "center", gap: theme.space(2) },

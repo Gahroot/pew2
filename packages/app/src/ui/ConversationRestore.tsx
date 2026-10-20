@@ -15,18 +15,22 @@ import { Led } from "./stage/Led";
 import { StageButton } from "./stage/StageButton";
 import { useAgentColor } from "./stage/agentColor";
 import { Dissolve } from "./motion/Dissolve";
-import type { RestorePresentation } from "../restoreState";
+import { RESTORE_GRACE_MS, type RestorePresentation } from "../restoreState";
 
-const GRACE_MS = 250;
+const GRACE_MS = RESTORE_GRACE_MS;
 
 export interface ConversationRestoreProps {
   title: string;
   state: RestorePresentation;
   error?: string;
   onRetry: () => void;
+  /** Already on screen (the exit ghost): skip the grace and the entrance. */
+  settled?: boolean;
+  /** The exit: Pew has just unlocked the conversation (celebrates, says so). */
+  unlocking?: boolean;
 }
 
-export function ConversationRestore({ title, state, error, onRetry }: ConversationRestoreProps) {
+export function ConversationRestore({ title, state, error, onRetry, settled = false, unlocking = false }: ConversationRestoreProps) {
   const agent = useAgentColor();
   const waiting = state === "loading" || state === "reconnecting";
   // A launched goal is already being watched for (the launch just opened onto
@@ -58,7 +62,7 @@ export function ConversationRestore({ title, state, error, onRetry }: Conversati
       </View>
     );
   }
-  if (waiting && !graced) return null;
+  if (waiting && !graced && !settled) return null;
 
   if (state === "failed") {
     return (
@@ -96,15 +100,20 @@ export function ConversationRestore({ title, state, error, onRetry }: Conversati
   // show, rather than a strip and skeleton rows in different alignments first.
   return (
     <View style={styles.loading} accessibilityLabel={`Reopening ${title}`}>
-      <Dissolve kind="in">
+      <Dissolve kind="in" enabled={!settled}>
         <View style={styles.loadingInner}>
-          <Pew size={96} mood="thinking" color={agent} />
-          <Led>{state === "reconnecting" ? "Reconnecting" : "Reopening"}</Led>
+          <Pew size={UNLOCK_PEW} mood={unlocking ? "celebrate" : "thinking"} color={agent} />
+          <Dissolve kind="swap" dissolveKey={unlocking ? "open" : state}>
+            <Led>{unlocking ? "Opened" : state === "reconnecting" ? "Reconnecting" : "Reopening"}</Led>
+          </Dissolve>
         </View>
       </Dissolve>
     </View>
   );
 }
+
+/** The loading Pew: large, it is the moment's subject. */
+export const UNLOCK_PEW = 120;
 
 const styles = StyleSheet.create({
   root: { paddingHorizontal: theme.gutter, paddingVertical: theme.sectionGap, gap: theme.space(3) },

@@ -1,39 +1,37 @@
 {
   "configVersion": 0,
   "apple": {
-    "version": "1.0.0",
+    "version": "1.0",
     "copyright": "2026 Ken Kai",
     "release": {
-      "automaticRelease": false,
-      "phasedRelease": false
+      "automaticRelease": false
     },
     "info": {
       "en-US": {
-        "description": "pew2 lets you drive the coding agents already running on your computer from your phone.\n\nYou install a small command line tool on your Mac, Windows or Linux machine, scan a code once, and the agents on that machine show up in the app. Send a message, watch the work happen live, answer a question when it asks one, and approve or reject the changes it wants to make. Your computer runs the agent; your phone displays its work.\n\nWORKS WITH THE AGENTS YOU ALREADY USE\npew2 speaks the Agent Client Protocol, so it works with a long list of agents rather than one. Claude Code, Codex, Gemini CLI, OpenCode, GitHub Copilot, Cline, Qwen Code, goose, Cursor and more are supported out of the box, and the full public ACP registry can be pulled in with one command. If you have none installed, pew2 tells you exactly what to run.\n\nENCRYPTED SESSION TRAFFIC\nEverything between your phone and your computer is encrypted end to end with XChaCha20-Poly1305. The key is created when you pair and never leaves your two devices. When you are away from home the traffic passes through a relay so the two can find each other, and that relay only ever sees encrypted blobs. It cannot read a single message. You can point pew2 at your own relay if you would rather not use anyone else's.\n\nNO ACCOUNT, NO ANALYTICS\nThere is no sign up, no analytics, no crash reporting and no advertising. The relay does not store your conversations. Your computer holds the agent's history, and your chosen agent's own privacy policy applies to its processing.\n\nWHAT YOU CAN DO FROM THE APP\nStart a conversation with any agent on your computer. Watch its reasoning and its edits stream in as they happen. Approve or deny file changes and commands before they run. Attach a photo or dictate a message instead of typing. Browse the repositories on your machine and pick which one to work in. Get alerts about agent activity. Optional remote notifications for finished turns pass through Expo and Apple, even while the app is open. They can read the project or agent name, a short final-message excerpt, a session identifier and a push delivery address. These notification payloads are not end to end encrypted.\n\nOPEN SOURCE\nThe app, the command line tool and the relay are all AGPL-3.0 and readable at github.com/KenKaiii/pew2.\n\nREQUIRES A COMPUTER\npew2 is a remote control, so it needs the free pew2 command line tool running on a computer you own. Installing it is one command, and the app is useless without it.",
+        "description": "pew2 lets you drive the coding agents already running on your computer from your phone, and talk to them hands-free.\n\nYou install a small command line tool on your Mac, Windows or Linux machine, scan a code once, and the agents on that machine show up in the app. Send a message, watch the work happen live, answer a question when it asks one, and approve or reject the changes it wants to make. Your computer runs the agent; your phone shows its work.\n\nTALK TO PEW, HANDS-FREE\nOut on a walk or a run? Call Pew, the AI voice assistant, and ask what your agents are doing, send one a task, or answer an approval by voice. If you allow it, Pew can ring you like a phone call when a conversation you chose is stuck waiting on you, and only then. Voice calls run on OpenAI using an OpenAI login you already have or add once; the app asks before the first call.\n\nWORKS WITH THE AGENTS YOU ALREADY USE\npew2 speaks the Agent Client Protocol, so it works with a long list of agents rather than one. Claude Code, Codex, Gemini CLI, OpenCode, GitHub Copilot, Cline, Qwen Code, goose, Cursor and more are supported out of the box. If you have none installed, pew2 tells you exactly what to run.\n\nENCRYPTED SESSION TRAFFIC\nEverything between your phone and your computer is encrypted end to end with XChaCha20-Poly1305. The key is created when you pair and never leaves your two devices. Away from home the traffic passes through a relay that only sees encrypted data. You can run your own relay if you prefer.\n\nNO ACCOUNT, NO ANALYTICS\nThere is no sign up, no analytics, no crash reporting and no advertising. Your computer holds the agent's history. Notifications and call rings pass through Expo, Apple and the relay with a short summary that is not end to end encrypted, and voice calls go to OpenAI; the privacy policy explains exactly what each one carries.\n\nOPEN SOURCE\nThe app, the command line tool and the relay are AGPL-3.0 at github.com/KenKaiii/pew2.\n\nREQUIRES A COMPUTER\npew2 is a remote control, so it needs the free pew2 command line tool running on a computer you own. Installing it is one command.",
         "keywords": [
           "coding agent",
           "developer tools",
           "remote control",
-          "terminal",
+          "voice assistant",
           "programming",
-          "devtools",
           "ai assistant",
           "encrypted"
         ],
         "marketingUrl": "https://github.com/KenKaiii/pew2",
-        "promoText": "Start a task at your desk, follow it from the sofa. Control your desktop coding agents from your phone, with encrypted session traffic and no account or analytics.",
+        "promoText": "Start a task at your desk, follow it from the sofa, or talk it through with Pew on a run. Your coding agents, in your pocket.",
         "supportUrl": "https://github.com/KenKaiii/pew2/issues",
         "title": "Pew2 Code",
         "subtitle": "Coding agents on your phone",
         "privacyPolicyUrl": "https://github.com/KenKaiii/pew2/blob/main/PRIVACY.md",
-        "releaseNotes": "First release.\n\nPair with your computer by scanning a code, then run any coding agent on it from your phone. End to end encrypted, works from any network, and needs no account.",
         "screenshots": {
-          "APP_IPHONE_69": [
-            "./store-assets/01-conversation.png",
-            "./store-assets/02-your-agents.png",
-            "./store-assets/03-pick-project.png"
+          "APP_IPHONE_65": [
+            "store/apple/screenshot/en-US/APP_IPHONE_65/01-conversation.png",
+            "store/apple/screenshot/en-US/APP_IPHONE_65/02-your-agents.png",
+            "store/apple/screenshot/en-US/APP_IPHONE_65/03-pick-project.png"
           ]
-        }
+        },
+        "releaseNotes": "New: talk to Pew, an AI voice assistant, about your agents, hands-free. Pew can ring you when a conversation you choose needs you. A new home screen with your latest sessions, smoother chats, and faster opening of long conversations."
       }
     },
     "categories": [
@@ -68,6 +66,14 @@
       "messagingAndChat": false,
       "parentalControls": false,
       "userGeneratedContent": false
+    },
+    "review": {
+      "firstName": "Indiana",
+      "lastName": "Rustandi",
+      "email": "ken@kenkais.com",
+      "phone": "+61405750699",
+      "demoRequired": false,
+      "notes": "WHAT THIS APP IS\npew2 is a remote control for coding agents that run on your own computer: the phone half of a two part tool. The other half is a free command line program installed on a Mac, Windows or Linux machine with one command. No accounts or hosted conversation database; an optional relay forwards encrypted traffic, and notifications use Expo and Apple.\n\nWHY THE APP SHOWS A PAIRING SCREEN ON FIRST LAUNCH\nThe app asks you to scan a pairing code made by the command line program on the user's own computer. Without one running there is nothing to connect to, as a TV remote does nothing without a TV. This is intended, not a defect or a paywall.\n\nHOW TO TEST IT\nThe fastest path, on any Mac, takes about a minute:\n\n1. Open Terminal and run:\n     curl -fsSL https://raw.githubusercontent.com/KenKaiii/pew2/main/install.sh | sh\n2. Run:\n     pew2 setup\n   It finds any coding agents already installed, starts a local service, and prints a QR code.\n3. Open pew2 on the device, tap Pair, and scan that QR code.\n\nThe app then shows that computer's agents. With none installed, step 2 prints the command to install one. If you would prefer a machine already running so only step 3 is needed, reply to this note and one will be provided with a pairing code.\n\nENCRYPTION\nPhone to computer traffic is end to end encrypted with XChaCha20-Poly1305 (@noble/ciphers, and Apple CryptoKit on iOS): standard cryptography only, none proprietary. Off the local network it passes through a relay that only sees ciphertext.\n\nPERMISSIONS\nCamera is for scanning the pairing code and for taking a photo to send to an agent. Photos is for attaching an image and saving one an agent returns. Microphone is for dictating a message (speech recognition, on device) and for voice calls with Pew (audio goes to OpenAI during a call, after the user agrees). Notifications say when an agent has finished or needs an answer; the computer sends them through Expo to APNs, and Expo and Apple handle the project or agent name, a short excerpt, a session identifier and a delivery address (not end to end encrypted). Prompts and attachments go to the user's chosen agent over the encrypted connection; agent providers have their own data practices. The privacy policy and terms are reachable before pairing and in the connection sheet.\n\nVOICE CALLS WITH PEW (AI)\nPew is an AI voice assistant (OpenAI Realtime). Before the first call the app shows \"Pew is an AI. Your voice goes to OpenAI.\" with an \"Agree and call\" button (guideline 5.1.2(i)); the call screen labels it \"Pew \u00b7 AI\" and Pew says it is an AI if asked. During a call the user's voice and a briefing about their own sessions go to OpenAI. No audio is recorded; the user's own computer keeps the text of the last 20 exchanges per conversation (so a later call carries on), never sent to the developer, deleted after 30 days or with \"Forget call history\". The call uses the user's own OpenAI login from their computer (a 10 minute key is minted per call).\n\nCALL-STYLE RINGS (PushKit / CallKit)\nOptional, off by default. Pew rings the user like a phone call only when (1) they switched \"Ring me\" on (1 hour, 3 hours or until stopped) and (2) an agent is stopped waiting on them (an approval or question), in any chat or only chosen ones, as they set; or (3) they asked Pew to call back. Every VoIP push is reported to CallKit; the computer decides whether to ring before sending, so no silent VoIP pushes are sent. Calls are not added to Recents. CallKit is disabled for China storefront users (a notification is shown instead). To see a ring: pair, open the connection sheet, tap \"Calls \u00b7 Settings\", choose \"1 hour\" under Ring me, then ask an agent to do something that needs approval and lock the phone (about 90 seconds). Or call Pew and say \"call me back in 30 seconds\".\n\nSOURCE CODE\nThe entire app, command line tool and relay are open source under AGPL-3.0 at https://github.com/KenKaiii/pew2 if anything needs verifying."
     }
   }
 }

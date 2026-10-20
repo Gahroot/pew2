@@ -11,14 +11,7 @@
  * key on an agent that has its own login flow is a warning, not a failure, and
  * must not trap an agent in a loop it cannot escape.
  */
-import { accountStorage } from "../voice/accountStorage.js";
-import {
-  loadProviders,
-  isAvailable,
-  unavailableReason,
-  providerDirs,
-  userProvidersDir,
-} from "../providers/registry.js";
+import { loadProviders, isAvailable, unavailableReason, providerDirs } from "../providers/registry.js";
 import {
   lanAddresses,
   MIN_TOKEN_LENGTH,
@@ -28,7 +21,6 @@ import {
 } from "../pairing.js";
 import { isCompiled, serviceStatus } from "./service.js";
 import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
 
 export interface StoredPairing {
   token?: string;
@@ -78,8 +70,7 @@ export interface Problem {
     | "not-paired"
     | "no-lan-address"
     | "local-only"
-    | "not-autostarted"
-    | "voice-no-api-key";
+    | "not-autostarted";
   severity: Severity;
   /** The provider this concerns, when it concerns one. */
   provider?: string;
@@ -216,27 +207,6 @@ export async function doctor(options: DoctorOptions = {}): Promise<DoctorReport>
     });
   }
 
-  // Read only: doctor must never start login or refresh any credential.
-  let voiceAccount = false;
-  let voiceStorageError = false;
-  try {
-    voiceAccount = !!(await accountStorage(dirname(userProvidersDir(env))).read());
-  } catch {
-    voiceStorageError = true;
-  }
-  if (!voiceAccount) {
-    problems.push({
-      id: "voice-no-api-key", // Stable diagnostic id for existing setup clients.
-      severity: "warning",
-      detail: voiceStorageError
-        ? "voice: Pew2 account storage is unavailable or has unsafe permissions."
-        : "voice: no ChatGPT account connected to Pew2. API keys and Codex CLI logins are not used for voice.",
-      fix: voiceStorageError
-        ? "Use owner-only voice-account storage on macOS/Linux (directory 0700, file 0600). Windows voice-account storage is not supported yet."
-        : "In the paired app, open Connection → Voice account → Connect ChatGPT (see docs/VOICE.md).",
-    });
-  }
-
   const url = daemonUrl(env);
   const reachable = await (options.probeDaemon ?? defaultProbe)(url);
   const service = await (options.service ?? serviceStatus)();
@@ -268,7 +238,8 @@ export async function doctor(options: DoctorOptions = {}): Promise<DoctorReport>
     // `PEW2_TOKEN` wins over anything on disk, so when it is set and unusable,
     // "run pew2 pair" is advice that cannot work — the minted token would be
     // ignored in favour of the env var that caused this.
-    const weakEnvToken = env.PEW2_TOKEN !== undefined && env.PEW2_TOKEN.length < MIN_TOKEN_LENGTH;
+    const weakEnvToken =
+      env.PEW2_TOKEN !== undefined && env.PEW2_TOKEN.length < MIN_TOKEN_LENGTH;
     problems.push({
       id: "not-paired",
       severity: "error",

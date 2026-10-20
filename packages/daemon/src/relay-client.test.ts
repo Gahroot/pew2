@@ -62,9 +62,12 @@ class FakeSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
 
-  constructor(readonly url: string) {
+  constructor(
+    readonly url: string,
+    readonly headers: Record<string, string> = {},
+  ) {
     FakeSocket.instances.push(this);
   }
 
@@ -102,7 +105,7 @@ function client(
     key: "11".repeat(32),
     deviceId: "test-machine",
     onStatus: (status) => statuses.push(status),
-    createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+    createSocket: (url, headers) => new FakeSocket(url, headers) as unknown as WebSocket,
     ...overrides,
   });
   return { relay, statuses, calls, cursorsSeen };
@@ -620,5 +623,30 @@ test("a phone that names no cursors is not sent a catch-up it never asked for", 
 
   // Asked, and answered with nothing — a fresh app holds no sessions.
   expect(cursorsSeen).toEqual([{}]);
+  relay.stop();
+});
+
+test("the reconnect key goes in a header, never the URL; a takeover by another daemon here stops it", async () => {
+  const key = "ab".repeat(32);
+  const { relay } = client({ resumeKey: key });
+  relay.start();
+  const first = FakeSocket.instances[0]!;
+  expect(first.headers).toEqual({ "x-pew2-resume": key });
+  expect(first.url).not.toContain(key);
+  first.open();
+  // Replaced while up: another pew2 on this machine took the room.
+  first.readyState = 3;
+  first.onclose?.({ code: 1012, reason: "replaced by a newer daemon connection" });
+  await new Promise((resolve) => setTimeout(resolve, 1_300));
+  const next = FakeSocket.instances[1];
+  expect(next).toBeDefined();
+  expect(next!.headers).toEqual({});
+  relay.stop();
+});
+
+test("no key configured: connects exactly as before", () => {
+  const { relay } = client();
+  relay.start();
+  expect(FakeSocket.instances[0]!.headers).toEqual({});
   relay.stop();
 });

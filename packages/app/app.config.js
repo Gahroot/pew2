@@ -18,7 +18,22 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { expo } = require("./app.json");
+/**
+ * The config without its comment keys. `app.json` documents its decisions in
+ * `"//…"` keys beside the values they explain, which JSON cannot do any other
+ * way; Expo's schema rejects them (`expo doctor`: additional property not
+ * allowed). Dropped here, on the way out, so the notes stay where they are
+ * read and nothing downstream (prebuild, Info.plist, plugins) ever sees one.
+ */
+function withoutNotes(value) {
+  if (Array.isArray(value)) return value.map(withoutNotes);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !key.startsWith("//"))
+      .map(([key, inner]) => [key, withoutNotes(inner)]),
+  );
+}
 
 /** Whose account this working copy builds under. Absent on a fresh clone. */
 function localIdentity() {
@@ -65,7 +80,13 @@ function iosIdentity(ios, env) {
   };
 }
 
-module.exports = () => {
+/** Built on what Expo read from `app.json` (`config`), so the two never disagree. */
+module.exports = ({ config }) => {
+  const expo = withoutNotes(config);
+  // Expo marks the config it passed in with a hidden symbol, and checks it
+  // came back (that this file builds on `app.json`, not beside it). The
+  // marker is a symbol, so `withoutNotes` never copied it: carry it over.
+  for (const key of Object.getOwnPropertySymbols(config)) expo[key] = config[key];
   const local = localIdentity();
   const owner = process.env.EAS_OWNER ?? local.owner;
   const projectId = process.env.EAS_PROJECT_ID ?? local.projectId;

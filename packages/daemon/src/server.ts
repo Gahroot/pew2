@@ -12,19 +12,13 @@
  * conversation at once.
  */
 import { Daemon } from "./index.js";
-import {
-  claimPairing,
-  loadPairing,
-  pairingPath,
-  pairingUrl,
-  qrCode,
-  tokenMatches,
-} from "./pairing.js";
+import { claimPairing, loadPairing, loadResumeKey, pairingPath, pairingUrl, qrCode, tokenMatches } from "./pairing.js";
 import { watchPairing } from "./pairing-watch.js";
 import { decideClaim, type ClaimDecision } from "./device-claim.js";
 import { SecureChannel, e2e, envelopeHeader, wire } from "@pew2/protocol";
 import { handleMessage } from "./handler.js";
 import { RelayClient } from "./relay-client.js";
+import { relayOrigin } from "./push.js";
 import { hostname } from "node:os";
 import { daemonLogPaths, rotateLog, startLogRotation } from "./logs.js";
 import { sweepOrphans } from "./children.js";
@@ -62,6 +56,9 @@ const daemon = new Daemon(
   { id: "local", name: "this machine" },
   process.env.PEW2_EXPERIMENTAL === "1",
 );
+// Rings become CallKit calls through the relay (it holds the Apple key). A
+// LAN-only daemon can still name one with PEW2_PUSH_RELAY.
+daemon.ringRelay = relayOrigin(process.env.PEW2_PUSH_RELAY ?? pairing.relay);
 /**
  * The pairing key, as bytes.
  *
@@ -170,6 +167,7 @@ const relay = pairing.relay
       token: pairing.token,
       key: pairing.key,
       deviceId: hostname(),
+      resumeKey: await loadResumeKey(),
       // Relay traffic is fanned out locally too, so a desktop client and a
       // phone on 5G genuinely see the same conversation.
       onBroadcast: (message) => broadcast(message),
@@ -177,7 +175,9 @@ const relay = pairing.relay
       // path a leaked link is actually usable from, so leaving it ungated would
       // make the gate decorative.
       admitDevice,
-      onStatus: (status, detail) => console.log(`[relay] ${status}${detail ? ` — ${detail}` : ""}`),
+      onStatus: (status, detail) =>
+        console.log(`[relay] ${status}${detail ? ` — ${detail}` : ""}`),
+      onHello: (deviceId) => console.log(`[relay] '${deviceId}' connected`),
     })
   : null;
 
@@ -402,7 +402,6 @@ const stopWatching = watchPairing(pairingPath(), pairing, () => loadPairing(), {
     // assigning the token before that throw would leave the daemon accepting a
     // token it has no matching key for, which is worse than not rotating.
     const decoded = e2e.fromHex(next.key!);
-    daemon.invalidateVoiceAccount();
     currentToken = next.token;
     rootKey = decoded;
     // A rotation mints an unclaimed pairing, so the next device to arrive takes

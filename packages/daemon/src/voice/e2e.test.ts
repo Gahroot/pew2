@@ -8,7 +8,7 @@ test("a task runs on the echo agent and ends completed, with events in order", a
   const env = { ...process.env, PEW2_HOME: scratch("pew2-voice-home-") };
   const daemon = new Daemon({ id: "t", name: "t" }, true, env);
   await daemon.refreshProviders();
-  const voice = await daemon.voice();
+  const voice = await daemon.voiceTasks();
   const events: string[] = [];
   voice.store.subscribe((e) => events.push(e.kind));
   const task = voice.orchestrator.enqueue({
@@ -39,7 +39,7 @@ test("a screenshot attached from the phone reaches the agent with the task, end 
   const broadcast: Array<Record<string, unknown>> = [];
   daemon.attach((m) => broadcast.push(m as Record<string, unknown>));
   await daemon.refreshProviders();
-  const voice = await daemon.voice();
+  const voice = await daemon.voiceTasks();
   const replies: Array<Record<string, unknown>> = [];
   const send = (m: Record<string, unknown>) =>
     handleMessage(JSON.stringify(m), { daemon, reply: (r) => replies.push(r as Record<string, unknown>), broadcast: () => {} });

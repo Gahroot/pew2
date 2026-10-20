@@ -6,9 +6,39 @@
  * Expo-free, and every function a `"worklet"` because `Pew.tsx` runs it on
  * the UI thread.
  */
-export type PewMood = "idle" | "thinking" | "working" | "talking" | "happy" | "sleepy" | "oops";
+export type PewMood =
+  | "idle"
+  | "thinking"
+  | "working"
+  | "talking"
+  | "happy"
+  | "sleepy"
+  | "oops"
+  // Voice-call moods.
+  | "listening"
+  | "typing"
+  | "reading"
+  | "dialing"
+  | "celebrate"
+  | "goodbye"
+  | "muted";
 
-export const PEW_MOODS: readonly PewMood[] = ["idle", "thinking", "working", "talking", "happy", "sleepy", "oops"];
+export const PEW_MOODS: readonly PewMood[] = [
+  "idle",
+  "thinking",
+  "working",
+  "talking",
+  "happy",
+  "sleepy",
+  "oops",
+  "listening",
+  "typing",
+  "reading",
+  "dialing",
+  "celebrate",
+  "goodbye",
+  "muted",
+];
 
 /** 0..255 per channel. */
 export type RGB = [number, number, number];
@@ -82,6 +112,48 @@ export interface PewBody {
   /** Breathing phase (radians) and rate so two dozing Pews never move in sync. */
   sleepPh: number;
   sleepRate: number;
+  /**
+   * Spin toy (home's Pew): spun like a basketball on a finger. Each flick
+   * adds speed instead of setting it, the spin keeps going under the finger,
+   * it slows only gently, and the faster it goes the more it flattens, wobbles
+   * and trembles (`spinFeel`), up to SPIN_BURST.
+   */
+  toy: boolean;
+  /**
+   * A finger on it (`touchPew`): where, in box points, and how far it has
+   * pressed in (0..1, eased). The dots under the finger dent in, the rest
+   * bulge a little, the body squashes and leans with a drag, and a release
+   * wobbles it back: squishy, like pressing a soft ball.
+   */
+  touching: boolean;
+  touchX: number;
+  touchY: number;
+  press: number;
+  /** The drag's horizontal speed (points a second, smoothed), for the lean. */
+  dragVX: number;
+  /** The release wobble: how strong, and when it started. */
+  jiggle: number;
+  jiggleAt: number;
+}
+
+/** How deep the dent under a finger goes, as a share of the radius. */
+const DENT = 0.3;
+/** How far the rest of the body bulges while pressed (squishing keeps its volume). */
+const BULGE = 0.045;
+
+/** Spin toy: past this many radians a second, Pew bursts (about 4.5 turns a second). */
+export const SPIN_BURST = 28;
+/** The most it can spin: a little over the burst, so the burst is reachable. */
+export const SPIN_MAX = 34;
+/** Each radian of a flick adds this many radians a second. */
+const SPIN_PUMP = 2.2;
+/** How fast a toy spin dies away on its own (per second): slow, so flicks add up. */
+const SPIN_DECAY = 0.35;
+
+/** 0 at rest, 1 at the burst: how hard a toy spin is going. */
+export function spinFeel(B: PewBody): number {
+  "worklet";
+  return B.toy ? Math.min(1, Math.abs(B.spinV) / SPIN_BURST) : 0;
 }
 
 /** How many sleeping styles there are. */
@@ -113,6 +185,13 @@ export function pewSleepStyle(key: string): number {
 export const TAU = Math.PI * 2;
 /** Body radius as a share of the box. */
 export const SCALE = 0.29;
+/**
+ * Where the body's centre sits in its box at rest, as a fraction of the size:
+ * it stands on a ground line (0.86) at 1.08 radii up, so it is below the
+ * middle. A layout that wants Pew himself centred, not his box, offsets by
+ * `(PEW_BODY_CY - 0.5) * size`.
+ */
+export const PEW_BODY_CY = 0.86 - SCALE * 1.08;
 const SPRING_K = 90;
 const SPRING_C = 11;
 const SEED = 1.6;
@@ -169,6 +248,78 @@ export function talkOpen(t: number): number {
   return clamp(syllable * phrase * pause, 0, 1);
 }
 
+// ── call moods: shared clocks ───────────────────────────────
+
+/** Typing: how hard a key is being hit, 0..1. Irregular bursts with pauses, like real typing. */
+export function typeTap(t: number): number {
+  "worklet";
+  const burst = Math.floor(t / 0.9);
+  if (fract(t / 0.9) > 0.4 + 0.45 * hash(burst * 1.7 + 0.3)) return 0;
+  const key = Math.floor(t * 11);
+  if (hash(key * 0.73 + 3.1) < 0.3) return 0;
+  return 1 - fract(t * 11);
+}
+
+/** Which of eight keys the current tap hits. */
+export function typeKey(t: number): number {
+  "worklet";
+  return Math.floor(hash(Math.floor(t * 11) * 1.31 + 0.7) * 8);
+}
+
+/** Reading: the eyes' sweep along a line, 0 (left) .. 1 (right), with a quick return. */
+export function readSweep(t: number): number {
+  "worklet";
+  const ph = fract(t / 1.5);
+  return ph < 0.85 ? ph / 0.85 : 1 - (ph - 0.85) / 0.15;
+}
+
+/** Reading: which line it is on, 0 (top) .. 1 (fourth line down). */
+export function readLine(t: number): number {
+  "worklet";
+  return (Math.floor(t / 1.5) % 4) / 3;
+}
+
+/** Celebrate loops every 2.2 s: hop, burst on landing, settle. Phase 0..1 from the mood's age. */
+export function cheerPhase(age: number): number {
+  "worklet";
+  return fract(age / 2.2);
+}
+export function cheerHop(p: number): number {
+  "worklet";
+  return p < 0.3 ? Math.sin((p / 0.3) * Math.PI) : 0;
+}
+/** The sparkle burst, 1 at landing and fading as it settles. */
+export function cheerBurst(p: number): number {
+  "worklet";
+  return p < 0.3 ? 0 : Math.exp(-(p - 0.3) * 6);
+}
+
+/** Goodbye repeats every 6 s: the wink (right eye shut), 0..1. */
+export function goodbyeWink(age: number): number {
+  "worklet";
+  const p = age % 6;
+  return smooth(0, 0.1, p) * (1 - smooth(1, 1.2, p));
+}
+/** The wave ripple on one side, 0..1. */
+export function goodbyeWave(age: number): number {
+  "worklet";
+  const p = age % 6;
+  return p < 1.6 ? Math.sin((p / 1.6) * Math.PI) : 0;
+}
+/** After the wink the face softens: 0 alert .. 1 soft. */
+export function goodbyeSoft(age: number): number {
+  "worklet";
+  const p = age % 6;
+  return smooth(1.2, 2, p) * (1 - smooth(5.5, 6, p));
+}
+
+/** Muted: an occasional slow blink, 0 shut .. 1 open. */
+export function slowBlink(t: number): number {
+  "worklet";
+  const p = t % 5.5;
+  return p < 0.7 ? 1 - 0.92 * Math.sin((p / 0.7) * Math.PI) : 1;
+}
+
 function wrapAngle(a: number): number {
   "worklet";
   let r = (a + Math.PI) % TAU;
@@ -184,29 +335,17 @@ export function pewCount(S: number): number {
   return S > 140 ? 1000 : S > 50 ? 420 : S > 28 ? 180 : 120;
 }
 
-/** How many rows of dots a globe of about `target` dots has. */
-export function gridRows(target: number): number {
-  "worklet";
-  return Math.max(7, Math.round(Math.sqrt(target / 1.27)));
-}
-
-/** How many dots go round a row whose radius is `ring` (cos of its latitude). */
-export function gridCols(rows: number, ring: number): number {
-  "worklet";
-  return Math.max(4, Math.round(rows * 2 * ring));
-}
-
 /**
  * Rows of dots, like an LED globe: the pew2 icon wrapped round a ball.
  * Alternate rows are offset half a dot so the grid reads as a weave.
  */
 export function gridPoints(target: number): Float32Array {
   "worklet";
-  const rows = gridRows(target);
+  const rows = Math.max(7, Math.round(Math.sqrt(target / 1.27)));
   const pts: number[] = [];
   for (let r = 0; r < rows; r++) {
     const lat = -Math.PI / 2 + ((r + 0.5) / rows) * Math.PI;
-    const cols = gridCols(rows, Math.cos(lat));
+    const cols = Math.max(4, Math.round(rows * 2 * Math.cos(lat)));
     for (let c = 0; c < cols; c++) {
       const lon = (c / cols) * TAU + (r % 2) * (Math.PI / cols);
       pts.push(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
@@ -265,6 +404,14 @@ export function makePewBody(S: number, seed?: number): PewBody {
     lookX: 0,
     lookY: 0,
     sleep,
+    toy: false,
+    touching: false,
+    touchX: 0,
+    touchY: 0,
+    press: 0,
+    dragVX: 0,
+    jiggle: 0,
+    jiggleAt: 0,
     seed: seed === undefined ? -1 : sd,
     sleepPh: ph * TAU,
     sleepRate: seed === undefined ? 1 : 0.82 + 0.36 * hash(ph * 91.7 + 2.1),
@@ -323,6 +470,32 @@ function target(o: Float32Array, i: number, B: PewBody, t: number, st: MoodState
     case "oops":
       k = 1 + 0.2 * st.decay * st.decay * (r - 0.3) + 0.012 * Math.sin(t * 40 + r * 30);
       break;
+    case "listening":
+      // A ripple running in toward the face's centre: taking sound in.
+      k = 1 + 0.012 * Math.sin(t * 2 + y * 3) + 0.022 * Math.sin(Math.acos(clamp(z, -1, 1)) * 5 + t * 5.5);
+      break;
+    case "typing":
+      k = 1 + 0.012 * Math.sin(t * 2 + y * 3) - (y < -0.4 && z > 0 ? 0.03 * typeTap(t) : 0);
+      break;
+    case "reading": {
+      const d = y - (1 - 2 * fract(t / 2.6));
+      k = 1 + 0.012 * Math.sin(t * 2 + y * 3) + 0.025 * Math.exp(-(d * d) / 0.02);
+      break;
+    }
+    case "dialing": {
+      const d = Math.acos(clamp(z, -1, 1)) - fract(t) * Math.PI;
+      k = 1 + 0.045 * Math.exp(-(d * d) / 0.08) * (1 - fract(t) * 0.5);
+      break;
+    }
+    case "celebrate":
+      k = 1 + 0.03 * Math.sin(t * 9) + 0.14 * cheerBurst(cheerPhase(st.age)) * (r - 0.2);
+      break;
+    case "goodbye":
+      k = 1 + 0.015 * Math.sin(t * 2 + y * 3) + (x > 0 ? 0.07 * goodbyeWave(st.age) * x * Math.sin(lat * 6 - t * 12) : 0);
+      break;
+    case "muted":
+      k = 1 + 0.01 * Math.sin(t * 1.4 + y * 2);
+      break;
     default:
       break;
   }
@@ -338,8 +511,22 @@ function step(B: PewBody, t: number, dt: number, st: MoodState): void {
   const p = B.p;
   const v = B.v;
   const o = TMP;
+  const pressed = B.press > 0.01;
+  const reach = B.S * SCALE * 0.75;
   for (let i = 0; i < B.n; i++) {
     target(o, i, B, t, st);
+    if (pressed) {
+      // In under the finger (front dots only), out a little everywhere else:
+      // the springs below carry it there and bounce it back on release.
+      const sx = B.scr[i * 7]! - B.touchX;
+      const sy = B.scr[i * 7 + 1]! - B.touchY;
+      const d = Math.sqrt(sx * sx + sy * sy);
+      const fall = d < reach && B.scr[i * 7 + 2]! > -0.2 ? 1 - d / reach : 0;
+      const k = 1 - DENT * B.press * fall * fall + BULGE * B.press * (1 - fall);
+      o[0] = o[0]! * k;
+      o[1] = o[1]! * k;
+      o[2] = o[2]! * k;
+    }
     const kk = SPRING_K * (0.75 + 0.5 * B.rnd[i]!);
     for (let a = 0; a < 3; a++) {
       const j = i * 3 + a;
@@ -387,15 +574,54 @@ function turn(B: PewBody, t: number, dt: number, st: MoodState): void {
       pitchT = sl === 5 ? -0.2 - 0.45 * nodDip(sleepClock(B, t)) : sl === 6 ? -0.42 : -0.3;
       break;
     }
+    case "listening":
+      // Steady and looking up at the user.
+      yawT = B.lookX * 0.25 + Math.sin(t * 0.5) * 0.05;
+      pitchT = 0.22 + Math.sin(t * 1.1) * 0.02;
+      break;
+    case "typing":
+      yawT = -0.32 + Math.sin(t * 0.8) * 0.04;
+      pitchT = -0.22 + 0.03 * typeTap(t);
+      break;
+    case "reading":
+      yawT = -0.2 + 0.4 * readSweep(t);
+      pitchT = 0.05 - 0.12 * readLine(t);
+      break;
+    case "dialing":
+      yawT = Math.sin(t * 0.6) * 0.08;
+      pitchT = 0.06;
+      break;
+    case "goodbye":
+      yawT = 0.15;
+      pitchT = 0.05;
+      break;
+    case "muted":
+      yawT = Math.sin(t * 0.4) * 0.08;
+      pitchT = -0.06;
+      break;
     default:
       yawT = B.lookX * 0.6 + Math.sin(t * 0.7) * 0.15 + (st.mood === "idle" ? idleGlance(t) : 0);
       pitchT = B.lookY * 0.38 + Math.sin(t * 0.9) * 0.05;
   }
   if (st.mood === "happy") yawT += Math.sin(t * 10) * 0.1;
+  if (st.mood === "celebrate") yawT += Math.sin(t * 12) * 0.14 * cheerBurst(cheerPhase(st.age));
   if (spin) B.yaw += spin * dt;
   else B.yaw += wrapAngle(yawT - B.yaw) * (1 - Math.exp(-dt * 5));
   B.pitch += (pitchT - B.pitch) * (1 - Math.exp(-dt * 5));
-  if (!B.dragging) {
+  // A toy keeps spinning under the finger (a basketball does); anything else
+  // follows the finger while it's down and coasts once it lifts.
+  if (B.toy) {
+    B.yawExtra += B.spinV * dt;
+    B.spinV *= Math.exp(-dt * SPIN_DECAY);
+    if (Math.abs(B.spinV) < 0.6 && !B.dragging) {
+      const home = Math.round(B.yawExtra / TAU) * TAU;
+      B.yawExtra += (home - B.yawExtra) * (1 - Math.exp(-dt * 3));
+    }
+    if (!B.dragging) {
+      B.pitchV += (-B.pitchExtra * 40 - B.pitchV * 9) * dt;
+      B.pitchExtra += B.pitchV * dt;
+    }
+  } else if (!B.dragging) {
     B.yawExtra += B.spinV * dt;
     B.spinV *= Math.exp(-dt * 1.4);
     if (Math.abs(B.spinV) < 0.6) {
@@ -421,6 +647,10 @@ export function advancePew(B: PewBody, t: number, dt: number, mood: PewMood, loo
   const ease = 1 - Math.exp(-step_ * 5);
   B.lookX += (clamp(tx, -1, 1) - B.lookX) * ease;
   B.lookY += (clamp(ty, -1, 1) - B.lookY) * ease;
+  // Pressing in is quick; letting go is quicker, so the springs overshoot.
+  B.press += ((B.touching ? 1 : 0) - B.press) * (1 - Math.exp(-step_ * (B.touching ? 16 : 22)));
+  if (!B.touching) B.dragVX *= Math.exp(-step_ * 9);
+  B.jiggle *= Math.exp(-step_ * 4.5);
   turn(B, t, step_, st);
   step(B, t, step_, st);
 }
@@ -467,10 +697,86 @@ export function pokePew(B: PewBody, x: number, y: number): void {
   B.reactUntil = B.last + 1.3;
 }
 
+/**
+ * Something arriving at (x, y) in the box: a small inward ripple on that side,
+ * a fraction of a poke and with no happy flash. Pew is being *fed*, not
+ * played with, so it takes the hit and keeps whatever mood it was in. Mission
+ * control calls this as each light packet lands in a session's Pew.
+ */
+export function feedPew(B: PewBody, x: number, y: number, strength = 1): void {
+  "worklet";
+  const R = B.S * SCALE;
+  const reach = R * 0.6;
+  const s = B.scr;
+  const p = B.p;
+  const v = B.v;
+  const k = Math.max(0, Math.min(1.5, strength));
+  for (let i = 0; i < B.n; i++) {
+    const d = Math.hypot(s[i * 7]! - x, s[i * 7 + 1]! - y);
+    if (d > reach || s[i * 7 + 2]! < -0.3) continue;
+    const fall = 1 - d / reach;
+    const len = Math.hypot(p[i * 3]!, p[i * 3 + 1]!, p[i * 3 + 2]!) || 1;
+    const push = 0.7 * k * fall * fall;
+    v[i * 3] = v[i * 3]! - (p[i * 3]! / len) * push;
+    v[i * 3 + 1] = v[i * 3 + 1]! - (p[i * 3 + 1]! / len) * push;
+    v[i * 3 + 2] = v[i * 3 + 2]! - (p[i * 3 + 2]! / len) * push;
+  }
+}
+
+/**
+ * A flick on a toy spin, as a hand on a basketball: moving with the spin and
+ * at least a third of its speed adds to it (a longer, faster flick adds
+ * more); moving with it but slower is a hand resting on the ball, which
+ * brakes it; against it slows it and can turn it round.
+ */
+function spinFlick(B: PewBody, angle: number, dt: number): void {
+  "worklet";
+  const hand = angle / dt;
+  const v = B.spinV;
+  const along = Math.abs(v) < 1 || Math.sign(angle) === Math.sign(v);
+  if (along && Math.abs(hand) >= Math.abs(v) * 0.34) B.spinV = clamp(v + angle * SPIN_PUMP, -SPIN_MAX, SPIN_MAX);
+  else if (along) B.spinV = v * Math.exp(-dt * 3);
+  else B.spinV = clamp(v + angle * SPIN_PUMP * 1.4, -SPIN_MAX, SPIN_MAX);
+}
+
+/**
+ * A finger landing on it (`down`), moving across it, or lifting, at (x, y) in
+ * box points. Pressing dents it under the finger; lifting wobbles it back,
+ * harder the faster it was being dragged.
+ */
+export function touchPew(B: PewBody, x: number, y: number, down: boolean): void {
+  "worklet";
+  if (down) {
+    // A finger just off him (the touch area reaches past his edge) presses
+    // the nearest part of him, never the air beside him.
+    const R = B.S * SCALE;
+    const cx = B.S / 2;
+    const cy = B.S * 0.47;
+    const dx = x - cx;
+    const dy = y - cy;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    const k = d > R * 0.92 ? (R * 0.92) / d : 1;
+    B.touching = true;
+    B.touchX = cx + dx * k;
+    B.touchY = cy + dy * k;
+    return;
+  }
+  if (!B.touching) return;
+  B.touching = false;
+  B.jiggle = clamp(0.35 + Math.abs(B.dragVX) / (B.S * 7), 0, 1);
+  B.jiggleAt = B.last;
+}
+
 /** A drag of (dx, dy) points taking `dt` seconds: spins it, with momentum. */
 export function dragPew(B: PewBody, dx: number, dy: number, dt: number): void {
   "worklet";
   B.dragging = true;
+  B.dragVX = lerp(B.dragVX, dx / Math.max(0.008, dt), 0.3);
+  if (B.toy) {
+    spinFlick(B, dx * 0.013, Math.max(0.008, dt));
+    B.pitchExtra = clamp(B.pitchExtra + dy * 0.009, -0.9, 0.9);
+    return;
+  }
   B.yawExtra += dx * 0.013;
   B.pitchExtra = clamp(B.pitchExtra + dy * 0.009, -0.9, 0.9);
   B.spinV = lerp(B.spinV, (dx * 0.013) / Math.max(0.008, dt), 0.5);
@@ -594,6 +900,93 @@ export function motion(mood: PewMood, t: number, age: number, S: number, B: PewB
       rot = Math.sin(t * 45) * 0.04 * s;
       break;
     }
+    case "listening": {
+      const b = Math.sin(t * 1.8) * 0.012;
+      sy = 1 + b;
+      sx = 1 - b * 0.6;
+      rot = Math.sin(t * 0.9) * 0.02;
+      break;
+    }
+    case "typing": {
+      const k = typeTap(t);
+      sy = 1 - 0.025 * k;
+      sx = 1 + 0.015 * k;
+      rot = -0.05 + Math.sin(t * 1.3) * 0.01;
+      break;
+    }
+    case "reading": {
+      const b = Math.sin(t * 1.6) * 0.012;
+      sy = 1 + b;
+      sx = 1 - b * 0.6;
+      rot = -0.03 + 0.05 * readSweep(t);
+      break;
+    }
+    case "dialing": {
+      // A swell on every ring.
+      const b = Math.exp(-fract(t) * 7) * 0.045;
+      sy = 1 + b;
+      sx = 1 + b;
+      rot = Math.sin(t * 0.8) * 0.02;
+      break;
+    }
+    case "celebrate": {
+      const p = cheerPhase(age);
+      const h = cheerHop(p);
+      const land = p > 0.3 && p < 0.48 ? Math.sin(((p - 0.3) / 0.18) * Math.PI) : 0;
+      const crouch = p > 0.9 ? Math.sin(((p - 0.9) / 0.1) * Math.PI) : 0;
+      hop = h * S * 0.13;
+      const k = 0.17 * land + 0.08 * crouch;
+      sy = 1 - k + 0.07 * h;
+      sx = 1 + k * 0.85 - 0.04 * h;
+      rot = Math.sin(t * 12) * 0.06 * cheerBurst(p);
+      break;
+    }
+    case "goodbye": {
+      const b = Math.sin(t * 1.6) * 0.012;
+      sy = 1 + b;
+      sx = 1 - b * 0.6;
+      rot = 0.04 + 0.07 * goodbyeWave(age) * Math.sin(age * 9);
+      break;
+    }
+    case "muted": {
+      const b = Math.sin(t * 1.4) * 0.012;
+      sy = 1 + b;
+      sx = 1 - b * 0.5;
+      rot = 0.02;
+      break;
+    }
+  }
+  // A toy spin shows its speed in the body, the way a spun ball does: it
+  // flattens at the middle, wobbles on its axis, lifts a little, and near the
+  // burst it trembles.
+  const f = spinFeel(B);
+  if (f > 0.02) {
+    const flat = 0.13 * f * f;
+    sx *= 1 + flat;
+    sy *= 1 - flat * 0.8;
+    rot += Math.sin(t * (5 + 13 * f)) * 0.06 * f;
+    hop += S * 0.035 * f;
+    const shake = Math.max(0, (f - 0.7) / 0.3);
+    dx += Math.sin(t * 61) * S * 0.012 * shake * shake;
+    hop += Math.sin(t * 53) * S * 0.008 * shake * shake;
+  }
+  // Pressed: a little squashed down, and leaning into a drag, stretched along
+  // it. Let go: a wobble that rings out (`touchPew`).
+  if (B.press > 0.01) {
+    sy *= 1 - 0.05 * B.press;
+    sx *= 1 + 0.04 * B.press;
+  }
+  const lean = clamp(B.dragVX / (S * 9), -1, 1);
+  if (Math.abs(lean) > 0.01) {
+    rot += lean * 0.14;
+    sx *= 1 + 0.06 * Math.abs(lean);
+    sy *= 1 - 0.035 * Math.abs(lean);
+    dx += lean * S * 0.02;
+  }
+  if (B.jiggle > 0.01) {
+    const w = Math.sin((t - B.jiggleAt) * 24) * 0.06 * B.jiggle;
+    sx *= 1 + w;
+    sy *= 1 - w;
   }
   return { hop, sx, sy, rot, dx };
 }

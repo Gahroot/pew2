@@ -8,7 +8,7 @@ import { goalSubject, runGoalTool, type GoalToolContext } from "./goalTools.js";
 import { resolveProject } from "./registry.js";
 import { ConfirmationTokens } from "./safety.js";
 import { VoiceStore, type StoredTask } from "./store.js";
-import type { ToolResult } from "./tools.js";
+import type { ToolResult } from "./taskTools.js";
 import type { VoiceProject } from "./types.js";
 
 const NOW = Date.parse("2026-10-17T15:00:00.000Z");

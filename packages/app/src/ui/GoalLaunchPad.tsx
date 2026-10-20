@@ -20,6 +20,7 @@ import { haptics } from "./haptics";
 import { Led } from "./stage/Led";
 import { StageButton } from "./stage/StageButton";
 import { Pew } from "../pew/Pew";
+import type { PewMood } from "../pew/engine";
 import { KEN_COLOR } from "../pew/palette";
 import { EASE_OUT } from "./motion/ease";
 import { DUR } from "../motion";
@@ -44,9 +45,6 @@ export const COVER_LAG_S = 0.07;
 /** A full hold, start to blast. Long enough to feel the build. */
 const HOLD_MS = 1600;
 const KEN_SIZE = 180;
-/** The globe fills about 60% of Pew's box. */
-const KEN_RADIUS = KEN_SIZE * 0.3;
-const RING_BOX = Math.ceil(KEN_RADIUS * RING_SCALE * 2 + 48);
 
 /**
  * The launch step's hold area: everything under the title. Hold anywhere and
@@ -54,7 +52,7 @@ const RING_BOX = Math.ceil(KEN_RADIUS * RING_SCALE * 2 + 48);
  * drawn round where he sits); let go early and it drains; hold to the end and
  * he blows. With Reduce Motion or a screen reader it is a plain button.
  */
-export function LaunchPad({ ready, pending, plain, fx, onFire, onLaunch, onScene }: {
+export function LaunchPad({ ready, pending, plain, fx, onFire, onLaunch, onScene, color = KEN_COLOR, idleMood = "happy", labels, plainLabel = "Launch goal", a11yLabel = "Hold to launch goal", size = KEN_SIZE, captionBelow = false }: {
   ready: boolean;
   pending: boolean;
   plain: boolean;
@@ -62,7 +60,21 @@ export function LaunchPad({ ready, pending, plain, fx, onFire, onLaunch, onScene
   onFire: () => void;
   onLaunch: () => void;
   onScene: (scene: FxScene) => void;
+  /** Pew's colour (the goal launch is Ken's purple). */
+  color?: string;
+  idleMood?: PewMood;
+  /** The caption: waiting / holding / pending / not ready. */
+  labels?: { idle: string; holding: string; pending: string; notReady: string };
+  plainLabel?: string;
+  a11yLabel?: string;
+  /** Pew's size (the goal launch's 180 by default). */
+  size?: number;
+  /** The caption pinned to the pad's bottom edge, so Pew sits dead centre. */
+  captionBelow?: boolean;
 }) {
+  const radius = size * 0.3;
+  const ringBox = Math.ceil(radius * RING_SCALE * 2 + 48);
+  const words = labels ?? { idle: "Hold anywhere here", holding: "Keep holding", pending: "Launching", notReady: "Name and goal first" };
   const [holding, setHolding] = useState(false);
   const ken = useRef<View>(null);
   // Loaded as the step opens, so the first hold is not a beat late.
@@ -70,9 +82,9 @@ export function LaunchPad({ ready, pending, plain, fx, onFire, onLaunch, onScene
   const { width, height } = useWindowDimensions();
   const measure = useCallback(() => {
     ken.current?.measureInWindow((x, y, w, h) => {
-      if (w > 0) onScene({ w: width, h: height, cx: x + w / 2, cy: y + h / 2, kenR: KEN_RADIUS });
+      if (w > 0) onScene({ w: width, h: height, cx: x + w / 2, cy: y + h / 2, kenR: radius });
     });
-  }, [width, height, onScene]);
+  }, [width, height, onScene, radius]);
   useEffect(() => {
     if (!pending) setHolding(false);
   }, [pending]);
@@ -81,8 +93,9 @@ export function LaunchPad({ ready, pending, plain, fx, onFire, onLaunch, onScene
   // then a rigid tick on every dot in the last stretch.
   const felt = useCallback((n: number) => {
     if (n >= RING_DOTS) return;
-    if (n >= 17) haptics.detent();
-    else if (n >= 9 ? n % 2 === 0 : n % 4 === 0) haptics.poke();
+    // Silent: the charge sound already ticks on every dot.
+    if (n >= 17) haptics.detent(null);
+    else if (n >= 9 ? n % 2 === 0 : n % 4 === 0) haptics.poke(null);
   }, []);
   useAnimatedReaction(
     () => Math.floor(fx.charge.value * RING_DOTS),
@@ -100,7 +113,7 @@ export function LaunchPad({ ready, pending, plain, fx, onFire, onLaunch, onScene
     }
     measure();
     setHolding(true);
-    haptics.tap();
+    haptics.tap(plain ? undefined : null);
     if (!plain) sounds.charge(fx.charge.value, HOLD_MS);
     const { charge, burst } = fx;
     charge.value = withTiming(1, { duration: HOLD_MS * (1 - charge.value), easing: Easing.linear }, (done) => {
@@ -143,26 +156,35 @@ export function LaunchPad({ ready, pending, plain, fx, onFire, onLaunch, onScene
     };
   });
 
-  const caption = pending ? "Launching" : ready ? (holding ? "Keep holding" : "Hold anywhere here") : "Name and goal first";
+  const caption = pending ? words.pending : ready ? (holding ? words.holding : words.idle) : words.notReady;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Hold to launch goal"
+      accessibilityLabel={a11yLabel}
       accessibilityState={{ disabled: !ready }}
       onPressIn={press}
       onPressOut={release}
       style={[styles.pad, !ready && !pending && styles.padOff]}
     >
-      <View style={styles.ring}>
+      <View style={[styles.ring, { width: ringBox, height: ringBox }]}>
         <Reanimated.View style={kenStyle}>
           <View ref={ken} collapsable={false} onLayout={measure}>
-            <Pew size={KEN_SIZE} mood={holding || pending ? "working" : "happy"} color={KEN_COLOR} accessibilityLabel="Ken" />
+            <Pew size={size} mood={holding || pending ? "working" : idleMood} color={color} accessibilityLabel="Pew" />
           </View>
         </Reanimated.View>
       </View>
-      <Led tone={ready ? "agent" : "dim"} color={ready ? KEN_COLOR : undefined} numberOfLines={1}>{caption}</Led>
+      {/* Under the ring, without moving Pew off centre: the ring box keeps its
+          place and the caption hangs just below it. */}
+      <Led
+        tone={ready ? "agent" : "dim"}
+        color={ready ? color : undefined}
+        numberOfLines={1}
+        style={captionBelow ? [styles.captionBelow, { top: "50%", marginTop: ringBox / 2 + theme.space(2) }] : undefined}
+      >
+        {caption}
+      </Led>
       {plain && (
-        <StageButton color={KEN_COLOR} disabled={!ready} feel="sent" label={pending ? "Launching…" : "Launch goal"} onPress={onLaunch} />
+        <StageButton color={color} disabled={!ready} feel="sent" label={pending ? `${words.pending}…` : plainLabel} onPress={onLaunch} />
       )}
     </Pressable>
   );
@@ -172,5 +194,6 @@ const styles = StyleSheet.create({
   // The hold area: everything under the title, so a thumb can't miss it.
   pad: { flex: 1, alignSelf: "stretch", alignItems: "center", justifyContent: "center", gap: theme.space(4) },
   padOff: { opacity: 0.45 },
-  ring: { width: RING_BOX, height: RING_BOX, alignItems: "center", justifyContent: "center" },
+  ring: { alignItems: "center", justifyContent: "center" },
+  captionBelow: { position: "absolute" },
 });

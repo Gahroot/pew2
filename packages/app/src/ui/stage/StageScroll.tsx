@@ -9,6 +9,13 @@
  *   inside   for a clipped box (a picker panel): the content gives up a lane
  *            at its right edge and the rail sits in it
  *
+ * Glow room: a scroll view clips to its own bounds, and those were the
+ * content's exact edges, so a lit button's glow was cut off flat at both
+ * sides. An `outside` scroll view reaches `GLOW_BLEED` into the sheet's margin
+ * on each side and pads its content back by the same amount: the layout is
+ * unchanged, the glow has room. (`inside` sits in a clipped box with no
+ * margin to reach into, so it doesn't.)
+ *
  * The rail is a column of faint dots, the canvas's dot grid turned on its
  * side, with a short lit bar for the thumb. It only appears when the content
  * overflows; the thumb takes the agent's colour while you scroll and settles
@@ -38,6 +45,20 @@ const DOT_PITCH = 6;
 const INSIDE_LANE = 12;
 /** How long the thumb stays lit after the scroll stops. */
 const LINGER_MS = 700;
+/** Room each side for a lit control's glow (StageButton's is 10pt). Under a sheet's 20pt margin. */
+export const GLOW_BLEED = 12;
+
+type Padding = { paddingLeft?: unknown; paddingRight?: unknown; paddingHorizontal?: unknown; padding?: unknown };
+const num = (value: unknown) => (typeof value === "number" ? value : undefined);
+/** The content's own side padding plus `extra`, so the bleed never eats into it. */
+function sidePadding(style: StyleProp<ViewStyle>, extra: number, laneRight: number) {
+  const flat = (StyleSheet.flatten(style) ?? {}) as Padding;
+  const horizontal = num(flat.paddingHorizontal) ?? num(flat.padding) ?? 0;
+  return {
+    paddingLeft: (num(flat.paddingLeft) ?? horizontal) + extra,
+    paddingRight: (num(flat.paddingRight) ?? horizontal) + extra + laneRight,
+  };
+}
 
 export interface StageScrollProps extends Omit<ScrollViewProps, "showsVerticalScrollIndicator" | "onScroll"> {
   children?: ReactNode;
@@ -101,6 +122,8 @@ export function StageScroll({ children, style, contentContainerStyle, rail = "ou
 
   const inside = rail === "inside";
   const dots = track.overflows ? railDots(track.height, DOT_PITCH) : 0;
+  const bleed = inside ? 0 : GLOW_BLEED;
+  const lane = inside && track.overflows ? INSIDE_LANE : 0;
 
   return (
     // The size limit (maxHeight, height) stays on the scroll view itself: on a
@@ -108,11 +131,11 @@ export function StageScroll({ children, style, contentContainerStyle, rail = "ou
     <View style={styles.host}>
       <Reanimated.ScrollView
         {...rest}
-        style={style}
+        style={[style, bleed > 0 && styles.bleed]}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={onScroll}
-        contentContainerStyle={[contentContainerStyle, inside && track.overflows && styles.lane]}
+        contentContainerStyle={[contentContainerStyle, sidePadding(contentContainerStyle, bleed, lane)]}
         onLayout={(e: LayoutChangeEvent) => {
           sizes.current.view = e.nativeEvent.layout.height;
           view.value = e.nativeEvent.layout.height;
@@ -149,7 +172,7 @@ export function StageScroll({ children, style, contentContainerStyle, rail = "ou
 
 const styles = StyleSheet.create({
   host: { flexShrink: 1 },
-  lane: { paddingRight: INSIDE_LANE },
+  bleed: { marginHorizontal: -GLOW_BLEED },
   rail: { position: "absolute", top: 0, bottom: 0, width: RAIL_WIDTH },
   railInside: { right: (INSIDE_LANE - RAIL_WIDTH) / 2 },
   track: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "space-between", paddingVertical: 1 },

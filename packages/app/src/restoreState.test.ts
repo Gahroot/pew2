@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { matchesRestore, restorePresentation, restoreTarget } from "./restoreState";
+import { matchesRestore, restorePresentation, restoreReveal, restoreTarget } from "./restoreState";
 import type { Session } from "./useDaemon";
 const session: Session = { id: "agent:gg:stored", providerId: "gg", agentSessionId: "stored", title: "Original title", cwd: "/project", startedAt: 1, turns: [], configOptions: [] };
 const target = restoreTarget(session);
@@ -32,4 +32,13 @@ test("stale restore answers cannot claim another conversation", () => {
 test("failure remains visible after a partial replay; leaving clears presentation", () => {
   expect(restorePresentation(target, false, "Failed", 2, "online")).toBe("failed");
   expect(restorePresentation(undefined, false, undefined, 0, "online")).toBeUndefined();
+});
+test("restoreReveal: a restore batch is held for one coordinated dissolve", () => {
+  expect(restoreReveal(12, 1000, 1100)).toEqual({ holdList: true, fadeLoader: false });
+  expect(restoreReveal(12, 1000, 1250)).toEqual({ holdList: true, fadeLoader: true });
+});
+test("restoreReveal: live turns and empty batches are not a restore", () => {
+  // A cached open (no loader ever shown) still reveals as one beat; nothing to fade out.
+  expect(restoreReveal(1, undefined, 5000)).toEqual({ holdList: true, fadeLoader: false });
+  expect(restoreReveal(0, 1000, 5000)).toEqual({ holdList: false, fadeLoader: false });
 });

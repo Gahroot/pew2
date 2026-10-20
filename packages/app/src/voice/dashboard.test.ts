@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildDashboard, rowDismissal } from "./dashboard";
 import { sessionMark } from "../sessionMark";
-import { appendLine, TRANSCRIPT_LIMIT } from "./transcript";
-import { voiceMood, voiceStatus } from "./presentation";
 import { emptyStore, type VoiceStore } from "./voiceStore";
-import { initialState, type MachineState } from "./voiceMachine";
 import type { VoiceEvent, VoiceTask } from "./types";
 
 const task = (o: Partial<VoiceTask> & { taskId: string }): VoiceTask => ({
@@ -107,38 +104,6 @@ describe("buildDashboard", () => {
   test("event-only project is idle", () => {
     const rows = buildDashboard(store([], [ev({ eventId: 1, projectId: "p9", projectName: "docs" })]));
     expect(rows[0]).toMatchObject({ name: "docs", state: "idle" });
-  });
-});
-
-describe("transcript", () => {
-  test("ignores blanks, caps length, ids rise", () => {
-    let lines = appendLine([], "user", "   ");
-    expect(lines).toHaveLength(0);
-    for (let i = 0; i < 10; i++) lines = appendLine(lines, "assistant", `line ${i}`);
-    expect(lines).toHaveLength(TRANSCRIPT_LIMIT);
-    expect(lines[lines.length - 1]?.id).toBe(10);
-  });
-});
-
-describe("voiceStatus", () => {
-  const m = (o: Partial<MachineState>): MachineState => ({ ...initialState, ...o });
-  test("error is friendly and retryable", () => {
-    const s = voiceStatus(m({ phase: "error", errorCode: "mic_denied" }), emptyStore, [], 0);
-    expect(s.key).toBe("error");
-    expect(s.detail).toContain("Microphone");
-    expect(s.retry).toBe(true);
-  });
-  test("thinking after the user spoke, dispatching on fresh task event", () => {
-    const lines = appendLine([], "user", "fix it");
-    expect(voiceStatus(m({ phase: "listening" }), emptyStore, lines, 0).key).toBe("thinking");
-    const s = store([], [ev({ eventId: 1, kind: "task.queued", at: 1000 })]);
-    expect(voiceStatus(m({ phase: "listening" }), s, lines, 2000).key).toBe("dispatching");
-    expect(voiceStatus(m({ phase: "listening" }), s, [], 60000).key).toBe("listening");
-  });
-  test("Pew waits idle when ready, talks while speaking, frowns on error", () => {
-    expect(voiceMood(voiceStatus(m({ phase: "idle" }), emptyStore, [], 0).key)).toBe("idle");
-    expect(voiceMood(voiceStatus(m({ phase: "speaking" }), emptyStore, [], 0).key)).toBe("talking");
-    expect(voiceMood(voiceStatus(m({ phase: "error", errorCode: "offline" }), emptyStore, [], 0).key)).toBe("oops");
   });
 });
 

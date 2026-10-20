@@ -19,3 +19,33 @@ export function restorePresentation(target: RestoreTarget | undefined, loading: 
   if (loading) return status === "online" ? "loading" : "reconnecting";
   return "empty";
 }
+
+/** How long the loader waits before it shows at all (`ConversationRestore`). */
+export const RESTORE_GRACE_MS = 250;
+export interface RestoreReveal {
+  /** Hold the transcript at opacity 0 until its first layout, then dissolve it in. */
+  holdList: boolean;
+  /** The loader was on screen: fade it out over the arriving transcript. */
+  fadeLoader: boolean;
+}
+/**
+ * The hand-over from "Reopening" to the conversation, decided when the first
+ * batch lands. `loadingSince` is when the empty restore began (undefined: this
+ * batch is not a restore, e.g. a live first prompt, which animates per row).
+ * A load faster than the grace never showed the loader, so only the list moves.
+ */
+export function restoreReveal(batch: number, loadingSince: number | undefined, now: number): RestoreReveal {
+  // Every opening reveals as one beat, a cached one too: it used to cut in
+  // whenever the loader never got to show, which read as abrupt.
+  if (batch <= 0) return { holdList: false, fadeLoader: false };
+  return { holdList: true, fadeLoader: loadingSince !== undefined && now - loadingSince >= RESTORE_GRACE_MS };
+}
+
+/** How long a conversation takes to come in when opened: unhurried, not snappy. */
+export const OPEN_REVEAL_MS = 560;
+/** It rises this far (pt) as it comes in, settling into place. */
+export const OPEN_REVEAL_RISE = 14;
+/** Pew "unlocks" the conversation: a short beat of celebration where he waited… */
+export const UNLOCK_BEAT_MS = 220;
+/** …then he swells and dissolves while the conversation (already rising in) settles. */
+export const UNLOCK_EXIT_MS = 380;

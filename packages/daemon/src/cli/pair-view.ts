@@ -8,9 +8,15 @@
  *
  * The screen answers three questions, in the order a user asks them:
  *
- *   1. What do I do?          the QR, and two numbered steps
- *   2. Will it work?          reach, daemon, relay — checked, not claimed
+ *   1. What do I do?          the QR, and one line saying scan it
+ *   2. Will it work?          one status line — checked, not claimed
  *   3. Did it work?           a live line that resolves when the phone connects
+ *
+ * The QR is the only way the pairing leaves this screen. The link used to be
+ * printed beside it "for when the camera will not read it", which put the token
+ * *and* the key in plain text in every screenshot and scrollback of this
+ * terminal — and a pairing is admitted to whichever device claims it first.
+ * Nothing on this screen is a secret any more: no link, no token, no fingerprint.
  *
  * Facts are never asserted without having been verified. "Works from anywhere"
  * printed next to an unreachable relay is worse than no status line, because it
@@ -18,10 +24,7 @@
  */
 import {
   PALETTE,
-  fingerprint,
   glyphs,
-  padEnd,
-  relativeAge,
   styler,
   truncate,
   width,
@@ -33,9 +36,12 @@ import { rail } from "./rail.js";
 export type Reach = "anywhere" | "local" | "unreachable";
 
 export interface PairView {
-  url: string;
+  /**
+   * The pairing token. Never rendered — the waiting line uses it to watch the
+   * local daemon for the phone. The link itself is not part of the view at all,
+   * so no change to the layout can print it by accident.
+   */
   token: string;
-  createdAt: string;
   reach: Reach;
   /** Relay origin and whether it answered a health check, when configured. */
   relay?: { url: string; healthy: boolean | null };
@@ -83,9 +89,6 @@ function gut(_options: RenderOptions = {}): string {
   return "  ";
 }
 
-/** Label column for the status rows. Wide enough for the longest label. */
-const LABEL = 8;
-
 /**
  * Indent a pre-rendered block, such as the QR.
  *
@@ -131,111 +134,44 @@ export function header(options: RenderOptions = {}): string[] {
   return rail(options).intro("pew2 pair", "connect a phone");
 }
 
-/** The two things the user physically does, numbered so neither is skipped. */
+/** What the user physically does, in the app's own words ("Scan QR code"). */
 export function steps(options: RenderOptions = {}): string[] {
-  const g_ = gut(options);
-  const s = options.style ?? styler();
-  const g = options.glyph ?? glyphs();
-  const bullet = (n: number) => s.hex(PALETTE.accent, g.unicode ? ["①", "②"][n - 1]! : `${n}.`);
-
-  return [
-    ...rail(options).step("On your phone"),
-    `${g_}${bullet(1)} ${s.dim("Open")} pew2 ${s.dim("on your phone")}`,
-    `${g_}${bullet(2)} ${s.dim("Tap")} Pair ${s.dim("and scan the code above")}`,
-  ];
+  return rail(options).step("Scan this with pew2", "on your phone");
 }
 
 /**
- * The status rows: reach, daemon, token.
+ * The one status line: will a scan connect, and from where.
  *
- * Each is a checked fact. `reach` is the one that decides whether this pairing
- * survives leaving the house, so it leads — and it says "same Wi-Fi only" in
- * words rather than relying on a colour the user may not be able to see.
+ * Each state is a checked fact, and only the first thing wrong is shown — a
+ * stopped daemon makes reach irrelevant, a dead relay makes "anywhere" a lie.
+ * "Same Wi-Fi only" is said in words rather than left to a colour the user may
+ * not be able to see.
  */
 export function statusRows(view: PairView, options: RenderOptions = {}): string[] {
   const g_ = gut(options);
   const s = options.style ?? styler();
   const g = options.glyph ?? glyphs();
   const columns = options.columns ?? 80;
-  const now = options.now ?? Date.now();
-  const room = Math.max(24, columns - GUTTER_WIDTH - LABEL - 4);
-  // U+2026 is not in the Windows console's default codepage, so the elisions
-  // have to degrade alongside the box drawing rather than independently of it.
   const ellipsis = g.unicode ? "…" : "...";
+  const room = Math.max(16, columns - GUTTER_WIDTH - 20);
 
-  const label = (text: string) => s.hex(PALETTE.faint, padEnd(text, LABEL));
-  const mark = (state: "ok" | "warn" | "bad") =>
-    state === "ok"
-      ? s.hex(PALETTE.success, g.tick)
-      : state === "warn"
-        ? s.hex(PALETTE.warning, g.warn)
-        : s.hex(PALETTE.danger, g.cross);
+  const ok = s.hex(PALETTE.success, g.tick);
+  const warn = s.hex(PALETTE.warning, g.warn);
+  const bad = s.hex(PALETTE.danger, g.cross);
+  const row = (mark: string, text: string, note?: string) =>
+    `${g_}${mark} ${s.bold(text)}${note ? ` ${s.dim(`${g.dot} ${note}`)}` : ""}`;
 
-  const rows: string[] = [];
-
-  rows.push(...rail(options).step("This machine"));
-
-  // ── reach ──────────────────────────────────────────────────────────────
+  if (!view.daemonRunning) return [row(bad, "pew2 is not running", "pew2 service install")];
+  if (view.relay?.healthy === false && view.reach !== "local") {
+    return [row(bad, "relay not responding", "the phone will not connect")];
+  }
   if (view.reach === "anywhere") {
-    const host = truncate(hostOf(view.relay?.url ?? ""), room - 12, ellipsis);
-    rows.push(`${g_}${label("reach")}${mark("ok")} ${s.bold("anywhere")} ${s.dim(`${g.dot} ${host}`)}`);
-  } else if (view.reach === "local") {
-    const where = view.addresses[0] ?? "this machine";
-    rows.push(
-      `${g_}${label("reach")}${mark("warn")} ${s.bold("same Wi-Fi only")} ${s.dim(`${g.dot} ${where}`)}`,
-    );
-  } else {
-    rows.push(`${g_}${label("reach")}${mark("bad")} ${s.bold("no route to this machine")}`);
+    return [row(ok, "works anywhere", truncate(hostOf(view.relay?.url ?? ""), room, ellipsis))];
   }
-
-  // ── relay ──────────────────────────────────────────────────────────────
-  // Only shown when one is configured, and only ever reports what the health
-  // check actually returned.
-  if (view.relay) {
-    const { healthy } = view.relay;
-    rows.push(
-      healthy === true
-        ? `${g_}${label("relay")}${mark("ok")} ${s.dim("responding")}`
-        : healthy === false
-          ? `${g_}${label("relay")}${mark("bad")} ${s.bold("not responding")} ${s.dim(`${g.dot} pairing will not connect`)}`
-          : `${g_}${label("relay")}${s.dim(`${g.dot} not checked`)}`,
-    );
+  if (view.reach === "local") {
+    return [row(warn, "same Wi-Fi only", view.addresses[0] ?? "this machine")];
   }
-
-  // ── daemon ─────────────────────────────────────────────────────────────
-  rows.push(
-    view.daemonRunning
-      ? `${g_}${label("daemon")}${mark("ok")} ${s.dim(`running ${g.dot} port ${view.port}`)}`
-      : `${g_}${label("daemon")}${mark("bad")} ${s.bold("not running")} ${s.dim(`${g.dot} pew2 service install`)}`,
-  );
-
-  // ── token ──────────────────────────────────────────────────────────────
-  // Elided on purpose. The full secret is one line below in the URL, where the
-  // user has chosen to look; it should not also be in every screenshot of the
-  // status block.
-  const age = view.rotated ? "just rotated" : relativeAge(view.createdAt, now);
-  rows.push(
-    `${g_}${label("token")}${s.dim(`${fingerprint(view.token, 6, 4, ellipsis)} ${g.dot} ${age}`)}`,
-  );
-
-  return rows;
-}
-
-/**
- * The pairing URL, printed on one unwrapped line.
- *
- * Deliberately not hard-wrapped to the terminal width: a soft wrap can be
- * selected and copied as a single string, whereas an inserted newline produces
- * a URL that silently fails to parse when pasted. The token is visible here
- * because pairing by hand is the fallback when a camera will not cooperate.
- */
-export function urlBlock(view: PairView, options: RenderOptions = {}): string[] {
-  const g_ = gut(options);
-  const s = options.style ?? styler();
-  return [
-    ...rail(options).step("Or paste this link", "if the camera will not read it"),
-    `${g_}${s.dim(view.url)}`,
-  ];
+  return [row(bad, "no route to this machine")];
 }
 
 /**
@@ -278,7 +214,7 @@ export function pairedLine(
   return `${g_}${s.hex(PALETTE.success, g.tick)} ${s.bold("paired")} ${s.dim(`${g.dot} ${deviceName} ${g.dot} ${seconds}s`)}`;
 }
 
-/** Shown when nobody scanned. Not an error: the link stays valid. */
+/** Shown when nobody scanned. Not an error: the code stays valid. */
 export function timeoutLines(options: RenderOptions = {}): string[] {
   const s = options.style ?? styler();
   return rail(options).outro(s.dim("Stopped waiting. The code above stays valid."), "quiet");
@@ -289,10 +225,7 @@ export function hintLine(interactive: boolean, options: RenderOptions = {}): str
   if (!interactive) return [];
   const g_ = gut(options);
   const s = options.style ?? styler();
-  return [
-    rail(options).bar(),
-    `${g_}${s.hex(PALETTE.faint, "c")} ${s.dim("copy link")}   ${s.hex(PALETTE.faint, "q")} ${s.dim("quit")}`,
-  ];
+  return [rail(options).bar(), `${g_}${s.hex(PALETTE.faint, "q")} ${s.dim("quit")}`];
 }
 
 /**
@@ -329,20 +262,19 @@ export function renderPair(
 
   lines.push(...steps(options));
   lines.push(...statusRows(view, options));
-  lines.push(...urlBlock(view, options));
 
   if (view.rotated) {
     const s = options.style ?? styler();
     const g = options.glyph ?? glyphs();
-    // Hangs under the link above it, with no gap: it is part of that section,
+    // Hangs under the status line, with no gap: it is part of that section,
     // not a new one. (Style B: a blank line only ever opens a section.)
     lines.push(
       // Named when one exists. A pairing this call took from a specific phone
       // deserves to say which, rather than a general warning that leaves the
       // user working out whether it means them.
       view.supersededDevice
-        ? `${g_}${s.hex(PALETTE.warning, g.warn)} ${s.dim(`new code — ${view.supersededDevice} is unpaired and must scan again`)}`
-        : `${g_}${s.hex(PALETTE.warning, g.warn)} ${s.dim("token rotated — devices paired before now must scan again")}`,
+        ? `${g_}${s.hex(PALETTE.warning, g.warn)} ${s.dim(`new code ${g.dot} ${view.supersededDevice} must scan again`)}`
+        : `${g_}${s.hex(PALETTE.warning, g.warn)} ${s.dim(`new code ${g.dot} paired phones must scan again`)}`,
     );
   }
 

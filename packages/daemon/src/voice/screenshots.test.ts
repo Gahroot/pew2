@@ -7,7 +7,7 @@ import { buildRegistry } from "./registry.js";
 import { scratch } from "./scratch.js";
 import { checkScreenshot, normaliseImageType, readScreenshot, screenshotDir, writeScreenshot } from "./screenshots.js";
 import { VoiceStore } from "./store.js";
-import { ToolExecutor } from "./tools.js";
+import { ToolExecutor } from "./taskTools.js";
 
 /** The first bytes of each format, padded: enough to pass the signature check. */
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 1)]);
@@ -129,12 +129,6 @@ function harness() {
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe("tools", () => {
-  test("request_screenshot asks the phone to open its picker", async () => {
-    const h = harness();
-    const result = await h.call("request_screenshot", { reason: "the partner's fix" });
-    expect(result).toMatchObject({ ok: true, openPicker: true, output: { pickerOpened: true, reason: "the partner's fix" } });
-  });
-
   test("a new task carries the screenshot to the agent, named in the prompt, and records where it went", async () => {
     const h = harness();
     const id = h.share("partner-fix.png");

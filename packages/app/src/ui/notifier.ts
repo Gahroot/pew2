@@ -20,12 +20,13 @@
  * Expo-only. What a banner *says*, and whether a turn deserves one at all, lives
  * in `notificationPolicy.ts`, which stays importable by `bun test`.
  */
+import { voicePushRequest } from "../voiceCall";
 import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 import type { NoticeKind } from "@pew2/protocol";
 import type { Notice } from "../notificationPolicy";
 import { duplicatePush } from "../notificationPolicy";
-import { suppressVoicePush, type Presence } from "../voice/voiceNotifications";
+import { alertStatus, type AlertStatus } from "../notificationAsk";
 
 /**
  * The conversation currently open, as far as an arriving push is concerned.
@@ -39,6 +40,16 @@ let onScreenSessionId: string | undefined;
 /** Told by the screen, so an arriving push knows what the user can already see. */
 export function setOpenConversation(sessionId: string | undefined): void {
   onScreenSessionId = sessionId;
+}
+
+/**
+ * A voice call is on screen. Pew tells the user what their agents did, and the
+ * call screen shows it, so a banner dropping over Pew mid-sentence is noise:
+ * while this is set, banners go to Notification Center only.
+ */
+let onCall = false;
+export function setOnCall(active: boolean): void {
+  onCall = active;
 }
 
 const NOTICE_KINDS: readonly NoticeKind[] = ["finished", "failed", "approval", "question"];
@@ -121,13 +132,7 @@ Notifications.setNotificationHandler({
     const data = notification.request.content.data as
       | { sessionId?: unknown; local?: unknown; kind?: unknown }
       | undefined;
-    const voiceSuppressed = suppressVoicePush(notification.request.content.data, {
-      ...voicePresence,
-      foreground: true,
-      pushExpected: true,
-      now: Date.now(),
-    });
-    const suppressed = voiceSuppressed || duplicatePush({
+    const suppressed = duplicatePush({
       local: data?.local === true,
       sessionId: typeof data?.sessionId === "string" ? data.sessionId : undefined,
       kind: kindOf(data?.kind),
@@ -140,31 +145,13 @@ Notifications.setNotificationHandler({
     // plays its own sounds; a system chime on top would be two sounds for one
     // event. Off screen the system plays the banner's sound, from either route.
     return {
-      shouldShowBanner: !suppressed,
+      shouldShowBanner: !suppressed && !onCall,
       shouldShowList: !suppressed,
       shouldPlaySound: false,
       shouldSetBadge: false,
     };
   },
 });
-
-/**
- * What the user is hearing or seeing of voice, told by `useVoice`. Judged on
- * arrival of a `voice.callback` push, which only the phone can do.
- */
-let voicePresence: Omit<Presence, "now" | "foreground" | "pushExpected"> = {
-  voiceActive: false,
-  voiceSheetOpen: false,
-  heardEventId: 0,
-};
-
-export function setVoicePresence(next: typeof voicePresence): void {
-  voicePresence = next;
-}
-
-export function getVoicePresence(): typeof voicePresence {
-  return voicePresence;
-}
 
 /** Android requires a channel before anything is delivered. */
 const CHANNEL = "agent-turns";
@@ -253,6 +240,20 @@ export async function notificationsAllowed(): Promise<boolean> {
   }
 }
 
+/**
+ * The full permission state, without ever prompting: granted, denied (only
+ * Settings can change it), or undetermined (the system prompt can still ask).
+ * Unreadable counts as undetermined, so the card offers the prompt.
+ */
+export async function notificationStatus(): Promise<AlertStatus> {
+  try {
+    const read = await Notifications.getPermissionsAsync();
+    return alertStatus({ granted: read.granted, canAskAgain: read.canAskAgain, status: read.status });
+  } catch {
+    return "undetermined";
+  }
+}
+
 async function request(): Promise<boolean> {
   await prepare();
   const existing = await Notifications.getPermissionsAsync();
@@ -333,7 +334,10 @@ export interface NotificationChoice {
 function choiceOf(
   response: Notifications.NotificationResponse | null,
 ): NotificationChoice | undefined {
-  const sessionId = response?.notification.request.content.data?.sessionId;
+  const data = response?.notification.request.content.data;
+  // A voice push opens a call (`onVoiceRequest`), not a conversation.
+  if (voicePushRequest(data)) return undefined;
+  const sessionId = data?.sessionId;
   if (typeof sessionId !== "string") return undefined;
   const replied = response?.actionIdentifier === REPLY_ACTION;
   const text = replied ? response?.userText?.trim() : undefined;
@@ -365,6 +369,26 @@ const handled = new Set<string>();
  *
  * @returns an unsubscribe function.
  */
+/**
+ * Report a tapped voice push (`{voice:true, focus?}`), which may carry no
+ * `sessionId` — `choiceOf` would drop it, so it has its own route. Same
+ * launch-response and dedup rules as `onNotificationChoice`.
+ */
+export function onVoiceRequest(act: (request: { focus?: string }) => void): () => void {
+  const once = (response: Notifications.NotificationResponse | null) => {
+    if (!response) return;
+    const request = voicePushRequest(response.notification.request.content.data);
+    if (!request) return;
+    const key = `voice:${response.notification.request.identifier}`;
+    if (handled.has(key)) return;
+    handled.add(key);
+    act(request);
+  };
+  once(Notifications.getLastNotificationResponse());
+  const subscription = Notifications.addNotificationResponseReceivedListener(once);
+  return () => subscription.remove();
+}
+
 export function onNotificationChoice(act: (choice: NotificationChoice) => void): () => void {
   const once = (response: Notifications.NotificationResponse | null) => {
     if (!response) return;

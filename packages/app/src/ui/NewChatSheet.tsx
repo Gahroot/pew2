@@ -28,7 +28,9 @@
  * flinching; this reads as one object with somewhere to go.
  */
 import { memo, useEffect, useMemo, useState } from "react";
-import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { StageChip } from "./StageChip";
+import { pewInk } from "../pew/palette";
 import { StageScroll } from "./stage/StageScroll";
 import Animated, {
   interpolate,
@@ -95,6 +97,14 @@ interface NewChatSheetProps {
   browse?: WorkspaceBrowse;
   /** Ask the desktop for a listing. No path means "suggest repositories". */
   onBrowse?: (path?: string) => void;
+  /**
+   * The agents to choose between, shown above the projects. Present on the
+   * home screen's New conversation, where both are chosen before any composer.
+   */
+  agents?: readonly { id: string; name: string; color?: string }[];
+  /** The agent chosen (lit). */
+  agentId?: string;
+  onPickAgent?: (id: string) => void;
 }
 
 function NewChatSheetView({
@@ -106,7 +116,11 @@ function NewChatSheetView({
   onClose,
   browse,
   onBrowse,
+  agents,
+  agentId,
+  onPickAgent,
 }: NewChatSheetProps) {
+  const agentName = agents?.find((a) => a.id === agentId)?.name;
   const [step, setStep] = useState(STEP_CHOICES);
   const reduceMotion = useReducedMotion();
 
@@ -242,7 +256,7 @@ function NewChatSheetView({
       label="New chat"
       title={
         step === STEP_CHOICES
-          ? "Where should it work?"
+          ? agents ? "New conversation" : "Where should it work?"
           : // Named while browsing: several levels down, "Browse" alone gives
             // no clue where you are, and the path is too long for a title.
             browse?.path
@@ -270,6 +284,29 @@ function NewChatSheetView({
             firstHeight.value = event.nativeEvent.layout.height;
           }}
         >
+          {agents && agents.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.agents}
+              contentContainerStyle={styles.agentsRow}
+              accessibilityRole="radiogroup"
+            >
+              {agents.map((a) => (
+                <StageChip
+                  key={a.id}
+                  label={a.name}
+                  lit={a.id === agentId}
+                  feel="select"
+                  leading={<View style={[styles.agentDot, { backgroundColor: pewInk(a.color) }]} />}
+                  onPress={() => onPickAgent?.(a.id)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: a.id === agentId }}
+                  accessibilityLabel={a.name}
+                />
+              ))}
+            </ScrollView>
+          )}
           {/* Virtualised: only the cards on screen exist. Every project on the
               computer used to be built at once, each with its own entrance
               animation, and opening the sheet froze the app for seconds on a
@@ -319,7 +356,7 @@ function NewChatSheetView({
               style={styles.primary}
               feel="sent"
               label={chosenName ? `Start in ${chosenName}` : "Start a chat"}
-              accessibilityLabel={chosenName ? `Start a chat in ${chosenName}` : "Start a chat"}
+              accessibilityLabel={`Start a chat${chosenName ? ` in ${chosenName}` : ""}${agentName ? ` with ${agentName}` : ""}`}
               onPress={() => onStart(chosen)}
             />
           )}
@@ -509,7 +546,10 @@ function Row({
         accessibilityRole="button"
         accessibilityLabel={detail ? `${title}, ${detail}` : title}
         hitSlop={touchSlop(theme.space(1))}
-        onPress={onPress}
+        onPress={() => {
+          haptics.tap();
+          onPress();
+        }}
         style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
       >
         <Ionicons name={icon} size={20} color={theme.color.glyph} />
@@ -531,7 +571,10 @@ function Row({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={descendLabel ?? `Open ${title}`}
-          onPress={onDescend}
+          onPress={() => {
+            haptics.select();
+            onDescend();
+          }}
           // Wide enough to hit without aiming, and its own pressed state so it
           // is visibly a second control rather than part of the row.
           style={({ pressed }) => [styles.rowDescend, pressed && styles.rowPressed]}
@@ -545,6 +588,9 @@ function Row({
 
 const styles = StyleSheet.create({
   card: sheetCardStyle,
+  agents: { flexGrow: 0, marginTop: theme.space(4) },
+  agentsRow: { paddingHorizontal: theme.space(4), gap: theme.space(2) },
+  agentDot: { width: 8, height: 8, borderRadius: 4 },
   // The first pane stays in normal flow so the card has a natural height on the
   // frame it first appears, before any measurement has come back. Everything
   // after it is measured and driven by the card's animated height instead.

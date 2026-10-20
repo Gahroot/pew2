@@ -15,7 +15,6 @@
  * Anything the user must know is in the words, so stripping every escape leaves
  * output that still reads correctly.
  */
-import { spawn } from "node:child_process";
 
 /**
  * Colour is off when piped, when `NO_COLOR` is set (the de-facto standard) or
@@ -250,60 +249,6 @@ export function relativeAge(iso: string, now: number = Date.now()): string {
   if (days < 30) return plural(Math.round(days / 7), "week");
   if (days < 365) return plural(Math.round(days / 30), "month");
   return plural(Math.round(days / 365), "year");
-}
-
-/**
- * Copy to the system clipboard. Never throws and never blocks for long: this is
- * a convenience, and a machine without a clipboard tool (a headless server, a
- * container) must still complete the command.
- */
-export function copyToClipboard(text: string): Promise<boolean> {
-  const candidates: [string, string[]][] =
-    process.platform === "darwin"
-      ? [["pbcopy", []]]
-      : process.platform === "win32"
-        ? [["clip", []]]
-        : [
-            ["wl-copy", []],
-            ["xclip", ["-selection", "clipboard"]],
-            ["xsel", ["--clipboard", "--input"]],
-          ];
-
-  const attempt = (index: number): Promise<boolean> => {
-    const candidate = candidates[index];
-    if (!candidate) return Promise.resolve(false);
-    const [command, args] = candidate;
-    return new Promise((resolve) => {
-      let settled = false;
-      const done = (value: boolean) => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-      };
-      try {
-        const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
-        const timer = setTimeout(() => {
-          child.kill();
-          done(false);
-        }, 2_000);
-        timer.unref?.();
-        child.on("error", () => {
-          clearTimeout(timer);
-          void attempt(index + 1).then(done);
-        });
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          if (code === 0) done(true);
-          else void attempt(index + 1).then(done);
-        });
-        child.stdin.end(text);
-      } catch {
-        void attempt(index + 1).then(done);
-      }
-    });
-  };
-
-  return attempt(0);
 }
 
 /** Hide and restore the cursor around animated output, including on Ctrl-C. */

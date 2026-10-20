@@ -4,8 +4,8 @@
  * These encode the promise made to the phone: one short sentence, never a JSON
  * blob, for any agent — not just the ones we happened to test against.
  */
-import { test, expect } from "bun:test";
-import { humanError } from "./errors.js";
+import { describe, test, expect } from "bun:test";
+import { humanError, agentStoppedMessage } from "./errors.js";
 
 /** How the ACP SDK rejects a request: generic label, real cause in `data`. */
 class RequestError extends Error {
@@ -92,4 +92,27 @@ test("always says something", () => {
   for (const thrown of [undefined, null, {}, ""]) {
     expect(humanError(thrown)).toBe("Something went wrong.");
   }
+});
+
+describe("agentStoppedMessage: why an agent died mid-request", () => {
+  test("names the agent, how it ended, and the last real line it printed", () => {
+    expect(
+      agentStoppedMessage("GG Coder", { code: 1, signal: null }, [
+        "node:internal/modules/cjs/loader:1478",
+        "  throw err;",
+        "Error: Cannot find module '/x/dist/cli.js'",
+        "    at Module._resolveFilename (node:internal/modules/cjs/loader:1475:15)",
+        "  requireStack: []",
+        "}",
+        "Node.js v26.0.0",
+      ]),
+    ).toBe("GG Coder stopped while working (it crashed, code 1): Error: Cannot find module '/x/dist/cli.js'");
+  });
+
+  test("a kill is called out; nothing printed still reads as a sentence", () => {
+    expect(agentStoppedMessage("Codex", { code: null, signal: "SIGKILL" }, [])).toBe(
+      "Codex stopped while working (it was killed, often for running out of memory).",
+    );
+    expect(agentStoppedMessage("GG Coder", undefined, [])).toBe("GG Coder stopped while working (the connection to it closed).");
+  });
 });

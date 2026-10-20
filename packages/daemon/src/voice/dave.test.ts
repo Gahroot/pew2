@@ -14,7 +14,7 @@ import {
 import { Orchestrator, type VoiceHost } from "./dispatcher.js";
 import { buildRegistry } from "./registry.js";
 import { VoiceStore } from "./store.js";
-import { realtimeSession, ToolExecutor, VOICE_INSTRUCTIONS, VOICE_TOOLS } from "./tools.js";
+import { callTools, TASK_INSTRUCTIONS, TASK_TOOLS, ToolExecutor } from "./taskTools.js";
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");
 const ORIGIN = "http://127.0.0.1:4317";
@@ -583,9 +583,9 @@ test("'check the backlog' in another project is that project's work, untouched",
 });
 
 test("the instructions and the backlog tool tell the model the backlog is not the dave project", () => {
-  expect(VOICE_INSTRUCTIONS).toContain("The backlog is not the project named dave");
-  expect(VOICE_INSTRUCTIONS).toContain("'check the backlog'");
-  expect(VOICE_INSTRUCTIONS).toContain("'open the dave project'");
+  expect(TASK_INSTRUCTIONS).toContain("The backlog is not the project named dave");
+  expect(TASK_INSTRUCTIONS).toContain("'check the backlog'");
+  expect(TASK_INSTRUCTIONS).toContain("'open the dave project'");
   expect(BACKLOG_TOOLS[0].description).toContain("'check the backlog'");
   expect(BACKLOG_TOOLS[0].description).toContain("'checking Dave'");
 });
@@ -593,19 +593,15 @@ test("the instructions and the backlog tool tell the model the backlog is not th
 // ---- wiring -----------------------------------------------------------------
 
 test("DAVE tools are offered only when enabled, and the model is told to ask only on request", () => {
-  const off = realtimeSession({ voice: "marin" }) as { tools: { name: string }[] };
-  expect(off.tools.map((t) => t.name)).not.toContain("check_backlog");
-  const on = realtimeSession({ voice: "marin", backlogTools: true }) as {
-    tools: { name: string }[];
-  };
-  expect(on.tools).toHaveLength(VOICE_TOOLS.length + BACKLOG_TOOLS.length);
-  expect(on.tools.map((t) => t.name)).toContain("delegate_backlog_item");
-  expect(VOICE_INSTRUCTIONS).toContain("only when the user asks");
+  expect(callTools().map((t) => t.name)).not.toContain("check_backlog");
+  const on = callTools({ backlogTools: true });
+  expect(on).toHaveLength(TASK_TOOLS.length + BACKLOG_TOOLS.length);
+  expect(on.map((t) => t.name)).toContain("delegate_backlog_item");
+  expect(TASK_INSTRUCTIONS).toContain("only when they ask");
 });
 
 test("the backlog tools are not named for dave, and their old names still answer", async () => {
-  const on = realtimeSession({ backlogTools: true }) as { tools: { name: string }[] };
-  const offered = on.tools.map((t) => t.name);
+  const offered = callTools({ backlogTools: true }).map((t) => t.name);
   expect(offered.filter((name) => /dave/i.test(name))).toEqual([]);
   expect(offered).toEqual(expect.arrayContaining(["check_backlog", "delegate_backlog_item"]));
 

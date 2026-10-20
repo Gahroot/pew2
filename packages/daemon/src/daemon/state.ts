@@ -11,6 +11,7 @@ import { PushRegistry, pushFinishedTurn } from "../push.js";
 import type { AgentProject } from "../projects.js";
 import type { NoticeKind, wire } from "@pew2/protocol";
 import type { ActiveSession, ProviderCapabilities } from "./types.js";
+import type { VoiceController } from "../voice/controller.js";
 
 export abstract class DaemonState {
   protected providers: LoadedProvider[] = [];
@@ -88,6 +89,13 @@ export abstract class DaemonState {
   readonly pushTargets = new PushRegistry();
 
   /**
+   * Where a ring goes to become a phone call: the relay's https origin, which
+   * holds the Apple key. Set by the server from the pairing (or
+   * `PEW2_PUSH_RELAY`); unset means rings are banners only.
+   */
+  ringRelay?: string;
+
+  /**
    * How many conversations are stopped on an answer: an open approval or an
    * open question. The badge on the app icon, because it counts exactly the
    * work that cannot move until someone picks up the phone.
@@ -119,6 +127,23 @@ export abstract class DaemonState {
       lastText: text ?? (kind === "finished" ? lastText : undefined),
       badge: this.waitingOnYou(),
     });
+  }
+
+  /** The voice layer, once created (`Daemon.voice`). */
+  protected voiceController?: VoiceController;
+
+  /**
+   * Something an agent waits on was added, answered or withdrawn. Recomputes
+   * the voice inbox, which broadcasts `voice.inbox` only on a real change.
+   */
+  protected touchInbox(): void {
+    this.voiceController?.inboxChanged();
+    this.touchBoard();
+  }
+
+  /** A lane on the call screen may have changed. A no-op unless a call is open. */
+  protected touchBoard(): void {
+    this.voiceController?.boardChanged();
   }
 
   protected readonly spares = new Map<
@@ -302,6 +327,15 @@ export abstract class DaemonState {
 
   /** Per goals id: one shared boot of the agent's connection for goal calls, while in flight. */
   protected ggConnecting = new Map<string, Promise<AcpSessionHandle>>();
+  /**
+   * Goal calls in flight per borrowed GG Coder process, and the processes
+   * retired while one was. Goal calls run on a parked spare that nothing owns,
+   * so evicting that spare (a capability refresh parks a new one in the same
+   * slot, on every reconnect) SIGTERMed the process mid-request and the goals
+   * screen showed "GG Coder stopped while working (it was stopped by SIGTERM)".
+   */
+  protected readonly borrowed = new Map<AcpSessionHandle, number>();
+  protected readonly retiring = new Set<AcpSessionHandle>();
 
   // ── Implemented by a later layer, called from an earlier one ─────────────
   // Type-only declarations: they emit nothing, so every call still goes through

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { arrivalNote, MAX_CARDS, readHeld, screenshotCards, sendTarget, sentNote } from "./screenshots";
+import { MAX_CARDS, readHeld, screenshotCards, sendTarget } from "./screenshots";
 import type { VoiceTask } from "./types";
 
 const task = (o: Partial<VoiceTask> & { taskId: string }): VoiceTask => ({
@@ -62,11 +62,4 @@ describe("sendTarget", () => {
     ).toBe("t_1");
     expect(sendTarget({})).toBeUndefined();
   });
-});
-
-test("the model is told an id and a name, never shown the picture", () => {
-  const note = arrivalNote({ attachmentId: "a_3", name: "partner-fix.png" });
-  expect(note).toContain('"partner-fix.png" (attachmentId a_3)');
-  expect(note).toContain("ask which project or task");
-  expect(sentNote({ attachmentId: "a_3", name: "p.png" }, { taskId: "t_1", title: "Fix" })).toContain("do not send it again");
 });

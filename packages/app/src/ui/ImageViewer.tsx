@@ -16,13 +16,13 @@ import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, 
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { DotGlyph } from "./stage/DotGlyph";
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { theme } from "../theme";
 import { Led } from "./stage/Led";
 import { StageButton } from "./stage/StageButton";
 import { useAgentColor } from "./stage/agentColor";
 import { haptics } from "./haptics";
+import { ScreenHeader, HeaderButton } from "./ScreenHeader";
 import { saveImageToDevice, shareImage, type SaveResult } from "./imageSaver";
 import type { ChatImage as ChatImageModel } from "../images";
 import { SPRING } from "../motion";
@@ -120,24 +120,18 @@ export function ImageViewer({
           style={StyleSheet.absoluteFill}
           accessibilityRole="button"
           accessibilityLabel="Close image"
-          onPress={onClose}
+          onPress={() => {
+            haptics.tap();
+            onClose();
+          }}
         />
 
-        <View style={[styles.topBar, { paddingTop: insets.top + theme.headerInset }]}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close image"
-            hitSlop={12}
-            onPress={() => {
-              haptics.tap();
-              onClose();
-            }}
-            style={styles.closeButton}
-          >
-            <DotGlyph name="close" size={14} />
-          </Pressable>
-          <Text style={styles.title} numberOfLines={1} ellipsizeMode="middle">{fileName(image)}</Text>
-        </View>
+        <ScreenHeader
+          style={styles.topBar}
+          title={fileName(image)}
+          ellipsize="middle"
+          leading={<HeaderButton glyph="close" label="Close image" onPress={onClose} />}
+        />
 
         <ViewerImage key={resolvedSrc} uri={resolvedSrc} alt={image.alt || "Image from the agent"} />
         <Led tone="dim" style={styles.hint}>Tap to zoom</Led>
@@ -297,24 +291,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.94)",
     justifyContent: "center",
   },
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.space(3),
-    paddingHorizontal: theme.gutter,
-    paddingBottom: theme.space(2),
-    zIndex: 2,
-  },
-  title: { flex: 1, color: theme.color.text, fontSize: theme.font.body, fontWeight: "600" },
+  topBar: { zIndex: 2 },
   hint: { alignSelf: "center", marginTop: theme.space(2) },
-  closeButton: {
-    width: theme.size.control,
-    height: theme.size.control,
-    borderRadius: theme.radius.pill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.color.surfaceRaised,
-  },
+
   image: { flex: 1, width: "100%" },
   imageFill: { flex: 1, width: "100%" },
   actions: {

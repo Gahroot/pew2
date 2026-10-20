@@ -57,7 +57,6 @@ import {
 } from "./daemonState";
 import { useImageCache } from "./useImageCache";
 import { openConnection } from "./daemonConnection";
-import { useVoiceAccount } from "./voice/useVoiceAccount";
 import { createActions, deliverPrompt as deliverPromptVia } from "./daemonActions";
 export type { PushAddress, TurnFinished } from "./daemonState";
 
@@ -256,14 +255,7 @@ export function useDaemon(
   // Same reason, for the rest of the options: the socket effect reads them when
   // it needs them rather than depending on them.
   const optionsRef = useRef(options);
-  const accountInbox = useRef<(message: unknown) => void>(() => {});
-  optionsRef.current = {
-    ...options,
-    onVoiceMessage: (message) => {
-      accountInbox.current(message);
-      options.onVoiceMessage?.(message);
-    },
-  };
+  optionsRef.current = options;
 
   // What each session's agent has said during its current turn, keyed by
   // session, so a notification can quote a conversation that is not on screen.
@@ -423,13 +415,6 @@ export function useDaemon(
     ws.send(JSON.stringify(secure.seal(message, envelopeHeader(message))));
     return true;
   }, []);
-
-  const voiceAccount = useVoiceAccount(
-    `${url}:${deviceId}:${pairingKey}`,
-    !!pairingKey && state.status === "online",
-    post,
-  );
-  accountInbox.current = voiceAccount.receive;
 
   // Sent outside any state updater: React may invoke an updater twice, and a
   // socket write in one would ask the daemon for the same picture twice.
@@ -726,10 +711,11 @@ export function useDaemon(
     ...actions,
     resumeNow,
     registerPush,
+    /** Send one sealed message (false when not connected). Voice uses it directly. */
+    post,
     setForeground,
     /** Sends one sealed message; false when not connected. Used by the voice hook. */
     send: post,
-    voiceAccount,
     // Exported so the UI names the same agent the composer targets: the drawer
     // and top bar must not show Claude Code while a prompt would go elsewhere.
     effectiveProviderId,

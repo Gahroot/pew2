@@ -19,12 +19,28 @@ import {
   admit,
   DAEMON_STALE_MS,
   isPairingToken,
+  isResumeKey,
+  RESUME_HEADER,
   MIN_PAIRING_TOKEN_LENGTH,
 } from "./admission.js";
+import { handleVoip, JwtCache, RateLimiter } from "./apns.js";
 
 interface Env {
   PAIRING: DurableObjectNamespace<PairingRoom>;
+  /** Secret: the APNs .p8 PEM text. Absent until `wrangler secret put APNS_KEY`. */
+  APNS_KEY?: string;
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_BUNDLE_ID?: string;
 }
+
+/**
+ * Per-isolate, best effort: the provider token is reused for 45 minutes and the
+ * per-token push limit is counted here. Losing either on an isolate restart only
+ * costs a re-sign or a slightly looser limit.
+ */
+const voipJwt = new JwtCache();
+const voipLimiter = new RateLimiter();
 
 interface Attachment {
   role: "daemon" | "app";
@@ -51,6 +67,11 @@ interface Attachment {
    * because the object is already awake to have received it.
    */
   lastMessageAt?: number;
+  /**
+   * SHA-256 of the reconnect key this daemon connected with, if it sent one:
+   * the same machine coming back with that key replaces this socket at once.
+   */
+  resumeHash?: string;
 }
 
 /**
@@ -89,6 +110,12 @@ const SEEN_WRITE_INTERVAL_MS = 20_000;
  */
 const SWEEP_INTERVAL_MS = 5 * 60_000;
 
+/** Hex SHA-256: the relay keeps a reconnect key's hash, never the key. */
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export class PairingRoom extends DurableObject {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -113,7 +140,13 @@ export class PairingRoom extends DurableObject {
     // without a Workers runtime. The validated role and deviceId come back out,
     // so what gets attached below is what was actually checked.
     const daemons = this.peers("daemon");
+    const resumeKey = url.searchParams.get("role") === "daemon" ? request.headers.get(RESUME_HEADER) : null;
+    const resumeHash = isResumeKey(resumeKey) ? await sha256Hex(resumeKey) : undefined;
     const decision = admit({
+      resumes:
+        resumeHash !== undefined &&
+        daemons.length > 0 &&
+        daemons.every((peer) => (peer.deserializeAttachment() as Attachment | null)?.resumeHash === resumeHash),
       role: url.searchParams.get("role"),
       deviceId: url.searchParams.get("deviceId"),
       daemons: daemons.length,
@@ -150,6 +183,7 @@ export class PairingRoom extends DurableObject {
       role: decision.role,
       deviceId: decision.deviceId,
       connectedAt: Date.now(),
+      ...(decision.role === "daemon" && resumeHash ? { resumeHash } : {}),
     } satisfies Attachment);
 
     server.send(JSON.stringify({ t: "ready", wire: 1, now: Date.now() }));
@@ -310,6 +344,23 @@ export default {
 
     if (url.pathname === "/health") {
       return Response.json({ ok: true });
+    }
+
+    if (url.pathname === "/voip") {
+      return handleVoip(request, {
+        config: {
+          key: env.APNS_KEY,
+          keyId: env.APNS_KEY_ID,
+          teamId: env.APNS_TEAM_ID,
+          bundleId: env.APNS_BUNDLE_ID,
+        },
+        fetch: (input, init) => fetch(input, init),
+        now: () => Date.now(),
+        jwt: voipJwt,
+        limiter: voipLimiter,
+        // Status and reason only — never a token or payload.
+        log: (line) => console.log(line),
+      });
     }
 
     if (url.pathname === "/connect") {

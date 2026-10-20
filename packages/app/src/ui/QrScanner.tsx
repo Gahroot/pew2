@@ -6,8 +6,8 @@
  * publish. Re-displaying a received secret would only add shoulder-surf and
  * screenshot exposure for no gain.
  *
- * Camera permission is genuinely optional here: pasting a link works just as
- * well, so a refusal is offered a way forward rather than treated as an error.
+ * Scanning is the only way to pair, so a refused camera is offered the way back
+ * (Settings) rather than treated as an error.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Linking, Modal, Pressable, StyleSheet, Text, View } from "react-native";
@@ -24,10 +24,12 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { theme } from "../theme";
+import { text } from "../appStyles";
 import { Pew } from "../pew/Pew";
 import { Led } from "./stage/Led";
 import { haptics } from "./haptics";
 import { CircleButton } from "./controls";
+import { ScreenHeader, HeaderButton } from "./ScreenHeader";
 import { Glass } from "./Glass";
 
 interface Props {
@@ -125,32 +127,40 @@ export function QrScanner({ visible, onClose, onScan, error, busy }: Props) {
         ) : null}
 
         {/* Sits above the camera, so it is declared after it. */}
-        <View style={[styles.overlay, { paddingTop: insets.top + theme.space(2) }]}>
-          <View style={styles.bar}>
-            <CircleButton label="Cancel scanning" size={40} onPress={close}>
-              <Ionicons name="close" size={22} color={theme.color.text} />
-            </CircleButton>
-
-            {granted ? (
-              <CircleButton
-                label={torch ? "Turn off torch" : "Turn on torch"}
-                size={40}
-                onPress={() => setTorch((on) => !on)}
-                feel={haptics.select}
-              >
-                <Ionicons
-                  name={torch ? "flashlight" : "flashlight-outline"}
-                  size={20}
-                  color={theme.color.text}
-                />
-              </CircleButton>
-            ) : null}
-          </View>
+        <View style={styles.overlay}>
+          {/* The shared header sits on the gutter itself, so it reaches past this overlay's own. */}
+          <ScreenHeader
+            style={styles.header}
+            leading={<HeaderButton glyph="close" label="Cancel scanning" onPress={close} />}
+            trailing={
+              granted ? (
+                <CircleButton
+                  label={torch ? "Turn off torch" : "Turn on torch"}
+                  onPress={() => setTorch((on) => !on)}
+                  feel={torch ? () => haptics.toggleOff() : () => haptics.toggleOn()}
+                >
+                  <Ionicons name={torch ? "flashlight" : "flashlight-outline"} size={18} color={theme.color.text} />
+                </CircleButton>
+              ) : null
+            }
+          />
 
           {granted ? (
             <View style={styles.centre} pointerEvents="none">
-              {/* A frame, not a mask: it tells the user where to aim without
-                  hiding the rest of the viewfinder. */}
+              {/* Pew right above the box he's reading, with what's happening
+                  under him; the box itself is a frame, not a mask. */}
+              <View style={styles.guide}>
+                <Pew size={72} mood={read || busy ? "happy" : "reading"} accessibilityLabel="Pew" />
+                {busy ? (
+                  <Led tone="plus">Checking the code…</Led>
+                ) : error ? (
+                  <Text style={[text.subline, styles.error]} numberOfLines={2}>
+                    {error}
+                  </Text>
+                ) : (
+                  <Led>Point me at the QR code</Led>
+                )}
+              </View>
               <Viewfinder read={read || !!busy} />
             </View>
           ) : (
@@ -176,7 +186,7 @@ export function QrScanner({ visible, onClose, onScan, error, busy }: Props) {
                   : null)}
               >
                 {permission?.canAskAgain === false
-                  ? "Turn it on in Settings, or paste the link."
+                  ? "Turn it on in Settings."
                   : "Only used to read the code."}
               </Text>
               {permission?.canAskAgain !== false ? (
@@ -194,35 +204,10 @@ export function QrScanner({ visible, onClose, onScan, error, busy }: Props) {
                   </Pressable>
                 </Glass>
               ) : null}
-              <Glass radius={theme.radius.lg} interactive>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Paste the link instead"
-                  onPress={() => {
-                    haptics.tap();
-                    close();
-                  }}
-                  style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
-                >
-                  <Text style={styles.secondaryText}>Paste a link</Text>
-                </Pressable>
-              </Glass>
             </View>
           )}
-          {granted ? (
-            <View style={[styles.footer, { paddingBottom: insets.bottom + theme.space(4) }]} pointerEvents="none">
-              <Pew size={56} mood={read || busy ? "happy" : "thinking"} style={styles.footerPew} accessibilityLabel="Pew" />
-              {/* Progress outranks the error: a check in flight has already
-                  superseded the last failure. */}
-              {busy ? (
-                <Led tone="plus" style={styles.footerText}>Checking the code…</Led>
-              ) : error ? (
-                <Text style={[styles.footerText, styles.error]} numberOfLines={2}>{error}</Text>
-              ) : (
-                <Led style={styles.footerText}>Point me at the QR code</Led>
-              )}
-            </View>
-          ) : null}
+          {/* Holds the bottom inset, so the box sits a little above centre. */}
+          {granted ? <View style={{ height: insets.bottom + theme.space(10) }} /> : null}
         </View>
       </View>
     </Modal>
@@ -291,7 +276,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     paddingHorizontal: theme.gutter,
   },
-  bar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  header: { marginHorizontal: -theme.gutter },
   pressed: { opacity: 0.6 },
   centre: { flex: 1, alignItems: "center", justifyContent: "center", gap: theme.space(4) },
   reticle: { width: RETICLE, height: RETICLE },
@@ -315,11 +300,10 @@ const styles = StyleSheet.create({
     shadowRadius: theme.stage.glow,
     shadowOffset: { width: 0, height: 0 },
   },
-  footer: { flexDirection: "row", alignItems: "center", gap: theme.space(2) },
-  // The globe fills ~60% of its box.
-  footerPew: { margin: -theme.space(2) },
-  footerText: { flex: 1 },
-  error: { color: theme.color.danger, fontSize: theme.font.body },
+  // Pew and the line under him, right above the box (the globe fills ~60% of
+  // its box, so the negative margin closes the air under it).
+  guide: { alignItems: "center", gap: theme.space(1), marginBottom: theme.space(2) },
+  error: { color: theme.color.danger },
   permissionTitle: {
     color: theme.color.text,
     fontFamily: theme.display.semibold,
@@ -340,11 +324,4 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.space(8),
   },
   allowText: { color: theme.color.text, fontSize: 16, fontWeight: "700" },
-  secondary: {
-    minHeight: theme.size.touch,
-    justifyContent: "center",
-    paddingVertical: theme.space(2),
-    paddingHorizontal: theme.space(8),
-  },
-  secondaryText: { color: theme.color.text, fontSize: 15, fontWeight: "600" },
 });

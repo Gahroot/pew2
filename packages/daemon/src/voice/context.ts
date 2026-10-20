@@ -28,6 +28,7 @@ const SOURCE_LINES: Record<string, string> = {
   action_button: "Opened from the Action Button.",
   siri_shortcut: "Opened from Siri.",
   in_app: "Opened in the app.",
+  call: "A call with Pew.",
   lock_screen: "Opened from the Lock Screen.",
 };
 

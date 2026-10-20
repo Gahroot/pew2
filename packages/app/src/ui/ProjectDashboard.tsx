@@ -10,7 +10,7 @@ import { theme } from "../theme";
 import { Sheet } from "./Sheet";
 import { buildDashboard, rowDismissal, type AgentState, type ProjectRow, type SessionRef } from "../voice/dashboard";
 import { haptics } from "./haptics";
-import type { DismissRequest } from "./voiceController";
+import type { DismissRequest } from "./taskController";
 import { taskStatus } from "../voice/taskBoard";
 import type { VoiceTask } from "../voice/types";
 import type { VoiceStore } from "../voice/voiceStore";

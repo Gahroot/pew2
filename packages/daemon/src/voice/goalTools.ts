@@ -23,7 +23,7 @@ import {
 import type { Resolution } from "./registry.js";
 import { speakable, type ConfirmationTokens } from "./safety.js";
 import { TERMINAL, type StoredTask, type VoiceStore } from "./store.js";
-import type { ToolResult } from "./tools.js";
+import type { ToolResult } from "./taskTools.js";
 import type { VoiceProject } from "./types.js";
 
 const EZCODER = "ezcoder";

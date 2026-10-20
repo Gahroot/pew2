@@ -121,18 +121,15 @@ function clip(text: string): string {
 }
 
 /**
- * Build the snapshot from what the app already holds.
- *
- * Rows are ordered by urgency, then by the order the app lists conversations
- * in (most recent first), so a widget too small for every row always keeps
- * the one that is waiting on you. A conversation still being opened
- * (`pending:`) has no id the app could open from a link, so it is left out.
+ * Every conversation as a widget row, in the app's list order (newest first),
+ * unsliced. The home dashboard reads the same rows, so the widget and the
+ * screen never disagree about what is waiting or working.
  */
-export function widgetSnapshot(input: WidgetInput): WidgetContent {
+export function widgetRows(input: WidgetInput): WidgetRow[] {
   const providers = new Map(input.providers.map((provider) => [provider.id, provider]));
-  const all = input.sessions
+  return input.sessions
     .filter((session) => !session.id.startsWith("pending:"))
-    .map((session, index) => {
+    .map((session) => {
       const provider = providers.get(session.providerId);
       const row: WidgetRow = {
         id: session.id,
@@ -144,8 +141,20 @@ export function widgetSnapshot(input: WidgetInput): WidgetContent {
       if (provider?.name) row.agent = provider.name;
       if (provider?.color && /^#[0-9a-f]{6}$/i.test(provider.color)) row.color = provider.color.toLowerCase();
       if (session.startedAt && Number.isFinite(session.startedAt) && session.startedAt > 0) row.at = session.startedAt;
-      return { row, index };
+      return row;
     });
+}
+
+/**
+ * Build the snapshot from what the app already holds.
+ *
+ * Rows are ordered by urgency, then by the order the app lists conversations
+ * in (most recent first), so a widget too small for every row always keeps
+ * the one that is waiting on you. A conversation still being opened
+ * (`pending:`) has no id the app could open from a link, so it is left out.
+ */
+export function widgetSnapshot(input: WidgetInput): WidgetContent {
+  const all = widgetRows(input).map((row, index) => ({ row, index }));
   // Same order as the drawer's times: newest first, ties keep the list order.
   const recent = [...all].sort((a, b) => (b.row.at ?? 0) - (a.row.at ?? 0) || a.index - b.index);
   all.sort((a, b) => RANK[a.row.state] - RANK[b.row.state] || a.index - b.index);

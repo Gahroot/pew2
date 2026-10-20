@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { TurnFinished } from "../useDaemon";
 import { finishedNotice } from "../notificationPolicy";
-import { notify, onNotificationChoice, type NotificationChoice } from "./notifier";
+import { notify, onNotificationChoice, onVoiceRequest, type NotificationChoice } from "./notifier";
 
 export function useTurnBanners() {
   // Whether the app is the thing on screen. A ref, not state: it is read when a
@@ -25,6 +25,9 @@ export function useTurnBanners() {
   // over the socket seconds later.
   const [choice, setChoice] = useState<NotificationChoice | undefined>(undefined);
   useEffect(() => onNotificationChoice(setChoice), []);
+  // A tapped "pew2 needs you" push: open into a call (focus optional).
+  const [voiceRequest, setVoiceRequest] = useState<{ focus?: string } | undefined>(undefined);
+  useEffect(() => onVoiceRequest(setVoiceRequest), []);
 
   // Whether the daemon has somewhere to push.
   //
@@ -52,5 +55,5 @@ export function useTurnBanners() {
     if (notice) void notify(notice);
   }, []);
 
-  return { choice, setChoice, pushExpected, announceTurn };
+  return { choice, setChoice, voiceRequest, setVoiceRequest, pushExpected, announceTurn };
 }

@@ -61,6 +61,12 @@ export type ShimmerTextProps = {
    * pixels.
    */
   maxFontSizeMultiplier?: number;
+  /**
+   * Stop the sweep and show the resting colour, without unmounting: a row that
+   * is lit only some of the time (the call screen's activity line) toggles this
+   * instead of swapping components, so lighting up never replaces the text.
+   */
+  paused?: boolean;
 };
 
 function ShimmerTextView({
@@ -73,6 +79,7 @@ function ShimmerTextView({
   gap = 0,
   numberOfLines,
   maxFontSizeMultiplier,
+  paused = false,
 }: ShimmerTextProps) {
   const sweep = useRef(new Animated.Value(0)).current;
   const reduceMotion = useReducedMotion();
@@ -82,7 +89,11 @@ function ShimmerTextView({
   // Paused while backgrounded. This runs for as long as the agent is thinking,
   // which is exactly when someone is most likely to have switched away.
   useEffect(() => {
-    if (reduceMotion || !appActive || width === 0) return;
+    if (reduceMotion || !appActive || width === 0 || paused) {
+      // Parked off the left edge: nothing lit, and the next pass starts clean.
+      sweep.setValue(0);
+      return;
+    }
     const pass = Animated.timing(sweep, {
       toValue: 1,
       duration,
@@ -97,7 +108,7 @@ function ShimmerTextView({
     );
     loop.start();
     return () => loop.stop();
-  }, [duration, gap, reduceMotion, appActive, sweep, width]);
+  }, [duration, gap, reduceMotion, appActive, sweep, width, paused]);
 
   // The mask only reads alpha, so this colour matters solely where a platform
   // has no mask (web): there the text is drawn directly, and naming the resting

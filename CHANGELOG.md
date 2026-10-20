@@ -11,6 +11,48 @@ installs them separately, and what an app and a daemon must agree on is
 
 Dates are the day the tag was cut.
 
+## 0.9.25 — 2026-10-20
+
+### Changed
+
+- **`pew2 pair` shows the QR code and nothing secret.** The pairing link (which
+  holds the token and the encryption key) is no longer printed under the code,
+  the token row and its fingerprint are gone, and so is the *copy link* key. The
+  screen is now the code, one line saying to scan it with pew2, and one status
+  line. A screenshot of it gives nothing away. `pew2 pair --json` still returns
+  the link for agents that drive setup.
+- **`pew2 setup` no longer lists the built-in test agent** as "not starting" on
+  every run. It is hidden exactly as the daemon hides it, unless
+  `PEW2_EXPERIMENTAL=1`.
+
+## 0.9.24 — 2026-10-20
+
+### Added
+
+- **Call Pew.** The phone app can now call a voice assistant, Pew, about the
+  agents on this computer: ask what's going on, pass an agent a message, answer
+  its approval or question, or open a past chat and start a new one, all by
+  voice. Pew runs on the OpenAI login an agent already has (GG Coder or Codex),
+  so there's nothing to set up. Approving by voice is always read back first.
+- **Pew can ring you.** Turn on *Ring me* in the app and, while it's on, a chat
+  stuck waiting on you rings your phone like a call (CallKit), paced so it
+  never rings non-stop. "Call me back in ten minutes" and "call me when billing
+  is done" ring once, when asked.
+- **Calls carry on.** The last 20 back-and-forths of your calls about each chat
+  are kept on this computer (`voice-threads.json`, owner-only, deleted after 30
+  days or with *Forget call history*), so calling again picks up where you left
+  off. Nothing in it is ever treated as an instruction.
+
+### Fixed
+
+- **Back online at once after a restart.** After a network blip or a restart,
+  the relay still held the old connection and turned this computer away for up
+  to 90 seconds; it now proves it is the same machine and is let straight back
+  in, and a phone reconnects within about two seconds.
+- **GG Goals no longer stops with "stopped by SIGTERM".** Loading goals while
+  the phone reconnected could close the GG Coder process the list was running
+  on.
+
 ## 0.9.23 — 2026-10-17
 
 ### Added

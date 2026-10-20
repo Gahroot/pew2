@@ -162,3 +162,6 @@ export function homeMood(online: boolean, busy: boolean): PewMood {
   if (!online) return "sleepy";
   return busy ? "working" : "idle";
 }
+
+/** Pew, the voice assistant on a call: the same purple, named for what it is. */
+export const PEW_VOICE_COLOR = KEN_COLOR;

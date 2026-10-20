@@ -83,7 +83,7 @@ export function LaunchScreen({ onConnect }: Props) {
   return (
     <View style={styles.root}>
       <DotGrid />
-      <View style={[styles.skipRow, { paddingTop: insets.top + theme.space(2) }]}>
+      <View style={[styles.skipRow, { paddingTop: insets.top + theme.headerInset }]}>
         {!awake ? (
           <Pressable
             onPress={connect}

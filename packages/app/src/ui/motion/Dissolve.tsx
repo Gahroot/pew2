@@ -25,13 +25,25 @@ export interface DissolveProps {
   dissolveKey?: string | number;
   /** ms before starting: stagger a few bands top to bottom. */
   delay?: number;
+  /**
+   * Epoch ms this entrance is due, for a cascade whose members mount at
+   * different times (a list's later batches): each waits for its own slot
+   * from one shared clock instead of counting `delay` from its own mount.
+   * Overrides `delay`.
+   */
+  startAt?: number;
+  /** With `startAt`: a mount that missed its slot by more than a beat appears settled (true) or fades in now (false). */
+  lateSettled?: boolean;
   /** False renders settled with no animation. */
   enabled?: boolean;
   style?: StyleProp<ViewStyle>;
   pointerEvents?: "auto" | "none" | "box-none" | "box-only";
 }
 
-export function Dissolve({ children, kind = "in", dissolveKey, delay = 0, enabled = true, style, pointerEvents }: DissolveProps) {
+/** How far past its slot a `startAt` entrance may still play. */
+const LATE_MS = 250;
+
+export function Dissolve({ children, kind = "in", dissolveKey, delay = 0, startAt, lateSettled = true, enabled = true, style, pointerEvents }: DissolveProps) {
   const reduceMotion = useReducedMotion();
   const progress = useSharedValue(enabled ? 0 : 1);
   const plan = dissolvePlan(kind, reduceMotion, delay);
@@ -42,9 +54,18 @@ export function Dissolve({ children, kind = "in", dissolveKey, delay = 0, enable
       progress.value = 1;
       return;
     }
+    let wait = plan.delay;
+    if (startAt !== undefined) {
+      const due = startAt - Date.now();
+      if (due < -LATE_MS && lateSettled) {
+        progress.value = 1;
+        return;
+      }
+      wait = reduceMotion ? 0 : Math.max(0, due);
+    }
     progress.value = 0;
     const [a, b, c, d] = plan.easing;
-    progress.value = withDelay(plan.delay, withTiming(1, { duration: plan.duration, easing: Easing.bezier(a, b, c, d) }));
+    progress.value = withDelay(wait, withTiming(1, { duration: plan.duration, easing: Easing.bezier(a, b, c, d) }));
     return () => cancelAnimation(progress);
     // Replays only on a new key or toggling on; the plan is derived from these.
     // eslint-disable-next-line react-hooks/exhaustive-deps

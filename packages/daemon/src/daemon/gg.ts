@@ -31,6 +31,7 @@ export abstract class DaemonGg extends DaemonProjects {
     });
     if (!parsed.success) return;
     session.plan = parsed.data;
+    this.touchInbox();
     if (session.live) this.send(parsed.data);
   }
 
@@ -303,8 +304,9 @@ export abstract class DaemonGg extends DaemonProjects {
 
   /** One backend's goals, stamped with its `providerId` (gg stays unstamped: absent means gg-goals). */
   protected async listBackendGoals(backend: GoalsBackend): Promise<wire.GoalSummary[]> {
-    const handle = await this.goalsConnection(backend);
-    const answer = await handle.extRequest<{ goals?: unknown }>("_gg/goals/list", {});
+    const answer = await this.onBorrowed(await this.goalsConnection(backend), (handle) =>
+      handle.extRequest<{ goals?: unknown }>("_gg/goals/list", {}),
+    );
     const goals = (Array.isArray(answer?.goals) ? answer.goals : []).flatMap((value) => {
       const goal = this.stampGoal(DaemonGg.readGoal(value), backend);
       return goal ? [goal] : [];
@@ -330,13 +332,14 @@ export abstract class DaemonGg extends DaemonProjects {
     goalsId: string = GG_GOALS_BACKEND.goalsId,
   ): Promise<wire.GoalSummary> {
     const backend = this.backendFor(goalsId);
-    const handle = await this.goalsConnection(backend);
-    const answer = await handle.extRequest<{ goal?: unknown }>("_gg/goals/create", {
-      name: input.name,
-      goal: input.goal,
-      context: input.context,
-      ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
-    });
+    const answer = await this.onBorrowed(await this.goalsConnection(backend), (handle) =>
+      handle.extRequest<{ goal?: unknown }>("_gg/goals/create", {
+        name: input.name,
+        goal: input.goal,
+        context: input.context,
+        ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+      }),
+    );
     const goal = this.stampGoal(DaemonGg.readGoal(answer?.goal), backend);
     if (!goal) throw new Error(`${backend.agentName} did not return the new goal.`);
     const names = this.goalNames.get(goalsId) ?? new Map<string, string>();
@@ -389,8 +392,9 @@ export abstract class DaemonGg extends DaemonProjects {
     if (action === "delete") {
       const live = this.goalSessionEntry(goal.path, backend.goalsId);
       if (live?.[1].working) throw new Error(`${backend.name} is working on this goal. Pause it first.`);
-      const handle = await this.goalsConnection(backend);
-      await handle.extRequest("_gg/goals/delete", { id: goalId });
+      await this.onBorrowed(await this.goalsConnection(backend), (handle) =>
+        handle.extRequest("_gg/goals/delete", { id: goalId }),
+      );
       return undefined;
     }
     const { sessionId, session } = this.openGoalSession(goal);

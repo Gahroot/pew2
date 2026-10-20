@@ -48,6 +48,8 @@ interface CircleButtonProps {
   style?: ViewStyle;
   /** Override the press sensation, for controls that commit rather than open. */
   feel?: () => void;
+  /** A held press (with its own haptic); absent: holding does nothing extra. */
+  onLongPress?: () => void;
 }
 
 /**
@@ -66,6 +68,7 @@ export function CircleButton({
   tint,
   style,
   feel,
+  onLongPress,
 }: CircleButtonProps) {
   const press = withHaptic(onPress, feel);
   const agent = useAgentColor();
@@ -85,6 +88,7 @@ export function CircleButton({
     <Animated.View style={[{ width: size, height: size }, scaleStyle, style]}>
       <Pressable
         onPress={press}
+        onLongPress={onLongPress ? withHaptic(onLongPress) : undefined}
         onPressIn={() => setDown(true)}
         onPressOut={() => setDown(false)}
         disabled={disabled}

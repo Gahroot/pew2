@@ -10,7 +10,7 @@
 import { memo, type ReactNode } from "react";
 import { Pressable, type AccessibilityRole, type AccessibilityState, type StyleProp, type ViewStyle } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
-import { haptics } from "../haptics";
+import { haptics, type Feel } from "../haptics";
 import { useReducedMotion } from "../useReducedMotion";
 import { SPRING } from "../../motion";
 
@@ -20,7 +20,7 @@ const PRESS = SPRING.press;
 export interface PressScaleProps {
   onPress?: () => void;
   onLongPress?: () => void;
-  feel?: keyof typeof haptics | "none";
+  feel?: Feel | "none";
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;

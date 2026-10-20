@@ -9,7 +9,6 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 import Reanimated, { runOnJS, useAnimatedReaction, useAnimatedStyle, useSharedValue, type SharedValue } from "react-native-reanimated";
 import { theme } from "../theme";
 import { lastActiveLabel } from "../ggState";
-import { recentChatsFit } from "../homeFit";
 import { Dissolve } from "./motion/Dissolve";
 import { Pew } from "../pew/Pew";
 import { homeMood, pewInk } from "../pew/palette";
@@ -18,6 +17,7 @@ import { Led } from "./stage/Led";
 import { PressScale } from "./stage/PressScale";
 import { dashedOutline } from "./stage/DashedRule";
 import { AgentGlow } from "./AgentGlow";
+import { fatalNotice } from "../fatalNotice";
 
 export interface HomeChat {
   id: string;
@@ -50,14 +50,10 @@ export interface HomeGreetingProps {
    * settles into the middle of what is left.
    */
   typing?: SharedValue<number>;
+  /** The line under the greeting when Pew is tappable. */
+  hint?: string | undefined;
   /** Pew smiles (its tap is about to open the agent switcher, which carries the smile on). */
   smiling?: boolean;
-  /**
-   * The tallest this block can be, centred as it is, and still clear the
-   * composer (`homeMaxHeight`). The recent-chats row is left out when it would
-   * not fit; undefined keeps it.
-   */
-  maxHeight?: number;
 }
 
 /** Pew's size while typing, as a fraction of the hero. */
@@ -68,14 +64,10 @@ const HERO = 200;
 const GLOW = 340;
 const MAX_CHATS = 6;
 
-export function HomeGreeting({ color, busy, online = true, failed = false, text, status, onPressPew, chats, onOpenChat, typing, smiling = false, maxHeight }: HomeGreetingProps) {
+export function HomeGreeting({ color, busy, online = true, failed = false, text, status, onPressPew, chats, onOpenChat, typing, smiling = false, hint = "Tap Pew to switch agent" }: HomeGreetingProps) {
   const mood: PewMood = smiling ? "happy" : failed ? "oops" : homeMood(online, busy);
   const ink = pewInk(color);
-  // The block's height without the row: the same whether the row is drawn or
-  // not, so deciding from it cannot flip the row on and off.
-  const [core, setCore] = useState(0);
-  const withRow = onOpenChat !== undefined && recentChatsFit(core, ROW_SPACE, maxHeight);
-  const shown = withRow ? (chats ?? []).slice(0, MAX_CHATS) : [];
+  const shown = (chats ?? []).slice(0, MAX_CHATS);
   // Height of everything under Pew, so a typing Pew can move down by half of
   // it and sit in the middle of the block once the rest has gone.
   const below = useSharedValue(0);
@@ -102,15 +94,7 @@ export function HomeGreeting({ color, busy, online = true, failed = false, text,
     },
   );
   return (
-    <View
-      style={styles.root}
-      onLayout={(e) => {
-        // Measured with whatever this render drew, so the row's space comes off
-        // only when it was there.
-        const height = Math.round(e.nativeEvent.layout.height) - (withRow ? ROW_SPACE : 0);
-        setCore((prev) => (prev === height ? prev : height));
-      }}
-    >
+    <View style={styles.root}>
       <Reanimated.View style={[styles.spot, pewStyle]}>
         <AgentGlow color={ink} size={GLOW} />
         <Dissolve>
@@ -144,27 +128,34 @@ export function HomeGreeting({ color, busy, online = true, failed = false, text,
       {/* The line's space is held whether or not there is a greeting yet, so
           it fades in where it will stay instead of nudging what is under it. */}
       <View style={styles.textHold}>
-        {text !== undefined && (
+        {text !== undefined && failed ? (
+          // A refusal is a paragraph, not a greeting: shrunk onto one line it
+          // was unreadable. Headline at the greeting's size (two lines at most),
+          // then the fix as a wrapped note with its command picked out.
+          <Dissolve kind="swap" dissolveKey={text} delay={40} style={styles.textWrap}>
+            <FatalText message={text} />
+          </Dissolve>
+        ) : text !== undefined ? (
           <Dissolve kind="swap" dissolveKey={text} delay={40} style={styles.textWrap}>
             <Text style={styles.text} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>
               {text}
             </Text>
           </Dissolve>
-        )}
+        ) : null}
       </View>
-      {onPressPew && (
+      {/* Switching agent can't help while the machine refuses this phone. */}
+      {onPressPew && !failed && (
         <Text style={styles.hint} numberOfLines={1}>
-          Tap Pew to switch agent
+          {hint}
         </Text>
       )}
       {/* The row's height is held from the first frame, empty or not: the
           history arrives a moment after launch, and adding the row then pushed
           Pew and the greeting up the screen. Now the cards fade into a space
           that was already there. (A brand-new install with no chats keeps the
-          empty band; the layout never jumps.) A screen too short for the row
-          (see `homeFit.ts`) draws neither the row nor its band. */}
-      {withRow && shown.length === 0 && <View style={styles.cardsHold} />}
-      {withRow && shown.length > 0 && onOpenChat && (
+          empty band; the layout never jumps.) */}
+      {onOpenChat && shown.length === 0 && <View style={styles.cardsHold} />}
+      {shown.length > 0 && onOpenChat && (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -202,10 +193,32 @@ const GREETING_LINE = theme.line.greeting;
 
 /** A recent-chat card's height, fixed so the row is the same before and after. */
 const CARD_HEIGHT = 76;
-/** Space above the row (`cards`/`cardsHold` marginTop). */
-const ROW_GAP = theme.space(6);
-/** All the height the row adds to the block, drawn or held. */
-const ROW_SPACE = CARD_HEIGHT + ROW_GAP;
+function FatalText({ message }: { message: string }) {
+  const notice = fatalNotice(message);
+  return (
+    <View style={styles.fatal}>
+      {/* No shrink-to-fit: inside a centred column it measured against no
+          width and shrank the line to a speck. The wording is short instead. */}
+      <Text style={styles.text} numberOfLines={2} accessibilityRole="header">
+        {notice.headline}
+      </Text>
+      {notice.detail.length > 0 ? (
+        <Text style={styles.fatalDetail} numberOfLines={2}>
+          {notice.detail.map((run, i) =>
+            run.command ? (
+              <Text key={i} style={styles.fatalCommand} selectable>
+                {run.text}
+              </Text>
+            ) : (
+              run.text
+            ),
+          )}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 /** The card's height is fixed, so its text may grow only this far before it would clip. */
 const CARD_FONT_SCALE = 1.3;
 
@@ -223,11 +236,14 @@ const styles = StyleSheet.create({
     lineHeight: theme.line.greeting,
     textAlign: "center",
   },
-  hint: { color: theme.color.textDim, fontSize: 13, marginTop: theme.space(1) },
-  cards: { alignSelf: "stretch", marginTop: ROW_GAP, flexGrow: 0 },
+  hint: { color: theme.color.textDim, fontSize: theme.font.small, marginTop: theme.space(1) },
+  fatal: { alignSelf: "stretch", gap: theme.space(2), paddingBottom: theme.space(2) },
+  fatalDetail: { color: theme.color.textDim, fontSize: theme.font.small, lineHeight: 19, textAlign: "center" },
+  fatalCommand: { color: theme.color.text, fontWeight: "600" },
+  cards: { alignSelf: "stretch", marginTop: theme.space(6), flexGrow: 0 },
   cardsRow: { paddingHorizontal: theme.gutter, gap: theme.space(2) },
   card: { ...dashedOutline, width: 148, height: CARD_HEIGHT, borderRadius: 12, padding: theme.space(3), gap: theme.space(1.5) },
   // The cards' space while there are none yet: the row's own height.
-  cardsHold: { alignSelf: "stretch", marginTop: ROW_GAP, height: CARD_HEIGHT },
+  cardsHold: { alignSelf: "stretch", marginTop: theme.space(6), height: CARD_HEIGHT },
   cardTitle: { color: theme.color.text, fontSize: 13, lineHeight: 17 },
 });

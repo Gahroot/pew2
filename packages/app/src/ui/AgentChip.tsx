@@ -6,6 +6,7 @@ import { agentChipColors } from "../agentChipColors";
 import { Glass } from "./Glass";
 import { Pew } from "../pew/Pew";
 import { haptics } from "./haptics";
+import { agentSound } from "../soundsPolicy";
 import type { Provider } from "../useDaemon";
 
 interface AgentChipProps {
@@ -22,7 +23,7 @@ function AgentChipView({ provider, selected, onPress }: AgentChipProps) {
       accessibilityRole="button"
       accessibilityLabel={enabled ? provider.name : `${provider.name}, unavailable. ${provider.unavailableReason ?? ""}`}
       accessibilityState={{ selected, disabled: !enabled }}
-      onPress={() => { haptics.select(); onPress(provider.id); }}
+      onPress={() => { if (!selected) haptics.chosen(agentSound(provider.id)); else haptics.tap(); onPress(provider.id); }}
       style={[styles.body, { backgroundColor: colors.background }]}
     >
       {/* Each agent's own Pew, in its brand colour. Picking an agent wakes it;

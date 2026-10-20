@@ -8,15 +8,18 @@
  */
 import * as SecureStore from "expo-secure-store";
 import { decodeCursor, encodeCursor, type PersistedCursor } from "./voice/voiceStore";
-import { decodeQuietHours, encodeQuietHours, type QuietHours } from "./voice/quietHours";
+import { parseHomeCards } from "./homeDashboard";
+import { parseDismissedAt } from "./notificationAsk";
+import { parseProgress, type Progress } from "./onboarding";
 import { fromCachedProviders, toCachedProviders } from "./providerCache";
 import type { Provider } from "./useDaemon";
 
 const LAST_PROVIDER_KEY = "pew2.lastProviderId";
 const VOICE_CURSOR_KEY = "pew2.voiceCursor";
-const QUIET_HOURS_KEY = "pew2.voice.quietHours";
-const VOICE_CALL_KEY = "pew2.voiceCall";
-const NATIVE_CALL_KEY = "pew2.nativeCall";
+const VOICE_CONSENT_KEY = "pew2.voiceConsent.v1";
+const HOME_CARDS_KEY = "pew2.homeCards.v1";
+const ALERTS_DISMISSED_KEY = "pew2.alertsDismissedAt";
+const ONBOARDING_KEY = "pew2.onboarding";
 const PROVIDERS_KEY = "pew2.providers";
 
 /** The agent last targeted on this device, or null if never chosen. */
@@ -111,63 +114,74 @@ export async function clearVoiceCursor(): Promise<void> {
   }
 }
 
-/** Do-not-disturb for voice notifications. Absent (older install) means off. */
-export async function loadQuietHours(): Promise<QuietHours> {
-  try {
-    return decodeQuietHours(await SecureStore.getItemAsync(QUIET_HOURS_KEY));
-  } catch {
-    return decodeQuietHours(null);
-  }
-}
-
-export async function saveQuietHours(q: QuietHours): Promise<void> {
-  try {
-    await SecureStore.setItemAsync(QUIET_HOURS_KEY, encodeQuietHours(q));
-  } catch {
-    // The setting reverts to off; nothing is lost beyond a preference.
-  }
-}
-
 /**
- * "Voice call": whether Pew's finished / needs-you pushes are worded as a call.
- * Off unless the user turned it on; anything unreadable also means off.
+ * Whether the user agreed, once, that calls send their voice to OpenAI (App
+ * Review 5.1.2(i): name the third-party AI and ask before the first call).
+ * A store that can't be read means "not yet": asking again is the safe side.
  */
-export async function loadVoiceCall(): Promise<boolean> {
+export async function loadVoiceConsent(): Promise<boolean> {
   try {
-    return (await SecureStore.getItemAsync(VOICE_CALL_KEY)) === "1";
+    return (await SecureStore.getItemAsync(VOICE_CONSENT_KEY)) === "yes";
   } catch {
     return false;
   }
 }
 
-export async function saveVoiceCall(on: boolean): Promise<void> {
+export async function saveVoiceConsent(): Promise<void> {
   try {
-    if (on) await SecureStore.setItemAsync(VOICE_CALL_KEY, "1");
-    else await SecureStore.deleteItemAsync(VOICE_CALL_KEY);
+    await SecureStore.setItemAsync(VOICE_CONSENT_KEY, "yes");
   } catch {
-    // The setting reverts to off; nothing is lost beyond a preference.
+    // Asked again next time, which is harmless.
   }
 }
 
-/**
- * "Native call screen": ring with CallKit / Telecom, and run voice
- * conversations as system calls. Off unless the user turned it on; anything
- * unreadable also means off, because a phone that rings by surprise is worse
- * than one that shows a banner.
- */
-export async function loadNativeCall(): Promise<boolean> {
+/** When the alerts card was last answered "Not now" (see `notificationAsk.ts`). */
+export async function loadAlertsDismissedAt(): Promise<number | undefined> {
   try {
-    return (await SecureStore.getItemAsync(NATIVE_CALL_KEY)) === "1";
+    return parseDismissedAt(await SecureStore.getItemAsync(ALERTS_DISMISSED_KEY));
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-export async function saveNativeCall(on: boolean): Promise<void> {
+/** Onboarding progress (`onboarding.ts`); unreadable reads as never started. */
+export async function loadOnboarding(): Promise<Progress | undefined> {
   try {
-    if (on) await SecureStore.setItemAsync(NATIVE_CALL_KEY, "1");
-    else await SecureStore.deleteItemAsync(NATIVE_CALL_KEY);
+    return parseProgress(await SecureStore.getItemAsync(ONBOARDING_KEY));
   } catch {
-    // The setting reverts to off; nothing is lost beyond a preference.
+    return undefined;
+  }
+}
+
+export async function saveOnboarding(progress: Progress): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(ONBOARDING_KEY, progress);
+  } catch {
+    // Resumes one step early next launch at worst.
+  }
+}
+
+export async function saveAlertsDismissedAt(at: number): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(ALERTS_DISMISSED_KEY, String(at));
+  } catch {
+    // Worst case the card returns sooner than a week.
+  }
+}
+
+/** How many cards home showed last time (`parseHomeCards`), for laying it out before the list arrives. */
+export async function loadHomeCards(): Promise<number | undefined> {
+  try {
+    return parseHomeCards(await SecureStore.getItemAsync(HOME_CARDS_KEY));
+  } catch {
+    return undefined;
+  }
+}
+
+export async function saveHomeCards(count: number): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(HOME_CARDS_KEY, String(count));
+  } catch {
+    // Laid out for the old count next launch, then corrected.
   }
 }

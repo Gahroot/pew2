@@ -9,7 +9,7 @@
 import { speakable } from "./safety.js";
 import type { FocusRef, StoredTask } from "./store.js";
 import { MAX_FOCUS } from "./store.js";
-import type { ToolResult } from "./tools.js";
+import type { ToolResult } from "./taskTools.js";
 import type { VoiceEvent, VoiceProject } from "./types.js";
 
 const MINUTE = 60_000;

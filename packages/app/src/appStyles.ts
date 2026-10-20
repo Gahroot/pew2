@@ -45,16 +45,13 @@ export const styles = StyleSheet.create({
     zIndex: 3,
   },
   navFade: { zIndex: 2 },
-  navAction: { width: theme.size.control, flexShrink: 0 },
-  // Two controls wide on the right in a goal; the menu side takes the same width
-  // so the title stays centred on the screen. Projects and Voice sit beside the
-  // goal's own two, so the group wraps into rows of two: in one row the four
-  // overflowed leftwards over the title, which a 375pt phone hid entirely.
+  navAction: { width: theme.size.control, flexShrink: 0, flexDirection: "row", justifyContent: "flex-end" },
+  // Two controls on the right in a goal; the menu side takes the same width so
+  // the title stays centred on the screen.
   navLeadGoal: { justifyContent: "flex-start" },
   navActionsGoal: {
     width: theme.size.control * 2 + theme.space(2),
     flexDirection: "row",
-    flexWrap: "wrap",
     justifyContent: "flex-end",
     gap: theme.space(2),
     flexShrink: 0,
@@ -137,5 +134,28 @@ export const styles = StyleSheet.create({
     bottom: 0,
     width: theme.space(5),
     zIndex: 4,
+  },
+});
+
+/**
+ * The app's shared text styles, so a screen never invents its own sizes:
+ * - `headline`: the line under Pew (home, empty states, onboarding), in the
+ *   dot-matrix display face at greeting size.
+ * - `subline`: the one dim line under a headline.
+ * Pair with theme.font / theme.line only; never a raw number.
+ */
+export const text = StyleSheet.create({
+  headline: {
+    color: theme.color.text,
+    fontFamily: theme.display.regular,
+    fontSize: theme.font.greeting,
+    lineHeight: theme.line.greeting,
+    textAlign: "center",
+  },
+  subline: {
+    color: theme.color.textDim,
+    fontSize: theme.font.small,
+    lineHeight: 19,
+    textAlign: "center",
   },
 });

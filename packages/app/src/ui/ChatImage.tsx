@@ -135,7 +135,10 @@ function ChatImageView({ image }: { image: ChatImageModel }) {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Image failed to load. ${message}. Tap to retry`}
-        onPress={retry}
+        onPress={() => {
+          haptics.tap();
+          retry?.();
+        }}
         style={({ pressed }) => [
           styles.frame,
           styles.errorCard,

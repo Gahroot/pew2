@@ -15,7 +15,6 @@ import { Pixel } from "./stage/Pixel";
 import { StageChip } from "./StageChip";
 import { theme } from "../theme";
 import { haptics } from "./haptics";
-import { sounds } from "./sounds";
 import { CommandToken } from "./CommandToken";
 import { splitCommand } from "../slashCommands";
 import { AttachmentChips } from "./AttachmentChips";
@@ -146,7 +145,7 @@ function ComposerView({
             <Pressable
               style={({ pressed }) => [styles.commandTarget, pressed && styles.pressed]}
               accessibilityRole="button" accessibilityLabel={`Remove ${split.command}`}
-              onPress={() => { onChangeText(split.rest.replace(/^ /, "")); input.current?.focus(); }}
+              onPress={() => { haptics.tap(); onChangeText(split.rest.replace(/^ /, "")); input.current?.focus(); }}
             >
               <View style={styles.tag}>
                 <CommandToken text={split.command} size={theme.font.small} lineHeight={18} />
@@ -209,7 +208,7 @@ function ComposerView({
             onPress={() => {
               if (stopping) { haptics.warned(); onStop?.(); }
               else if (showMic) dictation?.toggle();
-              else { haptics.sent(); sounds.play("send"); onSend(); }
+              else { haptics.sent(); onSend(); }
             }}
           >
             <View style={[styles.sendPill, ((!showMic && !sendDisabled) || dictation?.listening) && { backgroundColor: agent, shadowColor: agent, shadowOpacity: 0.6 }]}>

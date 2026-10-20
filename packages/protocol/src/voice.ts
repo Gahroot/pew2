@@ -1,37 +1,21 @@
 /**
- * Voice orchestration wire messages (app <-> daemon).
+ * Voice task wire messages (app <-> daemon).
  *
- * Architectural rule: EZCODER owns execution. The daemon owns orchestration and
- * persistent state. GPT Realtime is a temporary conversational controller. The
- * phone owns native audio + notifications.
+ * Architectural rule: the coding agent owns execution. The daemon owns
+ * orchestration and persistent state. The phone shows the tasks.
  *
- * Shape of a voice session:
- *   1. app  -> `voice.open`        (activation source, optional focus)
- *   2. daemon -> `voice.ready`     (ephemeral OpenAI Realtime secret + instructions +
- *                                   tool definitions + a compact context snapshot)
- *   3. app connects to OpenAI Realtime directly with that secret. Every function call
- *      the model makes is forwarded verbatim as `voice.tool`; the daemon executes it
- *      and answers `voice.tool.result`. The app never interprets tool names.
- *   4. app  -> `voice.close`       (decisions persisted by the daemon, audio restored)
- *
- * The OpenAI API key never leaves the daemon; only a short-lived secret does.
+ * The call itself (`voice.session`, `voice.tool`, `voice.end`, `voice.note`)
+ * is in `wire.ts`; a call's task tools ride on it. What is here is the task
+ * list every screen shares: `voice.state` (catch-up, also sent after `hello`),
+ * `voice.event` (one orchestration event), `voice.dismiss`/`voice.dismissed`,
+ * and the screenshots held for tasks (`voice.attach`, `voice.detach`,
+ * `voice.send`).
  *
  * Everything here is additive and optional: an older daemon answers
- * `unknown_message` (the app then says voice needs a newer pew2 on the computer),
- * and an older app never sends these. Do NOT bump WIRE_VERSION.
+ * `unknown_message`, and an older app never sends these. Do NOT bump
+ * WIRE_VERSION.
  */
 import { z } from "zod";
-
-/** How the user got into voice. Drives the opening context, never permissions. */
-export const VoiceSource = z.enum([
-  "airpods",
-  "action_button",
-  "siri_shortcut",
-  "notification",
-  "in_app",
-  "lock_screen",
-]);
-export type VoiceSource = z.output<typeof VoiceSource>;
 
 /** Lifecycle of a task, as the user and the model both talk about it. */
 export const TaskState = z.enum([
@@ -307,23 +291,6 @@ export type VoiceSnapshot = z.output<typeof VoiceSnapshot>;
 
 // ---- app -> daemon ---------------------------------------------------------
 
-export const VoiceOpen = z.object({
-  t: z.literal("voice.open"),
-  /** App-chosen id for this voice session; the daemon echoes it. */
-  voiceSessionId: z.string().min(1),
-  source: VoiceSource,
-  /** Notification tap: the event / task that caused it. */
-  focusEventId: z.number().int().nonnegative().optional(),
-  focusTaskId: z.string().optional(),
-  /**
-   * Capability marker: this app decides barge-in itself (`app/src/voice/realtime.ts`:
-   * it answers only once a transcript holds real words). Only then may the daemon turn
-   * the server's own interrupt/auto-response off. Absent means an older app, which
-   * relies on the server answering and interrupting, so it gets the old behaviour.
-   */
-  clientVad: z.boolean().optional(),
-});
-
 /**
  * App -> daemon. Hand a screenshot to voice: a partner's fix, an error on
  * screen. Stored on the computer and answered with `voice.attached`; from then
@@ -366,22 +333,18 @@ export const VoiceDismiss = z.object({
   allFinished: z.boolean().optional(),
 });
 
-export const VoiceToolCall = z.object({
-  t: z.literal("voice.tool"),
-  voiceSessionId: z.string().min(1),
-  /** The Realtime `call_id`. The daemon dedupes on it, so a retry never re-executes. */
-  callId: z.string().min(1),
-  name: z.string().min(1),
-  /** The model's JSON arguments, already parsed. */
-  args: z.record(z.string(), z.unknown()).default({}),
-});
-
-export const VoiceClose = z.object({
-  t: z.literal("voice.close"),
-  voiceSessionId: z.string().min(1),
-  reason: z.enum(["user", "model", "idle", "interrupted", "error", "app_background"]),
-  /** Highest eventId the user actually heard, so unheard ones are re-offered. */
-  heardEventId: z.number().int().nonnegative().optional(),
+/**
+ * App -> daemon. Send a held screenshot to a task from the Tasks screen, with
+ * what to do with it: the same work as the `attach_screenshot` task tool,
+ * without a call. Answered to the sender with `voice.sent`; the task's events
+ * and the screenshot list are broadcast as usual.
+ */
+export const VoiceSend = z.object({
+  t: z.literal("voice.send"),
+  requestId: z.string().min(1).max(100),
+  attachmentId: z.string().min(1).max(40),
+  taskId: z.string().min(1).max(40),
+  instruction: z.string().min(1).max(2000).optional(),
 });
 
 /** Catch-up after a reconnect: "I have events up to N; send the rest + a snapshot". */
@@ -392,53 +355,6 @@ export const VoiceSync = z.object({
 
 // ---- daemon -> app ---------------------------------------------------------
 
-export const VoiceReady = z.object({
-  t: z.literal("voice.ready"),
-  voiceSessionId: z.string(),
-  realtime: z.object({
-    /** Ephemeral client secret for OpenAI Realtime. */
-    secret: z.string(),
-    /** Epoch seconds. */
-    expiresAt: z.number().int(),
-    model: z.string(),
-    voice: z.string().optional(),
-    /** Full session config to apply: instructions, tools, turn detection. Passed through opaquely. */
-    session: z.record(z.string(), z.unknown()),
-  }),
-  snapshot: VoiceSnapshot,
-});
-
-/** Refusal, e.g. no OpenAI key on the daemon. `code` is stable for the app to branch on. */
-export const VoiceUnavailable = z.object({
-  t: z.literal("voice.unavailable"),
-  voiceSessionId: z.string().optional(),
-  code: z.enum([
-    "no_api_key",
-    "mint_failed",
-    "busy",
-    "disabled",
-    "account-required",
-    "reconnect-required",
-    "not-entitled",
-    "rate-limited",
-  ]),
-  message: z.string(),
-});
-
-export const VoiceToolResult = z.object({
-  t: z.literal("voice.tool.result"),
-  voiceSessionId: z.string(),
-  callId: z.string(),
-  ok: z.boolean(),
-  /** JSON-serialisable result handed back to the model as the function output. */
-  output: z.unknown(),
-  error: z.string().optional(),
-  /** True when the app should end the voice session after the model finishes speaking. */
-  endSession: z.boolean().optional(),
-  /** True when the app should open its photo picker: the model asked for a screenshot. */
-  openPicker: z.boolean().optional(),
-});
-
 /** Reply to `voice.attach`. */
 export const VoiceAttached = z.object({
   t: z.literal("voice.attached"),
@@ -446,6 +362,14 @@ export const VoiceAttached = z.object({
   ok: z.boolean(),
   attachment: VoiceAttachment.optional(),
   /** Plain words, for the phone to show, when `ok` is false. */
+  error: z.string().optional(),
+});
+
+/** Reply to `voice.send`. `error` is plain words for the phone when `ok` is false. */
+export const VoiceSent = z.object({
+  t: z.literal("voice.sent"),
+  requestId: z.string(),
+  ok: z.boolean(),
   error: z.string().optional(),
 });
 
@@ -485,138 +409,12 @@ export const VoiceState = z.object({
   dismissed: z.array(z.string()).optional(),
 });
 
-// Account frames contain display data only. Ownership comes from the sealed
-// transport context, never a client-supplied device id. Unknown fields are rejected.
-const AccountRequestId = z.string().min(1).max(100);
-const AccountAttemptId = z.string().uuid();
-export const VoiceAccountStatusRequest = z
-  .object({
-    t: z.literal("voice.account.status"),
-    requestId: AccountRequestId,
-    attemptId: AccountAttemptId.optional(),
-  })
-  .strict();
-export const VoiceAccountConnect = z
-  .object({
-    t: z.literal("voice.account.connect"),
-    requestId: AccountRequestId,
-  })
-  .strict();
-export const VoiceAccountCancel = z
-  .object({
-    t: z.literal("voice.account.cancel"),
-    requestId: AccountRequestId,
-    attemptId: AccountAttemptId,
-  })
-  .strict();
-export const VoiceAccountDisconnect = z
-  .object({
-    t: z.literal("voice.account.disconnect"),
-    requestId: AccountRequestId,
-  })
-  .strict();
-export const VoiceAccountState = z.enum([
-  "not-connected",
-  "authorizing",
-  "connected",
-  "reconnect-required",
-  "not-entitled",
-]);
-export const VoiceAccountStatus = z
-  .object({
-    t: z.literal("voice.account.state"),
-    requestId: AccountRequestId,
-    supported: z.literal(true),
-    state: VoiceAccountState,
-    voiceReady: z.boolean(),
-    authorization: z
-      .object({
-        attemptId: AccountAttemptId,
-        userCode: z
-          .string()
-          .min(1)
-          .max(64)
-          .regex(/^[A-Za-z0-9-]+$/),
-        verificationUrl: z.literal("https://auth.openai.com/codex/device"),
-        expiresAt: z.number().int().positive(),
-      })
-      .strict()
-      .optional(),
-    error: z
-      .object({
-        code: z.enum([
-          "unavailable",
-          "denied",
-          "expired",
-          "cancelled",
-          "rate-limited",
-          "storage",
-          "invalid-attempt",
-        ]),
-        message: z.string().min(1).max(300),
-        retryable: z.boolean(),
-      })
-      .strict()
-      .optional(),
-  })
-  .strict();
-export type VoiceAccountStatus = z.output<typeof VoiceAccountStatus>;
-
-export const VoiceClientMessages = [
-  VoiceOpen,
-  VoiceToolCall,
-  VoiceClose,
-  VoiceSync,
-  VoiceAttach,
-  VoiceDetach,
-  VoiceDismiss,
-  VoiceAccountStatusRequest,
-  VoiceAccountConnect,
-  VoiceAccountCancel,
-  VoiceAccountDisconnect,
-] as const;
+export const VoiceClientMessages = [VoiceSync, VoiceAttach, VoiceDetach, VoiceDismiss, VoiceSend] as const;
 export const VoiceServerMessages = [
-  VoiceAccountStatus,
-  VoiceReady,
-  VoiceUnavailable,
-  VoiceToolResult,
+  VoiceSent,
   VoiceEventMessage,
   VoiceState,
   VoiceAttached,
   VoiceAttachments,
   VoiceDismissed,
 ] as const;
-
-/**
- * Data payload of the push that reopens voice. `type` is the discriminator the app's
- * notification response handler keys on.
- */
-export const VoiceCallbackPush = z.object({
-  type: z.literal("voice.callback"),
-  eventId: z.number().int().nonnegative(),
-  taskId: z.string(),
-  projectId: z.string(),
-  class: EventClass,
-});
-export type VoiceCallbackPush = z.output<typeof VoiceCallbackPush>;
-
-/**
- * Payload of the push that rings the phone's native call screen (CallKit on
- * iOS via a VoIP push, Telecom on Android via a data-only push). Carries the
- * same focus fields as `VoiceCallbackPush`, so answering opens voice exactly
- * where tapping the banner would.
- *
- * `callId` is a UUID because CallKit and Telecom key every call by one.
- * `caller` is what the system call screen shows: like every push string it is
- * readable by Apple/Google, so it is the short place title, never agent text.
- */
-export const VoiceCallPush = z.object({
-  type: z.literal("voice.call"),
-  callId: z.string().uuid(),
-  caller: z.string().min(1).max(80),
-  eventId: z.number().int().nonnegative(),
-  taskId: z.string(),
-  projectId: z.string(),
-  class: EventClass,
-});
-export type VoiceCallPush = z.output<typeof VoiceCallPush>;

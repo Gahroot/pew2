@@ -176,11 +176,12 @@ export function ThinkingDial({ names, index, color, paused, onStep }: ThinkingDi
     const sound = levelSound(index, to, count);
     if (sound) sounds.play(sound);
     // The feel climbs with the level: a tick low down, a thump at the top.
+    // Silent haptics: the level's own sound above is the one heard.
     const f = count > 1 ? to / (count - 1) : 0;
-    if (to < index) haptics.poke();
-    else if (f >= 1) haptics.attention();
-    else if (f >= 0.5) haptics.detent();
-    else haptics.select();
+    if (to < index) haptics.poke(null);
+    else if (f >= 1) haptics.attention(null);
+    else if (f >= 0.5) haptics.detent(null);
+    else haptics.select(null);
     onStep(to);
   };
 

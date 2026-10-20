@@ -73,6 +73,22 @@ claim was not re-confirmed within this scoped review.
 | F8 | BACKLOG | CODE — earlier register claimed no private security reporting despite SECURITY.md | Closed as an incorrect finding: SECURITY.md names GitHub private vulnerability reporting. Live repository setting not verified |
 | F9 | MEDIUM | CODE — privacy link silently swallowed browser-open failures | Implemented an accessible native error alert with retry/store-page guidance. Typecheck/lint pass; native failure path not exercised |
 
+## Voice, ringing and onboarding pass (19 October 2026)
+
+Engineering guidance, not legal advice. Goal-folder register with sources:
+`~/.gg/goals/pew2-voice/COMPLIANCE.md`.
+
+| ID | Severity | Trigger / evidence | Status / guard |
+| --- | --- | --- | --- |
+| V1 | HIGH | CODE: voice calls send the user's voice, session names, agent replies and waiting items to OpenAI | One-time consent card before the first call ("Pew is an AI. Your voice goes to OpenAI.", guideline 5.1.2(i)); call screen labelled "Pew · AI"; Pew instructed never to claim to be human (EU AI Act Art. 50). PRIVACY.md section "Voice calls with Pew" added |
+| V2 | HIGH (owner decision) | CODE: voice reuses a coding agent's ChatGPT login or a device-code sign-in under the Codex client id; OpenAI's official "Sign in with ChatGPT" covers the Responses API only | Owner accepted the risk (19 Oct): keep reusing credentials. **Lawyer** if commercial terms matter |
+| V3 | MEDIUM | CODE: call-style rings (PushKit/CallKit) via the relay; summary not end to end encrypted | Off by default, time-limited, per-conversation, only for blocking items; daemon decides before sending (no unreported VoIP pushes); CallKit off for China; not in Recents. Disclosed in PRIVACY.md and review notes |
+| V4 | MEDIUM | CODE: notifications prompt had no explanation, no settings | Explainer card before the system prompt, Alerts row, Ring me blocked while alerts are off |
+| V5 | MEDIUM | DEDUCED: App Store privacy answers out of date (Audio Data now leaves the device) | Proposed answers in `packages/app/APP_PRIVACY_LABELS.md`; website-only, owner to paste |
+| V6 | LOW | Terms page missing | `TERMS.md` added (as-is, user responsible for agents and approvals, Pew can be wrong); linked beside the privacy policy |
+| V7 | OPEN | Store listing describes features of an unshipped build | Updated text held in `packages/app/store.config.json`; push with the next build (`eas metadata:push`), not before |
+| V8 | MEDIUM | CODE (this fork): a call's briefing also carries voice-task summaries (project and branch names, task titles, states, recent events, the agent's closing message), desk conversations (agent, folder, title), screenshot file names and DAVE project names | All of it passes `speakable()`/`redactSecrets()` (no code, paths or secret-looking text); screenshots are never sent, only names; DAVE contributes project names only. Disclosed in PRIVACY.md "Voice calls with Pew" |
+
 ## Implemented in this pass
 
 - Updated the public-policy draft to 20 September and aligned it with actual

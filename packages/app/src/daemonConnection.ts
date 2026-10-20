@@ -14,6 +14,7 @@ import { beginActivity } from "./activity";
 import { CONNECT_TIMEOUT, STALLED_ATTEMPTS, WEBSOCKET_CONNECTING, reconnectDelay } from "./daemonState";
 import type { DaemonRefs } from "./daemonContext";
 import { handleSealedFrame, type FrameRefs } from "./daemonFrame";
+import { refusalText } from "./fatalNotice";
 
 const { WIRE_VERSION } = wire;
 
@@ -45,6 +46,9 @@ export type ConnectionRefs = FrameRefs &
   >;
 
 /** Open the socket for one pairing. Returns the effect cleanup. */
+/** How long frames are handled in one go before the screen gets a turn. */
+const FRAME_SLICE_MS = 24;
+
 export function openConnection(
   refs: ConnectionRefs,
   url: string,
@@ -230,6 +234,7 @@ export function openConnection(
     };
 
     ws.onopen = () => {
+      connLog("open: hello sent");
       clearTimeout(deadline);
       attempts.current = 0;
       // A request written to the socket that died is never answered, and its
@@ -292,6 +297,35 @@ export function openConnection(
       // readable *before* anything can be decrypted, which is exactly why they
       // are the ones left in the open.
       const kind = (frame as { t?: unknown } | null)?.t;
+      if (kind !== "e") connLog(`cleartext ${String(kind)}`);
+      // The computer (re)joined the relay room: its own handshake, which the
+      // relay passes to every app. This socket is now deaf to it: its hello
+      // went to the computer's previous connection, and the new one seals
+      // with a fresh counter that this channel rejects as replays. It sat
+      // "not connected" until something else reset it. Start over at once:
+      // a new socket, a new channel, a new hello.
+      if (kind === "hello" && (frame as { role?: unknown }).role === "daemon") {
+        if (socket.current !== ws || !alive.current || fatal.current) return;
+        connLog("computer rejoined: reconnecting now");
+        // Not through `close`: a WebSocket close waits for the far end's
+        // answer, and over the relay that took ten seconds. This socket is
+        // let go of at once (its handlers off, so nothing it does later
+        // reaches state) and the next one opens beside it. Not a failure:
+        // no backoff, and it counts against nothing.
+        clearTimeout(deadline);
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        try {
+          ws.close();
+        } catch {
+          // Already gone.
+        }
+        attempts.current = 0;
+        connect();
+        return;
+      }
       if (kind === "error") {
         const code = (frame as { code?: unknown }).code;
         // `device-refused` joins these: the pairing is already claimed by
@@ -321,18 +355,41 @@ export function openConnection(
           setState((s) => ({
             ...s,
             status: "offline",
-            fatal: typeof detail === "string" ? detail : "This device is no longer paired.",
+            // Short, in the app's words: it is read on the home screen under Pew.
+            fatal: refusalText(code, detail),
           }));
         }
         return;
       }
       if (kind !== "e") return;
 
-      handleSealedFrame(
-          refs,
-        { ws, secure, resetStream, batch, flushOutbox },
-        frame,
-      );
+      // In order, but in slices: opening a long conversation delivers dozens
+      // of history frames at once (megabytes), and handling them back to back
+      // held the JS thread for seconds, so taps and the drawer waited. A frame
+      // that arrives on its own is still handled at once.
+      inbox.push(frame);
+      if (!draining) {
+        draining = true;
+        drain();
+      }
+    };
+
+    // Frames waiting to be handled, oldest first, for this socket only.
+    const inbox: unknown[] = [];
+    let draining = false;
+    const drain = () => {
+      const started = Date.now();
+      while (inbox.length > 0 && Date.now() - started < FRAME_SLICE_MS) {
+        // A replaced socket's leftovers belong to a channel that no longer
+        // exists: drop them (the new connection replays from the cursors).
+        if (socket.current !== ws) {
+          inbox.length = 0;
+          break;
+        }
+        handleSealedFrame(refs, { ws, secure, resetStream, batch, flushOutbox }, inbox.shift());
+      }
+      if (inbox.length > 0) setTimeout(drain, 0);
+      else draining = false;
     };
 
     const scheduleReconnect = () => {
@@ -388,6 +445,7 @@ export function openConnection(
 
     ws.onclose = () => {
       clearTimeout(deadline);
+      connLog("closed");
       scheduleReconnect();
     };
     ws.onerror = () => {
@@ -450,4 +508,9 @@ export function openConnection(
       ws.close();
     }
   };
+}
+
+/** Development only (`EXPO_PUBLIC_DEV_CONN_LOG=1`): the socket's life, one line per event, in the Metro log. */
+function connLog(line: string): void {
+  if (process.env.EXPO_PUBLIC_DEV_CONN_LOG === "1") console.log(`[conn] +${Math.round(performance.now())}ms ${line}`);
 }

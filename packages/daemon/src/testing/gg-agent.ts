@@ -265,9 +265,12 @@ const app = agent({ name: "pew2-gg-test" })
     if (index >= 0) queue.splice(index, 1);
     return { cancelled: index >= 0, queued: queue };
   })
-  .onRequest("_gg/goals/list", (p: unknown) => p, async () => ({
-    goals: [...load().values()].map(summary),
-  }))
+  .onRequest("_gg/goals/list", (p: unknown) => p, async () => {
+    // A slow disk, so a test can do something to this process mid-request.
+    const delay = Number(process.env.PEW2_TEST_GG_LIST_DELAY_MS ?? 0);
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    return { goals: [...load().values()].map(summary) };
+  })
   .onRequest("_gg/goals/create", (p: unknown) => p, async (ctx) => {
     const { name, goal, context } = ctx.params as { name: string; goal: string; context: string[] };
     if (!name.trim()) throw invalid("A goal needs a name.");

@@ -19,19 +19,11 @@ import { Platform } from "react-native";
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { notificationsAllowed } from "./notifier";
-import { loadNativeCall, loadVoiceCall } from "../preferences";
-import { voipAddress } from "./callkit";
 
 /** What the daemon needs to reach this phone. */
 export interface PushAddress {
   token: string;
   platform: "ios" | "android";
-  /** The "voice call" setting. Sent with every registration so a toggle re-sends it. */
-  voiceCall?: boolean;
-  /** The "Native call screen" setting. Sent only when on; absent tells the daemon it is off. */
-  nativeCall?: true;
-  /** iOS PushKit address, only alongside `nativeCall`. */
-  voip?: { token: string; environment: "production" | "sandbox"; bundleId: string };
 }
 
 /**
@@ -76,11 +68,7 @@ export async function pushAddress(): Promise<PushAddress | undefined> {
   if (!(await notificationsAllowed())) return undefined;
   try {
     const { data } = await Notifications.getExpoPushTokenAsync({ projectId: id });
-    if (!data) return undefined;
-    const address: PushAddress = { token: data, platform: Platform.OS, voiceCall: await loadVoiceCall() };
-    if (!(await loadNativeCall())) return address;
-    const voip = Platform.OS === "ios" ? await voipAddress() : undefined;
-    return { ...address, nativeCall: true, ...(voip ? { voip } : null) };
+    return data ? { token: data, platform: Platform.OS } : undefined;
   } catch {
     // Simulator, no network, or a build without push entitlements. The app
     // works; it just falls back to announcing turns it is awake for.

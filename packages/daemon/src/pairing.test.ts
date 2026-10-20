@@ -24,6 +24,7 @@ import {
   tokenMatches,
   qrCode,
 } from "./pairing.js";
+import { loadResumeKey, resumeKeyPath } from "./pairing.js";
 import { doctor } from "./cli/doctor.js";
 import { POSIX_MODES } from "./testing/platform.js";
 
@@ -467,4 +468,12 @@ test("a placeholder claim left by a pre-gate app is overwritten", async () => {
   await claimPairing("phone-aaaa", env);
 
   expect((await loadPairing(env)).claimedBy).toBe("phone-aaaa");
+});
+
+test("the relay reconnect key is made once, kept owner-only, and reused", async () => {
+  const env = { ...process.env, PEW2_HOME: await mkdtemp(join(tmpdir(), "pew2-resume-")) };
+  const key = await loadResumeKey(env);
+  expect(key).toMatch(/^[0-9a-f]{64}$/);
+  expect(await loadResumeKey(env)).toBe(key);
+  if (POSIX_MODES) expect((await stat(resumeKeyPath(env))).mode & 0o777).toBe(0o600);
 });

@@ -9,7 +9,7 @@ import { dashedOutline } from "./stage/DashedRule";
 import { Led, type LedTone } from "./stage/Led";
 import { PressScale } from "./stage/PressScale";
 import { useAgentColor } from "./stage/agentColor";
-import type { haptics } from "./haptics";
+import type { Feel } from "./haptics";
 
 /** Matches the composer's send/mic pill so a row of chips and buttons aligns. */
 export const STAGE_CHIP_HEIGHT = 32;
@@ -24,7 +24,7 @@ export interface StageChipProps {
   leading?: ReactNode;
   trailing?: ReactNode;
   onPress?: () => void;
-  feel?: keyof typeof haptics | "none";
+  feel?: Feel | "none";
   accessibilityLabel: string;
   accessibilityRole?: AccessibilityRole;
   accessibilityState?: AccessibilityState;

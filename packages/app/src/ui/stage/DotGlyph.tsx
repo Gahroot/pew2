@@ -21,7 +21,14 @@ export type DotGlyphName =
   | "chevron-down"
   | "up"
   | "down"
-  | "send";
+  | "send"
+  | "call"
+  | "mic"
+  | "mic-off"
+  | "speaker"
+  | "check"
+  | "clock"
+  | "tasks";
 
 // 7x7 bitmaps, "#" = lit dot. Parsed once at module load into dot coordinates.
 const BITMAPS: Record<DotGlyphName, readonly string[]> = {
@@ -36,7 +43,17 @@ const BITMAPS: Record<DotGlyphName, readonly string[]> = {
   "chevron-down": [".......", ".......", "#.....#", ".#...#.", "..#.#..", "...#...", "......."],
   up: ["...#...", "..###..", ".#.#.#.", "#..#..#", "...#...", "...#...", "...#..."],
   down: ["...#...", "...#...", "...#...", "#..#..#", ".#.#.#.", "..###..", "...#..."],
+  // A handset: earpiece top-left, a thinner curved handle, mouthpiece turned up
+  // at the bottom right. (A plain diagonal read as a slash, not a phone.)
+  call: [".##....", "###....", "##.....", "##.....", ".##..##", "..#####", "...###."],
+  mic: ["..###..", "..###..", "..###..", "#.###.#", "#.....#", ".#####.", "...#..."],
+  "mic-off": ["#.###..", ".####..", "..##...", "#.###.#", "#...#.#", ".#####.", "...#..#"],
+  speaker: ["...#...", "..##..#", "####.#.", "####..#", "####.#.", "..##..#", "...#..."],
+  check: [".......", "......#", ".....#.", "#...#..", ".#.#...", "..#....", "......."],
+  clock: [".#####.", "#..#..#", "#..#..#", "#..##.#", "#.....#", "#.....#", ".#####."],
   send: ["...#...", "..###..", ".#.#.#.", "#..#..#", "...#...", "...#...", "...#..."],
+  // A checklist: a tick beside the first line, two plain lines under it.
+  tasks: ["......#", "#...#..", ".#.#...", "..#.###", ".......", "#..####", "......."],
 };
 
 const GRID = 7;

@@ -101,9 +101,15 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
   const restored = await retireLegacyDisabled(env);
   const disabled = await readDisabled(env);
 
+  // Test fixtures (the echo agent) are hidden exactly as the daemon hides them:
+  // shown only under PEW2_EXPERIMENTAL=1. In a compiled binary echo's script is
+  // not on disk, so listing it put a permanent "not starting" row on every run.
+  const shown = (provider: { manifest: { pew: { experimental?: boolean } } }) =>
+    !provider.manifest.pew.experimental || env.PEW2_EXPERIMENTAL === "1";
+
   let verify: VerifyReport[] = [];
   if (options.verify !== false) {
-    const { providers } = await loadProviders(searchDirs, env, { bundled });
+    const providers = (await loadProviders(searchDirs, env, { bundled })).providers.filter(shown);
     // Only verify what could possibly run. Spawning a provider whose command is
     // missing produces a failure that says nothing `doctor` has not already said
     // more precisely.
@@ -169,7 +175,7 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
   // One row per agent, from the three sources that each know part of it: the
   // registry knows what is installed, verification knows what actually ran, and
   // the catalog knows where to get the rest.
-  const { providers: allProviders } = await loadProviders(searchDirs, env, { bundled });
+  const allProviders = (await loadProviders(searchDirs, env, { bundled })).providers.filter(shown);
   const verifyById = new Map(verify.map((r) => [r.id, r]));
   const installById = new Map(CATALOG.map((c) => [c.manifest.id, c.install]));
 

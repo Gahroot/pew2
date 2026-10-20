@@ -413,27 +413,6 @@ test("a push token from an unidentified sender is refused", async () => {
   expect(out[0]?.code).toBe("push_unidentified");
 });
 
-test("the voice-call setting rides on app.push and defaults to off", async () => {
-  const { daemon } = stubbed();
-  await send(daemon, { t: "app.push", token: "ExponentPushToken[a]", platform: "ios" }, "phone-1");
-  expect(daemon.pushTargets.list()[0]?.voiceCall).toBeUndefined();
-  await send(daemon, { t: "app.push", token: "ExponentPushToken[a]", platform: "ios", voiceCall: true }, "phone-1");
-  expect(daemon.pushTargets.list()[0]?.voiceCall).toBe(true);
-  await send(daemon, { t: "app.push", token: "ExponentPushToken[a]", platform: "ios", voiceCall: false }, "phone-1");
-  expect(daemon.pushTargets.list()[0]?.voiceCall).toBeUndefined();
-});
-
-test("the native call screen rides on app.push, and dropping it drops the VoIP address", async () => {
-  const { daemon } = stubbed();
-  const voip = { token: "ab".repeat(32), environment: "production", bundleId: "io.github.kenkaiii.pew2" };
-  await send(daemon, { t: "app.push", token: "ExponentPushToken[a]", platform: "ios", nativeCall: true, voip }, "phone-1");
-  expect(daemon.pushTargets.list()[0]).toMatchObject({ nativeCall: true, voip });
-  // iOS kills an app that gets a VoIP push it does not report: off must forget the address.
-  await send(daemon, { t: "app.push", token: "ExponentPushToken[a]", platform: "ios" }, "phone-1");
-  expect(daemon.pushTargets.list()[0]?.nativeCall).toBeUndefined();
-  expect(daemon.pushTargets.list()[0]?.voip).toBeUndefined();
-});
-
 test("a token that is not an Expo push token is refused out loud", async () => {
   // Silently dropping it looks exactly like success until someone waits for a
   // notification that never arrives.

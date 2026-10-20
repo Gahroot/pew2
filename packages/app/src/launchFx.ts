@@ -301,3 +301,94 @@ export function paintLaunch(s: FxScene, m: FxMoment, pal: FxPalette, p: FxPainte
   if (m.burst >= 0) paintBurst(s, m, pal, p, scratch);
   else paintCharge(s, m, pal, p, scratch);
 }
+
+/** Home's spin toy bursting: how long it plays (seconds). */
+export const POP_S = 1.6;
+
+/**
+ * Home Pew spun past bursting: the launch's blast without its takeover. No
+ * cover and no grid (home stays home): a flash where he was, two rings
+ * racing out, and his own dots flung across the screen, sparkling as they
+ * go, all in his colour. `b` is seconds since the burst.
+ */
+export function paintPop(s: FxScene, b: number, pal: FxPalette, p: FxPainter): void {
+  "worklet";
+  if (b < 0 || b > POP_S) return;
+  const scratch = new Float32Array(4);
+  const out = 1 - fxSmooth(POP_S * 0.6, POP_S, b);
+  // The flash: his light, then the white core.
+  if (b < 0.7) {
+    p.radial(s.cx, s.cy, s.kenR * (2.2 + b * 9), pal.base, 0.55 * Math.exp(-b * 4));
+    p.radial(s.cx, s.cy, s.kenR * (1.2 + b * 6), WHITE, 0.9 * Math.exp(-b * 7));
+  }
+  // Two rings racing out.
+  for (let k = 0; k < 2; k++) {
+    const bk = b - k * 0.1;
+    if (bk <= 0 || bk > SHOCK_S) continue;
+    const q = bk / SHOCK_S;
+    p.ring(s.cx, s.cy, fxShock(s, bk) * 0.8, (k === 0 ? 10 : 5) * (1 - q) + 1, k === 0 ? pal.light : WHITE, Math.pow(1 - q, 1.5) * 0.75);
+  }
+  // His dots, flung out, each with a glint.
+  for (let i = 0; i < BURST_DOTS; i++) {
+    fxBurstDot(s, i, b, scratch);
+    const a = scratch[3]! * out;
+    if (a <= 0.01) continue;
+    const x = scratch[0]!;
+    const y = scratch[1]!;
+    if (x < -20 || y < -20 || x > s.w + 20 || y > s.h + 20) continue;
+    const r = scratch[2]!;
+    const lit = fxRand(i, 9) < 0.35;
+    if (lit) p.glow(x, y, r * 5, pal.base, a * 0.5);
+    p.dot(x, y, r, lit ? pal.light : pal.base, a);
+  }
+}
+
+/** How many particles the calling glow streams in at once: a fraction of a launch's. */
+export const CALLING_DOTS = 34;
+
+/**
+ * The launch's charge, gentled for a call that is connecting: the same dots
+ * streaming in from the screen edges and spiralling into Pew, and the same
+ * ring of dots round him, but breathing instead of filling. The ring's lit
+ * arc chases round it like a phone ringing, the aura swells and settles with
+ * each ring, fewer and dimmer particles, and no tremble, no burst: it can
+ * run for as long as the call takes to answer.
+ *
+ * `strength` 0..1 fades the whole thing in and out (it leaves as the call
+ * connects, rather than cutting).
+ */
+export function paintCalling(s: FxScene, t: number, strength: number, pal: FxPalette, p: FxPainter): void {
+  "worklet";
+  const k = fxClamp01(strength);
+  if (k <= 0.001) return;
+  const scratch = new Float32Array(4);
+  // One ring a second, like a phone: a swell, then a settle.
+  const beat = 0.5 - 0.5 * Math.cos(t * Math.PI * 2);
+  const charge = 0.28 + 0.16 * beat;
+  // The aura: softer and smaller than a launch's.
+  p.radial(s.cx, s.cy, s.kenR * (1.25 + 0.5 * beat), pal.base, k * (0.07 + 0.08 * beat));
+  // The ring: every dot faintly there, a lit arc chasing round it.
+  // Round the body itself, a little clear of it, never reaching the caption.
+  const ringR = s.kenR * 1.38;
+  const head = (t * 0.9) % 1;
+  for (let i = 0; i < RING_DOTS; i++) {
+    const a = (i / RING_DOTS) * Math.PI * 2 - Math.PI / 2;
+    const x = s.cx + Math.cos(a) * ringR;
+    const y = s.cy + Math.sin(a) * ringR;
+    // How far behind the chasing head this dot is, 0..1 round the ring.
+    const behind = (head - i / RING_DOTS + 1) % 1;
+    const on = Math.pow(1 - behind, 3) * (0.55 + 0.45 * beat);
+    p.dot(x, y, 2.6, pal.off, k * 0.8 * (1 - on));
+    if (on > 0.02) {
+      p.glow(x, y, 9 + 4 * beat, pal.base, k * 0.35 * on);
+      p.dot(x, y, 2.6 + 0.6 * on, pal.light, k * on);
+    }
+  }
+  // The particles: the launch's own paths, fewer, slower, dimmer.
+  for (let i = 0; i < CALLING_DOTS; i++) {
+    fxChargeDot(s, i, t * 0.55, charge, scratch);
+    const a = scratch[3]! * 0.7 * k;
+    if (a <= 0.01) continue;
+    p.dot(scratch[0]!, scratch[1]!, scratch[2]! * 0.85, fxRand(i, 15) < 0.4 ? pal.light : pal.base, a);
+  }
+}

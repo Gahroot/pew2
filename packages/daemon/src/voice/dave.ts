@@ -25,7 +25,7 @@ import type { Orchestrator } from "./dispatcher.js";
 import { repoOf, resolveProject } from "./registry.js";
 import { redactSecrets, speakable, type ConfirmationTokens } from "./safety.js";
 import { TERMINAL, type VoiceStore } from "./store.js";
-import { didYouMean, taskView, type ToolResult } from "./tools.js";
+import { didYouMean, taskView, type ToolResult } from "./taskTools.js";
 import type { VoiceProject } from "./types.js";
 
 export const DAVE_DEFAULT_URL = "http://127.0.0.1:4317";

@@ -1,29 +1,13 @@
 import { expect, test } from "bun:test";
 import { handleMessage } from "../handler.js";
 import type { Daemon } from "../index.js";
-import { pushVoiceEvent, PushRegistry, voiceMessages } from "../push.js";
 import type { VoiceHost } from "./dispatcher.js";
 import { DaveClient } from "./dave.js";
 import { scratch } from "./scratch.js";
 import { contextText, deskContext, VoiceService } from "./service.js";
-import type { RunningSession, VoiceEvent } from "./types.js";
+import { TASK_INSTRUCTIONS } from "./taskTools.js";
+import type { RunningSession } from "./types.js";
 import { buildRegistry } from "./registry.js";
-import { AccountAuth, type VoiceAccount } from "./accountAuth.js";
-
-const connectedAccount = () =>
-  AccountAuth.create({
-    dataDir: "unused",
-    storage: {
-      read: async () => ({
-        accessToken: "own-access",
-        refreshToken: "own-refresh",
-        expiresAt: Date.now() + 3600_000,
-      }),
-      replace: async () => {},
-      delete: async () => {},
-    },
-    probe: async () => ({ ok: true }),
-  });
 
 function host(): VoiceHost & { permissionAnswers: string[] } {
   const permissionAnswers: string[] = [];
@@ -45,21 +29,24 @@ function host(): VoiceHost & { permissionAnswers: string[] } {
   };
 }
 
-const mintFetch = (async () =>
-  new Response(JSON.stringify({ value: "ek_test", expires_at: 99 }))) as unknown as typeof fetch;
+interface Note {
+  callId: string;
+  text: string;
+  speak?: boolean;
+  about?: string;
+}
 
 async function service(
-  env: NodeJS.ProcessEnv = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" },
+  env: NodeJS.ProcessEnv = { CODEX_HOME: "/nonexistent-codex-home" },
   extra: {
     dave?: DaveClient;
     runningSessions?: () => RunningSession[];
     dataDir?: string;
-    account?: VoiceAccount;
-    fetch?: typeof fetch;
+    callInProgress?: (callId: string) => boolean;
   } = {},
 ) {
   const emitted: unknown[] = [];
-  const pushed: VoiceEvent[] = [];
+  const notes: Note[] = [];
   const h = host();
   const svc = await VoiceService.create({
     dataDir: scratch(),
@@ -70,137 +57,50 @@ async function service(
     emit: (m) => emitted.push(m),
     projectPaths: async () => ["/code/pew2"],
     usableProviders: () => ["echo"],
-    push: (e) => void pushed.push(e),
-    fetch: mintFetch,
-    account: await connectedAccount(),
+    note: (callId, note) => void notes.push({ callId, ...note }),
     tickMs: 0,
     ...extra,
   });
-  return { svc, emitted, pushed, h };
+  return { svc, emitted, notes, h };
 }
 
-test("voice never adopts CLI credentials or falls back to API billing", async () => {
-  const dataDir = scratch();
-  const fsp = await import("node:fs/promises");
-  const path = await import("node:path");
-  await fsp.writeFile(
-    path.join(dataDir, "auth.json"),
-    JSON.stringify({ tokens: { access_token: "cli-access", refresh_token: "cli-refresh" } }),
-  );
-  await fsp.writeFile(
-    path.join(dataDir, "voice-prefs.json"),
-    JSON.stringify({ openaiApiKey: "prefs-key" }),
-  );
-  const account = await AccountAuth.create({ dataDir, probe: async () => ({ ok: true }) });
-  let requests = 0;
-  const { svc } = await service(
-    { OPENAI_API_KEY: "env-key", CODEX_HOME: dataDir },
-    {
-      dataDir,
-      account,
-      fetch: (async () => {
-        requests++;
-        return new Response("{}");
-      }) as unknown as typeof fetch,
-    },
-  );
-  expect(await svc.open({ voiceSessionId: "v", source: "in_app" })).toMatchObject({
-    t: "voice.unavailable",
-    code: "account-required",
-  });
-  expect(requests).toBe(0);
-  svc.dispose();
-});
+/** A task tool call as a call sends it: the arguments unparsed. */
+const call = (svc: VoiceService, callId: string, toolCallId: string, name: string, args: Record<string, unknown> = {}) =>
+  svc.tool({ callId, toolCallId, name, arguments: JSON.stringify(args) });
 
-test("disconnect ends voice legs, preserves coding tasks and fences an in-flight mint", async () => {
-  let finish: ((value: Response) => void) | undefined;
-  const { svc, emitted } = await service();
-  await svc.open({ voiceSessionId: "active", source: "in_app" });
-  const task = svc.store.createTask({
-    projectId: "p",
-    projectName: "pew2",
-    cwd: "/code/pew2",
-    providerId: "echo",
-    title: "Coding",
-    prompt: "Work",
-  });
-  await svc.accountRequest({ t: "voice.account.disconnect", requestId: "d" }, "phone");
-  expect(emitted).toContainEqual(
-    expect.objectContaining({
-      t: "voice.unavailable",
-      voiceSessionId: "active",
-      code: "account-required",
-    }),
-  );
-  expect(svc.store.getTask(task.taskId)).toBeDefined();
-  expect(await svc.open({ voiceSessionId: "again", source: "in_app" })).toMatchObject({
-    t: "voice.unavailable",
-    code: "account-required",
-  });
-  svc.dispose();
-  const pending = await service(undefined, {
-    fetch: (async () =>
-      new Promise<Response>((resolve) => {
-        finish = resolve;
-      })) as unknown as typeof fetch,
-  });
-  const opening = pending.svc.open({ voiceSessionId: "late", source: "in_app" });
-  for (let i = 0; i < 400 && !finish; i++)
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-  expect(finish).toBeDefined();
-  await pending.svc.accountRequest({ t: "voice.account.disconnect", requestId: "d" }, "phone");
-  finish?.(new Response(JSON.stringify({ value: "late-secret", expires_at: 999 })));
-  const result = await opening;
-  expect(result.t).toBe("voice.unavailable");
-  expect(JSON.stringify(result)).not.toContain("late-secret");
-  pending.svc.dispose();
-});
+const toolNames = (briefing: { tools: readonly Record<string, unknown>[] }) =>
+  briefing.tools.map((t) => (t as { name: string }).name);
 
-test("shared handler requires transport identity for account operations", async () => {
+test("a briefing adds the task guidance, the state now and the task tools, never the call's own", async () => {
   const { svc } = await service();
-  const replies: unknown[] = [];
-  const context = {
-    daemon: { voice: async () => svc } as unknown as Daemon,
-    reply: (m: unknown) => {
-      replies.push(m);
-    },
-    broadcast: () => {},
-  };
-  await handleMessage(JSON.stringify({ t: "voice.account.disconnect", requestId: "r" }), context);
-  expect(replies.at(-1)).toMatchObject({ t: "error", code: "unauthorized" });
-  expect(await svc.account.accessToken()).toMatchObject({ ok: true });
-  await handleMessage(JSON.stringify({ t: "voice.account.disconnect", requestId: "r" }), {
-    ...context,
-    deviceId: "verified-phone",
-  });
-  expect(replies.at(-1)).toMatchObject({
-    t: "voice.account.state",
-    requestId: "r",
-    state: "not-connected",
-  });
+  const briefing = await svc.brief({ callId: "c" });
+  expect(briefing.instructions.startsWith(TASK_INSTRUCTIONS)).toBe(true);
+  expect(briefing.instructions).toContain("Tasks now:\nA call with Pew.");
+  expect(briefing.instructions).toContain("pew2");
+  const names = toolNames(briefing);
+  for (const name of ["start_task", "follow_up", "task_status", "list_projects", "commit", "start_goal", "resolve_reference", "approve_safe"]) {
+    expect(names).toContain(name);
+  }
+  // The call layer has its own: approvals, questions and hanging up.
+  for (const name of ["pending_approvals", "answer_approval", "answer_question", "end_session", "request_screenshot"]) {
+    expect(names).not.toContain(name);
+  }
+  expect(new Set(names).size).toBe(names.length);
+  for (const name of names) expect(svc.handles(name)).toBe(true);
+  expect(svc.handles("tell_agent")).toBe(false);
   svc.dispose();
 });
 
-test("open mints a secret and returns the session config plus a snapshot", async () => {
+test("a task tool answers as JSON text, and arguments that are not a JSON object are refused", async () => {
   const { svc } = await service();
-  const ready = (await svc.open({ voiceSessionId: "v", source: "airpods" })) as {
-    t: string;
-    realtime: { secret: string; session: { type: string; tools: unknown[] } };
-    snapshot: { opening: string; projects: unknown[] };
-  };
-  expect(ready.t).toBe("voice.ready");
-  expect(ready.realtime.secret).toBe("ek_test");
-  expect(ready.realtime.session.type).toBe("realtime");
-  expect(ready.realtime.session.tools.length).toBeGreaterThan(5);
-  expect(ready.snapshot.opening).toContain("AirPods");
-  expect(ready.snapshot.projects).toHaveLength(1);
+  const started = JSON.parse((await call(svc, "c", "t1", "start_task", { project: "pew2", instruction: "go" })).output);
+  expect(started.task).toMatchObject({ project: "pew2" });
+  const bad = await svc.tool({ callId: "c", toolCallId: "t2", name: "list_tasks", arguments: "[1" });
+  expect(JSON.parse(bad.output)).toEqual({ ok: false, error: "The arguments were not valid JSON." });
+  const none = JSON.parse((await svc.tool({ callId: "c", toolCallId: "t3", name: "list_tasks", arguments: "" })).output);
+  expect(none.tasks).toHaveLength(1);
   svc.dispose();
 });
-
-const toolNames = (ready: unknown) =>
-  (
-    (ready as { realtime: { session: { tools: { name: string }[] } } }).realtime.session.tools ?? []
-  ).map((t) => t.name);
 
 /** A DAVE that records every request, with Triten's top objective settable. */
 function fakeDave() {
@@ -226,25 +126,15 @@ function fakeDave() {
   };
 }
 
-const instructionsOf = (ready: unknown) =>
-  (ready as { realtime: { session: { instructions: string } } }).realtime.session.instructions;
-
-test("DAVE: open() makes exactly one read-only GET of its focus list; the tools exist only when enabled", async () => {
-  const env = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" };
+test("DAVE: a briefing makes exactly one read-only GET of its focus list; the tools exist only when enabled", async () => {
+  const env = { CODEX_HOME: "/nonexistent-codex-home" };
   const dave = fakeDave();
   const { svc } = await service(env, { dave: dave.client });
-  const ready = await svc.open({ voiceSessionId: "v", source: "in_app" });
-  expect(toolNames(ready)).toEqual(
-    expect.arrayContaining(["check_backlog", "delegate_backlog_item"]),
-  );
+  const briefing = await svc.brief({ callId: "c" });
+  expect(toolNames(briefing)).toEqual(expect.arrayContaining(["check_backlog", "delegate_backlog_item"]));
   expect(dave.requests).toEqual([{ method: "GET", path: "/api/intel/focus" }]);
 
-  await svc.tool({
-    voiceSessionId: "v",
-    callId: "d1",
-    name: "check_backlog",
-    args: { about: "priorities" },
-  });
+  await call(svc, "c", "d1", "check_backlog", { about: "priorities" });
   // Asking adds exactly the one read it needs; nothing else touched DAVE.
   expect(dave.requests).toEqual([
     { method: "GET", path: "/api/intel/focus" },
@@ -252,34 +142,43 @@ test("DAVE: open() makes exactly one read-only GET of its focus list; the tools 
   ]);
   svc.dispose();
 
-  // Opted out of the check-in: open() contacts DAVE not at all, and the tools stay.
+  // Opted out of the check-in: a briefing contacts DAVE not at all, and the tools stay.
   const quiet = fakeDave();
   const optedOut = await service({ ...env, PEW2_DAVE_CHECKIN: "off" }, { dave: quiet.client });
-  const still = await optedOut.svc.open({ voiceSessionId: "v", source: "in_app" });
+  const still = await optedOut.svc.brief({ callId: "c" });
   expect(quiet.requests).toEqual([]);
   expect(toolNames(still)).toContain("check_backlog");
   optedOut.svc.dispose();
 
   const off = await service(env);
-  const plain = await off.svc.open({ voiceSessionId: "v", source: "in_app" });
+  const plain = await off.svc.brief({ callId: "c" });
   expect(toolNames(plain)).not.toContain("check_backlog");
   expect(toolNames(plain)).not.toContain("delegate_backlog_item");
+  expect(off.svc.handles("check_backlog")).toBe(true); // routed here either way; it answers that DAVE is off
   off.svc.dispose();
 });
 
+test("DAVE: a briefing never waits on a DAVE that does not answer", async () => {
+  const hung = new DaveClient(
+    { off: false, origin: "http://127.0.0.1:4317" },
+    (() => new Promise<Response>(() => {})) as unknown as typeof fetch,
+  );
+  const { svc } = await service(undefined, { dave: hung });
+  const started = Date.now();
+  await svc.brief({ callId: "c" });
+  expect(Date.now() - started).toBeLessThan(5_000);
+  svc.dispose();
+});
+
 test("check-in: one sentence about what happened since, said once, naming DAVE's changed project only", async () => {
-  const env = { OPENAI_API_KEY: "sk-test", CODEX_HOME: "/nonexistent-codex-home" };
+  const env = { CODEX_HOME: "/nonexistent-codex-home" };
   const dave = fakeDave();
   const { svc } = await service(env, { dave: dave.client });
 
   // First sight of DAVE records silently; nothing has happened yet.
-  const first = (await svc.open({ voiceSessionId: "v1", source: "in_app" })) as {
-    snapshot: { checkin?: { say?: string } };
-  };
-  expect(first.snapshot.checkin).toMatchObject({ finished: 0, failed: 0, needsYou: 0, dave: [] });
-  expect(first.snapshot.checkin?.say).toBeUndefined();
-  expect(instructionsOf(first)).not.toContain("\n\nCheck-in:");
-  await svc.close({ voiceSessionId: "v1" });
+  const first = await svc.brief({ callId: "c1" });
+  expect(first.instructions).not.toContain("\n\nCheck-in:");
+  await svc.callEnded("c1");
 
   // Two agents finish, one is waiting on an approval, and DAVE's top pick for Triten changes.
   const enqueue = (name: string) =>
@@ -307,48 +206,32 @@ test("check-in: one sentence about what happened since, said once, naming DAVE's
   });
   dave.setTop("o2");
 
-  const second = (await svc.open({ voiceSessionId: "v2", source: "in_app" })) as {
-    snapshot: { checkin?: { say?: string; dave: string[] } };
-  };
+  const second = await svc.brief({ callId: "c2" });
   const say =
     "Two agents finished, one is blocked by an approval, and DAVE has a new recommendation for Triten. Want the details?";
-  expect(second.snapshot.checkin).toMatchObject({
-    say,
-    finished: 2,
-    needsYou: 1,
-    dave: ["Triten"],
-  });
-  expect(instructionsOf(second)).toContain(`\n\nCheck-in: ${say}`);
+  expect(second.instructions).toContain(`\n\nCheck-in: ${say}`);
   // Project names only: DAVE's objective text never reaches the model.
-  expect(instructionsOf(second)).not.toContain("secret deal");
-  await svc.close({ voiceSessionId: "v2" });
+  expect(second.instructions).not.toContain("secret deal");
+  await svc.callEnded("c2");
 
-  // Heard once: the next session repeats neither the results nor DAVE's news; the live approval still counts.
-  const third = (await svc.open({ voiceSessionId: "v3", source: "in_app" })) as {
-    snapshot: { checkin?: { say?: string } };
-  };
-  expect(third.snapshot.checkin?.say).toBe("One is blocked by an approval. Want the details?");
+  // Heard once: the next call repeats neither the results nor DAVE's news; the live approval still counts.
+  const third = await svc.brief({ callId: "c3" });
+  expect(third.instructions).toContain("\n\nCheck-in: One is blocked by an approval. Want the details?");
   svc.dispose();
 });
 
-test("focus survives a new voice session and a restart, as working-memory lines", async () => {
+test("focus survives a new call and a restart, as working-memory lines", async () => {
   const dataDir = scratch();
   const first = await service(undefined, { dataDir });
-  await first.svc.open({ voiceSessionId: "v1", source: "in_app" });
-  await first.svc.tool({
-    voiceSessionId: "v1",
-    callId: "s",
-    name: "start_task",
-    args: { project: "pew2", instruction: "fix the login screen" },
-  });
-  await first.svc.close({ voiceSessionId: "v1" });
+  await first.svc.brief({ callId: "c1" });
+  await call(first.svc, "c1", "s", "start_task", { project: "pew2", instruction: "fix the login screen" });
+  await first.svc.callEnded("c1");
   first.svc.dispose();
 
   const again = await service(undefined, { dataDir });
-  const ready = await again.svc.open({ voiceSessionId: "v2", source: "in_app" });
-  const text = instructionsOf(ready);
-  expect(text).toContain("Working memory: current project pew2");
-  expect(text).toContain("Working memory: current task fix the login screen");
+  const { instructions } = await again.svc.brief({ callId: "c2" });
+  expect(instructions).toContain("Working memory: current project pew2");
+  expect(instructions).toContain("Working memory: current task fix the login screen");
   again.svc.dispose();
 });
 
@@ -384,60 +267,95 @@ test("contextText carries goal progress and an open question per task", () => {
   expect(text).toContain("  Question ask_1: Use the staging database? (options: Yes, No)");
 });
 
-test("events are broadcast, an answer elsewhere unblocks, and urgent ones push", async () => {
-  const { svc, emitted, pushed } = await service();
-  await svc.tool({
-    voiceSessionId: "v",
-    callId: "c1",
-    name: "start_task",
-    args: { project: "pew2", instruction: "go" },
-  });
-  svc.orchestrator.onSessionPayload("s1", {
-    kind: "permission_request",
-    requestId: "perm_1",
-    params: {
-      toolCall: { title: "npm test", kind: "execute" },
-      options: [{ optionId: "y", kind: "allow_once" }],
-    },
-  });
-  expect(pushed.map((e) => e.kind)).toEqual(["task.approval"]);
+test("events are broadcast, an answer elsewhere unblocks, and calls in progress hear the news once", async () => {
+  let live = true;
+  const { svc, emitted, notes } = await service(undefined, { callInProgress: () => live });
+  await call(svc, "c0", "t1", "start_task", { project: "pew2", instruction: "go" });
+  const approval = (requestId: string) =>
+    svc.orchestrator.onSessionPayload("s1", {
+      kind: "permission_request",
+      requestId,
+      params: {
+        toolCall: { title: "npm test", kind: "execute" },
+        options: [{ optionId: "y", kind: "allow_once" }],
+      },
+    });
+  // No call open: nothing to tell (the task's own session sends the banner).
+  approval("perm_1");
+  expect(notes).toEqual([]);
   svc.orchestrator.onPermissionAnswered("s1", "perm_1");
   expect(svc.store.getTask("t_1")?.state).toBe("running");
-  const kinds = emitted.map((m) => (m as { event: VoiceEvent }).event.kind);
+  const kinds = emitted.map((m) => (m as { event: { kind: string } }).event.kind);
   expect(kinds).toEqual(["task.queued", "task.started", "task.approval", "task.progress"]);
-  // Nothing is pushed while a voice session is open.
-  await svc.open({ voiceSessionId: "v", source: "in_app" });
-  svc.orchestrator.onSessionPayload("s1", {
-    kind: "permission_request",
-    requestId: "perm_2",
-    params: { toolCall: { title: "npm test", kind: "execute" }, options: [] },
-  });
-  expect(pushed).toHaveLength(1);
+
+  // A call in progress hears a new approval, spoken, once.
+  await svc.brief({ callId: "c1" });
+  approval("perm_2");
+  expect(notes).toHaveLength(1);
+  expect(notes[0]).toMatchObject({ callId: "c1", speak: true, about: "pew2" });
+  expect(notes[0]?.text).toStartWith("[Update] pew2 (taskId t_1): ");
+  expect(notes[0]?.text).toContain("Call list_waiting");
+
+  // A call whose end never arrived stops hearing news once it is no longer in progress.
+  live = false;
+  svc.orchestrator.onPermissionAnswered("s1", "perm_2");
+  approval("perm_3");
+  expect(notes).toHaveLength(1);
   svc.dispose();
 });
 
-test("close persists the heard cursor and unheard events come back in the snapshot", async () => {
+test("a call's end persists what it heard, and later events come back in the next snapshot", async () => {
   const { svc } = await service();
-  await svc.tool({
-    voiceSessionId: "v",
-    callId: "c1",
-    name: "start_task",
-    args: { project: "pew2", instruction: "go" },
-  });
+  await call(svc, "c0", "t1", "start_task", { project: "pew2", instruction: "go" });
   expect((await svc.snapshot()).unheard.length).toBeGreaterThan(0);
-  await svc.close({ voiceSessionId: "v", heardEventId: 2 });
-  expect(svc.store.heardEventId).toBe(2);
+  await svc.brief({ callId: "c1" });
+  const heard = svc.store.lastEventId;
+  await svc.callEnded("c1");
+  expect(svc.store.heardEventId).toBe(heard);
   expect((await svc.snapshot()).unheard).toEqual([]);
+  // An unknown call (opened before a restart) changes nothing.
+  await svc.callEnded("never-briefed");
+  expect(svc.store.heardEventId).toBe(heard);
+  svc.dispose();
+});
+
+test("hands-free auto-approval runs only while a briefed call is in progress", async () => {
+  let live = true;
+  const { svc } = await service(undefined, { callInProgress: () => live });
+  await svc.brief({ callId: "c1" });
+  await call(svc, "c1", "p1", "set_approval_policy", { autoApproveSafe: true });
+  expect(svc.orchestrator.autoApprove?.()).toBe(true);
+  live = false;
+  expect(svc.orchestrator.autoApprove?.()).toBe(false);
+  live = true;
+  await svc.callEnded("c1");
+  expect(svc.orchestrator.autoApprove?.()).toBe(false);
   svc.dispose();
 });
 
 // ---- handler wiring with a fake daemon ---------------------------------------
 
-test("handler: voice.open/tool(dedupe)/sync/close and hello -> voice.state", async () => {
+test("handler: hello and voice.sync answer voice.state; a call's task tools reach the service, once per id", async () => {
   const { svc } = await service();
+  const ended: string[] = [];
   const fake = {
     refreshProviders: async () => ({ errors: [] }),
-    voice: async () => svc,
+    voiceTasks: async () => svc,
+    voiceStatuses: () => [],
+    desktopActivity: () => ({ t: "desktop.activity", sessions: [] }),
+    voice: {
+      knowsCall: (callId: string) => callId === "call_1",
+      runOnce: (() => {
+        const answered = new Map<string, Promise<unknown>>();
+        return (callId: string, toolCallId: string, run: () => Promise<unknown>) => {
+          const key = `${callId}/${toolCallId}`;
+          if (!answered.has(key)) answered.set(key, run());
+          return answered.get(key);
+        };
+      })(),
+      noteAction: () => {},
+      endCall: (callId: string) => void ended.push(callId),
+    },
   } as unknown as Daemon;
   const replies: Array<Record<string, unknown>> = [];
   const send = (m: Record<string, unknown>) =>
@@ -448,23 +366,23 @@ test("handler: voice.open/tool(dedupe)/sync/close and hello -> voice.state", asy
     });
 
   await send({ t: "hello", wire: 2, role: "app", deviceId: "d1" });
-  expect(replies.at(-1)).toMatchObject({ t: "voice.state" });
+  expect(replies.some((r) => r.t === "voice.state")).toBe(true);
 
-  await send({ t: "voice.open", voiceSessionId: "v", source: "in_app" });
-  expect(replies.at(-1)).toMatchObject({ t: "voice.ready", voiceSessionId: "v" });
-
-  const call = {
+  const tool = {
     t: "voice.tool",
-    voiceSessionId: "v",
-    callId: "dup",
+    requestId: "r1",
+    callId: "call_1",
+    toolCallId: "fc_1",
     name: "start_task",
-    args: { project: "pew2", instruction: "x" },
+    arguments: JSON.stringify({ project: "pew2", instruction: "x" }),
   };
-  await send(call);
-  await send(call);
-  const results = replies.filter((r) => r.t === "voice.tool.result");
+  await send(tool);
+  await send({ ...tool, requestId: "r2" });
+  const results = replies.filter((r) => r.t === "voice.tool");
   expect(results).toHaveLength(2);
-  expect(results[1]).toEqual(results[0]!);
+  expect(results[0]).toMatchObject({ requestId: "r1", callId: "call_1", toolCallId: "fc_1" });
+  expect(results[1]?.output).toBe(results[0]?.output);
+  expect(JSON.parse(results[0]?.output as string).task).toMatchObject({ project: "pew2" });
   expect(svc.store.tasks()).toHaveLength(1);
 
   await send({ t: "voice.sync", since: 0 });
@@ -472,49 +390,13 @@ test("handler: voice.open/tool(dedupe)/sync/close and hello -> voice.state", asy
   expect(state.t).toBe("voice.state");
   expect(state.events.length).toBeGreaterThan(0);
 
-  const before = replies.length;
-  await send({ t: "voice.close", voiceSessionId: "v", reason: "user", heardEventId: 1 });
-  expect(replies).toHaveLength(before);
-  expect(svc.store.heardEventId).toBe(1);
+  // The call's end reaches both halves.
+  await svc.brief({ callId: "call_1" });
+  await send({ t: "voice.end", callId: "call_1", reason: "hangup" });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(ended).toEqual(["call_1"]);
+  expect(svc.store.heardEventId).toBe(svc.store.lastEventId);
   svc.dispose();
-});
-
-// ---- push --------------------------------------------------------------------
-
-const event: VoiceEvent = {
-  eventId: 7,
-  taskId: "t_1",
-  projectId: "proj_x",
-  projectName: "pew2",
-  kind: "task.approval",
-  class: "approval",
-  text: "Needs approval (shell): npm test",
-  at: 1,
-};
-
-test("voice push data is exactly VoiceCallbackPush, sent to registered tokens", async () => {
-  const registry = new PushRegistry();
-  registry.register("d", "ExponentPushToken[abc]", "ios");
-  const [message] = voiceMessages(registry, event);
-  expect(message?.data).toEqual({
-    type: "voice.callback",
-    eventId: 7,
-    taskId: "t_1",
-    projectId: "proj_x",
-    class: "approval",
-  });
-  const bodies: string[] = [];
-  await pushVoiceEvent(registry, event, (async (_u: unknown, init?: RequestInit) => {
-    bodies.push(init?.body as string);
-    return new Response(
-      JSON.stringify({ data: [{ status: "error", details: { error: "DeviceNotRegistered" } }] }),
-    );
-  }) as unknown as typeof fetch);
-  expect(bodies).toHaveLength(1);
-  expect(registry.size).toBe(0); // dead token dropped
-  await pushVoiceEvent(registry, event, (async () => {
-    throw new Error("must not be called with no targets");
-  }) as unknown as typeof fetch);
 });
 
 test("tasks saved before repositories were tracked are filed under theirs at startup", async () => {
@@ -562,35 +444,6 @@ test("tasks saved before repositories were tracked are filed under theirs at sta
   second.dispose();
 });
 
-test("a push about a branch is titled by its repository", () => {
-  const registry = new PushRegistry();
-  registry.register("d", "ExponentPushToken[abc]", "ios");
-  const [message] = voiceMessages(registry, {
-    ...event,
-    class: "completed",
-    kind: "task.completed",
-    projectName: "billing (fix/login)",
-    repo: { name: "billing", branch: "fix/login" },
-  });
-  expect(message?.title).toBe("billing · fix/login: finished");
-});
-
-test("voice.open: clientVad selects the manual-turn config; no marker keeps the server answering", async () => {
-  const { svc } = await service();
-  const turn = (r: Record<string, unknown>) =>
-    (
-      r as {
-        realtime: { session: { audio: { input: { turn_detection: Record<string, unknown> } } } };
-      }
-    ).realtime.session.audio.input.turn_detection;
-  const old = await svc.open({ voiceSessionId: "old", source: "in_app" });
-  const next = await svc.open({ voiceSessionId: "new", source: "in_app", clientVad: true });
-  expect(old.t).toBe("voice.ready");
-  expect(turn(old)).toMatchObject({ create_response: true, interrupt_response: true });
-  expect(turn(next)).toMatchObject({ create_response: false, interrupt_response: false });
-  svc.dispose();
-});
-
 test("voice.dismiss persists, broadcasts, and drops the task from every later picture", async () => {
   const { svc, emitted } = await service();
   const a = svc.store.createTask({
@@ -624,7 +477,7 @@ test("voice.dismiss persists, broadcasts, and drops the task from every later pi
 
   // Through the handler, as either transport delivers it; a live task id is ignored.
   await handleMessage(JSON.stringify({ t: "voice.dismiss", taskIds: [a.taskId, live.taskId] }), {
-    daemon: { voice: async () => svc } as unknown as Daemon,
+    daemon: { voiceTasks: async () => svc } as unknown as Daemon,
     reply: () => {},
     broadcast: () => {},
   });
@@ -706,11 +559,25 @@ test("deskContext lists only desk sessions, working first, and is empty without 
   expect(deskContext([], projects)).toBe("");
 });
 
-test("open() tells the model what is running at the computer", async () => {
+test("a briefing tells the model what is running at the computer", async () => {
   const { svc } = await service(undefined, { runningSessions: () => deskSessions });
-  const ready = (await svc.open({ voiceSessionId: "v", source: "in_app" })) as {
-    realtime: { session: { instructions: string } };
-  };
-  expect(ready.realtime.session.instructions).toContain("Running on the computer now:");
+  const { instructions } = await svc.brief({ callId: "c" });
+  expect(instructions).toContain("Running on the computer now:");
+  svc.dispose();
+});
+
+test("voice.send hands a held screenshot to a task, and says why when it cannot", async () => {
+  const { svc } = await service();
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const attached = await svc.attach({ requestId: "r1", name: "fix.png", mimeType: "image/png", data: png });
+  const attachmentId = attached.attachment?.attachmentId ?? "missing";
+  await call(svc, "c", "t1", "start_task", { project: "pew2", instruction: "go" });
+
+  const sent = await svc.send({ requestId: "s1", attachmentId, taskId: "t_1" });
+  expect(sent).toEqual({ t: "voice.sent", requestId: "s1", ok: true });
+
+  const refused = await svc.send({ requestId: "s2", attachmentId: "a_nope", taskId: "t_1" });
+  expect(refused).toMatchObject({ t: "voice.sent", requestId: "s2", ok: false });
+  expect(typeof refused.error).toBe("string");
   svc.dispose();
 });

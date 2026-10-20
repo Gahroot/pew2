@@ -173,6 +173,65 @@ function associatedData(envelope: Pick<Envelope, "sid" | "seq" | "ctr">): Uint8A
  * receiving side enforces it. That is what stops a captured frame being played
  * back later in the same conversation.
  */
+/**
+ * A platform's own XChaCha20-Poly1305, used in place of the JS cipher when it
+ * has been installed (`useNativeAead`). On a phone the JS cipher is the slow
+ * part of every frame: a long conversation's history is megabytes, and
+ * decrypting it froze the app for seconds.
+ *
+ * Only the cipher moves: the envelope, its associated data and the replay
+ * counter are still built and checked here. Text in and out (base64url
+ * ciphertext, UTF-8 plaintext), so a frame crosses into native code once.
+ */
+export interface NativeAead {
+  /** The plaintext, or null when the tag (or anything else) fails: never throws for a bad frame. */
+  openText(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, ciphertext: string): string | null;
+  /** base64url ciphertext with the 16-byte tag appended (the same bytes the JS cipher produces). */
+  sealText(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plaintext: string): string;
+}
+
+let nativeAead: NativeAead | undefined;
+
+/**
+ * Install a native cipher, but only if it agrees with this file's own: the
+ * same ciphertext for the same input, each side opening the other's frames,
+ * and tampered or mis-addressed frames refused. Anything else leaves the JS
+ * cipher in place. Returns whether it was installed.
+ */
+export function useNativeAead(candidate: NativeAead | undefined, random: RandomBytes = defaultRandom): boolean {
+  if (!candidate) {
+    nativeAead = undefined;
+    return false;
+  }
+  nativeAead = undefined;
+  const ok = agreesWithJs(candidate, random);
+  if (ok) nativeAead = candidate;
+  return ok;
+}
+
+function agreesWithJs(candidate: NativeAead, random: RandomBytes): boolean {
+  try {
+    const key = random(32);
+    const nonce = random(NONCE_BYTES);
+    const aad = utf8("pew2/v2|3|sid|7|9");
+    // Several cipher blocks, multi-byte characters, and JSON escapes.
+    const text = JSON.stringify({ t: "self-test", s: "héllo · 👋 ".repeat(40), n: [1, 2.5, -3], q: '"\\n' });
+    const jsCt = toBase64Url(xchacha20poly1305(key, nonce, aad).encrypt(utf8(text)));
+    if (candidate.sealText(key, nonce, aad, text) !== jsCt) return false;
+    if (candidate.openText(key, nonce, aad, jsCt) !== text) return false;
+    // A flipped byte, the wrong associated data, the wrong key: all refused.
+    const bytes = fromBase64Url(jsCt);
+    bytes[5] = (bytes[5] ?? 0) ^ 1;
+    if (candidate.openText(key, nonce, aad, toBase64Url(bytes)) !== null) return false;
+    if (candidate.openText(key, nonce, utf8("pew2/v2|3|sid|7|8"), jsCt) !== null) return false;
+    if (candidate.openText(random(32), nonce, aad, jsCt) !== null) return false;
+    if (candidate.openText(key, nonce, aad, "") !== null) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function seal(
   key: Uint8Array,
   message: unknown,
@@ -191,8 +250,17 @@ export function seal(
     n: toBase64Url(nonce),
     ct: "",
   };
-  const cipher = xchacha20poly1305(key, nonce, associatedData(envelope));
-  envelope.ct = toBase64Url(cipher.encrypt(utf8(JSON.stringify(message))));
+  const aad = associatedData(envelope);
+  const text = JSON.stringify(message);
+  if (nativeAead) {
+    try {
+      envelope.ct = nativeAead.sealText(key, nonce, aad, text);
+      return envelope;
+    } catch {
+      // Fall through to the JS cipher: same bytes, only slower.
+    }
+  }
+  envelope.ct = toBase64Url(xchacha20poly1305(key, nonce, aad).encrypt(utf8(text)));
   return envelope;
 }
 
@@ -210,6 +278,12 @@ export function open(key: Uint8Array, envelope: unknown): unknown {
   try {
     const nonce = fromBase64Url(envelope.n);
     if (nonce.length !== NONCE_BYTES) return undefined;
+    if (nativeAead) {
+      // Fails closed: a native refusal (or throw, caught below) is a refusal.
+      const text = nativeAead.openText(key, nonce, associatedData(envelope), envelope.ct);
+      if (typeof text !== "string") return undefined;
+      return JSON.parse(text) as unknown;
+    }
     const cipher = xchacha20poly1305(key, nonce, associatedData(envelope));
     const plaintext = cipher.decrypt(fromBase64Url(envelope.ct));
     return JSON.parse(new TextDecoder().decode(plaintext)) as unknown;

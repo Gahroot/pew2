@@ -12,8 +12,8 @@ import { useCallback, useMemo } from "react";
 import { StyleSheet } from "react-native";
 import { Canvas, Picture, Skia, BlurStyle, type SkCanvas, type SkPicture } from "@shopify/react-native-skia";
 import { beginFrame, blankPicture, endFrame } from "./skiaFrame";
-import { useFrameCallback, useSharedValue, type FrameInfo, type SharedValue } from "react-native-reanimated";
-import { paintLaunch, type FxPainter, type FxPalette, type FxRGB, type FxScene } from "../launchFx";
+import { runOnJS, useFrameCallback, useSharedValue, type FrameInfo, type SharedValue } from "react-native-reanimated";
+import { POP_S, paintCalling, paintLaunch, paintPop, type FxPainter, type FxPalette, type FxRGB, type FxScene } from "../launchFx";
 import { pewPalette } from "../pew/palette";
 import { theme } from "../theme";
 
@@ -156,5 +156,90 @@ export function LaunchFx({ scene, color, values }: { scene: FxScene; color: stri
         <Picture picture={picture as SharedValue<SkPicture>} />
       </Canvas>
     </>
+  );
+}
+
+/**
+ * The calling glow (`paintCalling`): the launch's charge, gentled, behind Pew
+ * while a call connects. `on` fades it in and out over half a second, so it
+ * leaves as the call picks up rather than cutting. Touch-through.
+ */
+export function CallingFx({ scene, color, on }: { scene: FxScene; color: string; on: boolean }) {
+  const palette = useMemo<FxPalette>(() => {
+    const pal = pewPalette(color);
+    return { bg: hexRgb(theme.color.bg), base: pal.base, light: pal.light, off: hexRgb(theme.stage.dash) };
+  }, [color]);
+  const picture = useSharedValue<SkPicture>(blankPicture());
+  const clock = useSharedValue(0);
+  const strength = useSharedValue(0);
+  const target = on ? 1 : 0;
+  const sinceDraw = useSharedValue(1);
+  const tick = useCallback(
+    (info: FrameInfo) => {
+      "worklet";
+      const dt = Math.min(1 / 30, Math.max(0.001, (info.timeSincePreviousFrame ?? 16) / 1000));
+      clock.value += dt;
+      // Ease toward on/off: about half a second either way.
+      strength.value += (target - strength.value) * Math.min(1, dt * 4);
+      sinceDraw.value += dt;
+      if (sinceDraw.value < 1 / 61) return;
+      sinceDraw.value = 0;
+      const canvas = beginFrame(scene.w, scene.h);
+      if (strength.value > 0.002) paintCalling(scene, clock.value, strength.value, palette, skiaFx(canvas, scene));
+      picture.value = endFrame();
+    },
+    [scene, palette, clock, strength, target, sinceDraw, picture],
+  );
+  useFrameCallback(tick, true);
+  return (
+    <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Picture picture={picture as SharedValue<SkPicture>} />
+    </Canvas>
+  );
+}
+
+/**
+ * Home's spin toy bursting (`paintPop`): his dots flung across the screen.
+ * Mount it for one burst (a new `key` replays it); `onDone` fires when the
+ * last dot has gone. Touch-through.
+ */
+export function PopFx({ scene, color, onDone }: { scene: FxScene; color: string; onDone: () => void }) {
+  const palette = useMemo<FxPalette>(() => {
+    const pal = pewPalette(color);
+    return { bg: hexRgb(theme.color.bg), base: pal.base, light: pal.light, off: hexRgb(theme.stage.dash) };
+  }, [color]);
+  const picture = useSharedValue<SkPicture>(blankPicture());
+  const b = useSharedValue(0);
+  const sinceDraw = useSharedValue(1);
+  const done = useSharedValue(false);
+  const tick = useCallback(
+    (info: FrameInfo) => {
+      "worklet";
+      const dt = Math.min(1 / 30, Math.max(0.001, (info.timeSincePreviousFrame ?? 16) / 1000));
+      b.value += dt;
+      if (b.value > POP_S) {
+        if (!done.value) {
+          done.value = true;
+          // An empty frame, recorded here (the shared blank is made on JS).
+          beginFrame(scene.w, scene.h);
+          picture.value = endFrame();
+          runOnJS(onDone)();
+        }
+        return;
+      }
+      sinceDraw.value += dt;
+      if (sinceDraw.value < 1 / 61) return;
+      sinceDraw.value = 0;
+      const canvas = beginFrame(scene.w, scene.h);
+      paintPop(scene, b.value, palette, skiaFx(canvas, scene));
+      picture.value = endFrame();
+    },
+    [scene, palette, b, sinceDraw, done, picture, onDone],
+  );
+  useFrameCallback(tick, true);
+  return (
+    <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Picture picture={picture as SharedValue<SkPicture>} />
+    </Canvas>
   );
 }
