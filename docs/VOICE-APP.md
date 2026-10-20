@@ -4,7 +4,7 @@ The daemon half is documented in `docs/VOICE.md`. Nothing below has been run on 
 
 ## The call
 
-Calls with Pew are upstream's: `ui/useVoice.ts`, `voiceCall.ts`, `ui/voiceTransport.ts` (WebRTC), `ui/CallScreen.tsx`, `ui/useCallKit.ts` and the `modules/pew-call` native module (PushKit and CallKit). Talk is in a conversation's top bar; hold it for call settings. Pew rings through the relay, which holds the Apple key, when a conversation you armed needs you.
+Calls with Pew are upstream's: `ui/useVoice.ts`, `voiceCall.ts`, `ui/voiceTransport.ts` (WebRTC), `ui/CallScreen.tsx`, `ui/useCallKit.ts` and the `modules/pew-call` native module (PushKit and CallKit). Talk is in the top bar on every screen, home included (beside Tasks there; `ui/topBarRight.ts`); hold it for call settings. Pew rings through the relay, which holds the Apple key, when a conversation you armed needs you.
 
 Task news arrives during a call as `voice.note` from the daemon, like any other note, so nothing on the phone has to know about tasks to hear them.
 
@@ -24,6 +24,7 @@ Task news arrives during a call as `voice.note` from the daemon, like any other 
 | Path | How | Status |
 |---|---|---|
 | In a conversation | Talk in the top bar | upstream |
+| Home | Talk in the top bar, beside Tasks | untested on device |
 | Ring | CallKit, when an armed conversation needs you | upstream |
 | Tasks screen | Call Pew | untested |
 | Deep link | `pew2://voice` (parsed by `voice/deepLink.ts`, handled cold and warm in `Pew2Screen.tsx`): places a call by the same path as a tapped voice push | untested |

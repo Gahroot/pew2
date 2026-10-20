@@ -1247,11 +1247,12 @@ export function Pew2({ pairing, onUnpair }: { pairing: Pairing; onUnpair: () => 
         setMenuOpen={setMenuOpen}
         onNewChat={openNewFromBar}
         onHome={!inThread && !daemon.restoreTarget && !onHome ? goHome : undefined}
-        // Calls are about a conversation: not offered on home.
-        onTalk={talkVisible(voice.knowledge) && !onHome ? talk : undefined}
-        onTalkHold={talkVisible(voice.knowledge) && !onHome ? talkSettings : undefined}
+        // Talk on every screen, home included: calling Pew is one tap from
+        // anywhere. On home it sits beside Tasks (`ui/topBarRight.ts`).
+        onTalk={talkVisible(voice.knowledge) ? talk : undefined}
+        onTalkHold={talkVisible(voice.knowledge) ? talkSettings : undefined}
         talkArmed={talkArmed}
-        onTasks={tasks.open}
+        onTasks={onHome ? tasks.open : undefined}
         tasksNeedYou={summarize(tasks.view.store).attention > 0}
         sessionTitle={sessionTitle}
         inThread={inThread}

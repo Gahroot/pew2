@@ -15,6 +15,7 @@ import { Ticker } from "./Ticker";
 import { Dissolve } from "./motion/Dissolve";
 import { CrewRow } from "./CrewRow";
 import { CanvasCover } from "./CanvasCover";
+import { topBarRight } from "./topBarRight";
 import { PEW_VOICE_COLOR } from "../pew/palette";
 
 export function ScreenTopBar({
@@ -55,7 +56,7 @@ export function ScreenTopBar({
   onTalkHold?: () => void;
   /** This conversation may ring the phone: a dot in Pew's colour on Talk. */
   talkArmed?: boolean;
-  /** Open the Tasks screen. Shown only where the right side is otherwise empty (home). */
+  /** Open the Tasks screen. Pass it on home only; it sits beside Talk there. */
   onTasks?: () => void;
   /** A task is waiting on them: a dot on Tasks. */
   tasksNeedYou?: boolean;
@@ -64,8 +65,10 @@ export function ScreenTopBar({
   // The ticker's step list drops over the crew row, which is drawn after it
   // and so on top: the row fades out while the list is open.
   const [stepsOpen, setStepsOpen] = useState(false);
-  // How many controls sit right of the title: a goal's two, or Talk beside compose.
-  const twoRight = inGoal || (onTalk !== undefined && (inThread || onHome !== undefined));
+  // What sits right of the title (`topBarRight.ts`): a goal's two, or Talk
+  // beside compose, the way home or Tasks.
+  const right = topBarRight({ inGoal, inThread, talk: onTalk !== undefined, backHome: onHome !== undefined, tasks: onTasks !== undefined });
+  const twoRight = inGoal || right.length > 1;
   return (
     <>
       {/* Absolute over the thread: messages scroll beneath the nav and fade
@@ -141,7 +144,7 @@ export function ScreenTopBar({
           </>
         ) : (
           <>
-          {onTalk && (
+          {onTalk && right.includes("talk") && (
             <View>
               <CircleButton
                 label={talkArmed ? "Talk to Pew. This conversation rings you when it needs you." : "Talk to Pew"}
@@ -153,7 +156,7 @@ export function ScreenTopBar({
               {talkArmed && <View pointerEvents="none" style={[styles.statusDot, { backgroundColor: PEW_VOICE_COLOR }]} />}
             </View>
           )}
-          {inThread && (
+          {right.includes("compose") && (
           // Asks where, rather than starting one immediately: the old behaviour
           // always landed wherever the agent happened to be, which is the wrong
           // project as often as the right one and was unfixable from the phone.
@@ -161,12 +164,12 @@ export function ScreenTopBar({
             <DotGlyph name="compose" size={16} />
           </CircleButton>
           )}
-          {!inThread && onHome && (
+          {onHome && right.includes("home") && (
           <CircleButton label="Back to home" onPress={onHome}>
             <DotGlyph name="close" size={14} />
           </CircleButton>
           )}
-          {!inThread && !onHome && !onTalk && onTasks && (
+          {onTasks && right.includes("tasks") && (
             <View>
               <CircleButton label={tasksNeedYou ? "Tasks. One needs you." : "Tasks"} onPress={onTasks}>
                 <DotGlyph name="tasks" size={16} />
